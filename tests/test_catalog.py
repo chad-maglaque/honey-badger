@@ -155,6 +155,17 @@ class CatalogTest(unittest.TestCase):
                     elif req:
                         self.assertIn(req, services, f"{r['id']}: requires unknown service {req}")
 
+    def test_use_field_matches_licence(self):
+        """`use` says whether an item may ship on a Badger that is sold (see the catalog header)."""
+        loaded = {i.id: i for i in upd.load_catalog(CATALOG)}
+        for i in self.each():
+            self.assertIn(i.get("use"), upd.USES, f"{i['id']}: use must be one of {upd.USES}")
+            if upd.licence_is_noncommercial(i["license"]):
+                self.assertEqual(i["use"], "personal", f"{i['id']}: {i['license']} is non-commercial")
+            self.assertEqual(loaded[i["id"]].use, i["use"], i["id"])
+        nc = [i["id"] for i in self.each() if upd.licence_is_noncommercial(i["license"])]
+        self.assertGreaterEqual(len(nc), 26)
+
     def test_contents_md_matches_catalog(self):
         doc = (REPO / "docs" / "CONTENTS.md").read_text()
         self.assertEqual(doc, gen_contents.render(gen_contents.load_items()),

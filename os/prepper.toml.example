@@ -6,6 +6,10 @@
 edition = "ultimate"             # field | base | ultimate — just a label; content follows [upd].tier
 disk_id = "prepper-disk-01"      # names this unit in peer-sync manifests
 timezone = "America/Denver"
+provisioning = "owner"           # owner: built by the people who will use it — all content in the tier, as always
+                                 # sale: built to be sold (prepper-build --for-sale). Content licensed for personal /
+                                 # non-commercial use only (catalog `use = "personal"`: iFixit, Khan Academy,
+                                 # LibreTexts, TED, …) is never downloaded until the owner accepts it in the launcher
 
 [network]
 hostname = "badger"             # → http://badger.lan and http://badger.local
@@ -130,6 +134,24 @@ mesh_commands = { help = "community", q = "community", ai = "family", status = "
 mesh_map = true                  # show radios that share their position on the offline map
 mesh_bt_pin = "secure"           # secure: a radio still on the default Bluetooth PIN (123456 / none) gets a random one,
                                  # shown on the front panel (Family radio → Bluetooth PIN); "leave": don't touch it
+# Many Badgers on one mesh ("mesh courtesy", docs/MESH.md): Badgers back off and send each shared message
+# (NOAA alert relay, reply to a command on a shared channel, the forecast) once for the whole mesh.
+mesh_courtesy = true             # false: act alone, as before (every Badger relays and answers everything)
+mesh_peer_beacon_min = 45        # a tiny "Badger here" beacon every ~45 min (10–720), on the FAMILY channel only…
+mesh_beacon_public = false       # …true: also on the public channel (lets more Badgers coordinate; tells listeners a Badger is here)
+mesh_max_util = 25               # radio reports the channel busier than this %: automatic notes wait, community posts slow down
+mesh_max_util_busy = 40          # busier than this %: only alerts, sensor danger, family posts and replies go out
+mesh_max_air_tx = 8              # our own share of airtime (%) above which automatic notes wait
+mesh_budget = { community = 30, reply = 120, auto = 4 }   # messages per hour for a Badger alone; shrinks as more
+mesh_budget_peer_scale = 4       # Badgers are heard: budget / (1 + Badgers nearby / this). Alerts are never budgeted.
+mesh_boot_quiet_s = [30, 120]    # after a restart, alerts already live wait a random 30–120 s (no town-wide storm); 0 = off
+mesh_hop_limit_local = 2         # hop limit for replies and automatic notes (alerts and family posts: the radio's default)
+# Privacy (docs/MESH.md → Privacy on the mesh)
+mesh_silent = false              # radio silence: receive only — no relays, replies, beacons, forecasts, posts.
+                                 # Also on while /var/lib/prepper/portal/mesh-silent exists (portal setting mesh_silent_file)
+mesh_silent_allow_family = true  # during radio silence, still send family-board posts a member typed and chose to send
+mesh_public_position = "off"     # the radio's own position on the public channel: "off", "coarse" (~12 km) or "precise".
+                                 # The family channel keeps what you set in the Meshtastic app. Changed in the app later? Left alone.
 sdr_weather = "auto"             # auto: decode NOAA Weather Radio SAME alerts if an RTL-SDR is present
 weather_freq_mhz = 162.550       # your nearest NOAA transmitter (see Tools → Radio)
 same_fips = []                   # e.g. ["008031"] to only show alerts for your county; empty = all

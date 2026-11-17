@@ -699,7 +699,12 @@ whisper_model = "{cls.f.model}"
         self.assertIn("may contain errors", b[0]["text"])
         self.assertIn(rec["short"], b[0]["text"])
         m = self.mesh()
-        self.assertEqual(m, [{"text": rec["short"], "board": "community"}])
+        # CHANGED (mesh courtesy): the line also says it is an automatic note with a dedupe key shared by
+        # every Badger on the same transmitter in the same half day, and when it was queued
+        self.assertEqual(len(m), 1)
+        self.assertEqual({k: m[0][k] for k in ("text", "board", "kind", "dedupe")},
+                         {"text": rec["short"], "board": "community", "kind": "auto", "dedupe": self.mod.mesh_key(rec)})
+        self.assertRegex(m[0]["dedupe"], r"^forecast:\d+\.\d{3}:\d{4}-\d\d-\d\d:(AM|PM)$")
         self.assertLessEqual(len(m[0]["text"].encode()), 200)
 
     def test_unchanged_forecast_is_not_posted(self):

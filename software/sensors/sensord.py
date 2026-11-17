@@ -5,9 +5,12 @@ sensord — the Honey Badger's sensor station.
 Polls the sensors in [sensors] (plus any it can find safely by itself), stores the readings
 (sensorlib.Store), raises threshold alerts and writes them where people will see them:
 
-  * mesh radio: sensord appends ≤200-byte lines to the mesh outbox itself ({"text","board"},
+  * mesh radio: sensord appends ≤200-byte lines to the mesh outbox itself ({"text","board","kind","at"},
     one O_APPEND write each), so a flood alert still goes out over LoRa when the portal is
     down or busy — meshbridge reads the outbox on its own. Rate-limited (min gap + hourly cap).
+    Tagged for the mesh courtesy (docs/MESH.md): a danger alert is kind "danger" (right after NOAA
+    alerts), the periodic summary "auto" (lowest priority, local hop limit, deferred on a busy
+    channel), other alerts/clears the board's kind. No dedupe key: local readings are unique.
   * boards: every alert/clear goes into events.jsonl; the portal's sensors feature posts them
     to the community or family board (ctx.board_post) and catches up on anything written
     while it was down. The board file format stays the portal's business.
@@ -165,6 +168,16 @@ class Device:
         self.ok, self.error, self.values, self.at, self.fails = True, "", vals, now, 0
         self.next_due = mono + self.spec["poll_s"]
         return vals
+
+
+def mesh_kind(batch: list[dict], board: str) -> str:
+    """The mesh-courtesy priority of one coalesced line: "danger" if it carries a danger alert,
+    "auto" if it is only the periodic summary, else the board's own kind (family / community)."""
+    if any(m.get("urgent") for m in batch):
+        return "danger"
+    if batch and all(m.get("summary") for m in batch):
+        return "auto"
+    return "family" if board == "family" else "community"
 
 
 class Sensord:
@@ -479,8 +492,8 @@ class Sensord:
             mark = "⚠" if ev["kind"] == "alert" else "✓"
             self.queue_mesh(f"{mark} {ev['text']}", board, ev.get("level") == "danger" and ev["kind"] == "alert")
 
-    def queue_mesh(self, text: str, board: str, urgent: bool = False) -> None:
-        self.mesh_queue.append({"text": sl.clean_text(text, 400), "board": board, "urgent": urgent})
+    def queue_mesh(self, text: str, board: str, urgent: bool = False, summary: bool = False) -> None:
+        self.mesh_queue.append({"text": sl.clean_text(text, 400), "board": board, "urgent": urgent, "summary": summary})
         while len(self.mesh_queue) > 10:
             drop = next((i for i, m in enumerate(self.mesh_queue) if not m.get("urgent")), 0)
             del self.mesh_queue[drop]
@@ -495,9 +508,10 @@ class Sensord:
         if self.mesh_sent and now - max(self.mesh_sent) < gap:
             return False
         text = sl.cut_bytes("Badger sensors: " + " · ".join(m["text"] for m in batch), 200)
+        kind = mesh_kind(batch, board)
         try:
             self.outbox.parent.mkdir(parents=True, exist_ok=True)
-            sl.append_line(self.outbox, {"text": text, "board": board})
+            sl.append_line(self.outbox, {"text": text, "board": board, "kind": kind, "at": int(now)})
         except OSError as e:
             log(f"cannot queue mesh message: {e}")
             return False
@@ -528,7 +542,7 @@ class Sensord:
         self.last_summary = now
         if not text:
             return
-        self.queue_mesh(text, self.settings["summary_board"])
+        self.queue_mesh(text, self.settings["summary_board"], summary=True)
         self.emit({"kind": "summary", "at": now, "text": text, "board": "none", "mesh": False}, now)
 
     def write_current(self, now: float) -> None:

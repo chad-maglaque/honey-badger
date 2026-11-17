@@ -47,8 +47,8 @@ Legend: **P** pocket · **F** field · **B** base · **U** ultimate · priority 
 | **MedlinePlus en español** (spa)<br><sub>MedlinePlus health topics in Spanish.</sub> | 1.72 | ● | ● | ● | ● | 3 | `medlineplus.gov_es_all` | US Government (includes licensed A.D.A.M. content) |
 | **Wikipedia Médica (español)** (spa)<br><sub>Spanish Wikipedia's medicine articles, with images.</sub> | 0.47 | ● | ● | ● | ● | 3 | `wikipedia_es_medicine_maxi` | CC BY-SA |
 | **openFDA drug labels**<br><sub>Every US drug label (indications, dosing, warnings). Bulk JSON from open.fda.gov; ~2 GB download.</sub> | 10.00 |  |  | ● | ● | 4 | _manual_ | US Government public domain |
-| **WikiVet**<br><sub>Veterinary reference for livestock, pets and working animals.</sub> | 0.06 | ● | ● | ● | ● | 5 | `wikivet.net_en_all_maxi` | CC BY-SA / per source |
-| **LibreTexts Medicine**<br><sub>Open medical and nursing textbooks.</sub> | 1.18 |  |  | ● | ● | 6 | `libretexts.org_en_med` | CC BY-SA / per source |
+| **WikiVet**<br><sub>Veterinary reference for livestock, pets and working animals.</sub> | 0.06 | ● | ● | ● | ● | 5 | `wikivet.net_en_all_maxi` | Not verified (listed as CC BY-SA / per source) |
+| **LibreTexts Medicine**<br><sub>Open medical and nursing textbooks.</sub> | 1.18 |  |  | ● | ● | 6 | `libretexts.org_en_med` | Per book (CC BY, CC BY-SA, CC BY-NC-SA) |
 | **Medical Sciences Q&A**<br><sub>Stack Exchange questions on medicine and physiology.</sub> | 0.06 |  | ● | ● | ● | 6 | `medicalsciences.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Quick Guides for Medicine (video)**<br><sub>Short clinical skills and procedure videos.</sub> | 0.53 |  |  | ● | ● | 6 | `quickguidesformedicine_en_all` | CC BY-SA / per source |
 | **Libre Pathology**<br><sub>Pathology reference for clinicians.</sub> | 0.10 |  |  | ● | ● | 8 | `librepathology_en_all_maxi` | CC BY-SA / per source |
@@ -96,7 +96,7 @@ Legend: **P** pocket · **F** field · **B** base · **U** ultimate · priority 
 | **Electrical Engineering Q&A**<br><sub>Circuits, power supplies, batteries, solar.</sub> | 4.29 |  | ● | ● | ● | 4 | `electronics.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Energypedia**<br><sub>Off-grid and renewable energy knowledge.</sub> | 0.80 |  | ● | ● | ● | 4 | `energypedia_en_all_maxi` | CC BY-SA / per source |
 | **Bicycles Q&A**<br><sub>Bike repair and maintenance — transport when fuel runs out.</sub> | 0.50 |  | ● | ● | ● | 5 | `bicycles.stackexchange.com_en_all` | CC BY-SA / per source |
-| **Low-tech Magazine** (mul)<br><sub>Low-energy technology, old and new.</sub> | 0.70 |  | ● | ● | ● | 5 | `solar.lowtechmagazine.com_mul_all` | CC BY-SA / per source |
+| **Low-tech Magazine** (mul)<br><sub>Low-energy technology, old and new.</sub> | 0.70 |  | ● | ● | ● | 5 | `solar.lowtechmagazine.com_mul_all` | (c) Kris De Decker (no open licence stated) |
 | **WikiCiv**<br><sub>Step-by-step tech tree for rebuilding basic technology.</sub> | 0.01 | ● | ● | ● | ● | 5 | `wikiciv_en_all_maxi` | CC BY-SA / per source |
 | **Woodworking Q&A**<br><sub>Joinery, tools and finishing.</sub> | 0.11 |  | ● | ● | ● | 5 | `woodworking.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Engineering Q&A**<br><sub>Mechanical, civil and structural engineering.</sub> | 0.26 |  |  | ● | ● | 6 | `engineering.stackexchange.com_en_all` | CC BY-SA / per source |
@@ -104,7 +104,7 @@ Legend: **P** pocket · **F** field · **B** base · **U** ultimate · priority 
 | **Arduino Q&A**<br><sub>Microcontrollers and sensors.</sub> | 0.26 |  |  | ● | ● | 7 | `arduino.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Arts & Crafts Q&A**<br><sub>Sewing, leather, materials.</sub> | 0.06 |  |  | ● | ● | 7 | `crafts.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Lifehacks Q&A**<br><sub>Improvised fixes.</sub> | 0.05 |  | ● | ● | ● | 7 | `lifehacks.stackexchange.com_en_all` | CC BY-SA / per source |
-| **OpenWrt documentation**<br><sub>Router firmware — rebuild networks.</sub> | 0.52 |  |  | ● | ● | 7 | `openwrt.org_en_all` | CC BY-SA / per source |
+| **OpenWrt documentation**<br><sub>Router firmware — rebuild networks.</sub> | 0.52 |  |  | ● | ● | 7 | `openwrt.org_en_all` | CC BY-NC-SA 4.0 |
 | **Ask Ubuntu**<br><sub>Ubuntu Linux Q&A.</sub> | 2.79 |  |  |  | ● | 8 | `askubuntu.com_en_all` | CC BY-SA / per source |
 | **Super User**<br><sub>Computer hardware and software Q&A.</sub> | 3.97 |  |  |  | ● | 8 | `superuser.com_en_all` | CC BY-SA / per source |
 | **Unix & Linux Q&A**<br><sub>Linux administration.</sub> | 1.29 |  |  | ● | ● | 8 | `unix.stackexchange.com_en_all` | CC BY-SA / per source |
@@ -205,7 +205,7 @@ Legend: **P** pocket · **F** field · **B** base · **U** ultimate · priority 
 
 | Item | GB | P | F | B | U | Pri | Source | License |
 |---|---:|:-:|:-:|:-:|:-:|:-:|---|---|
-| **Honey Badger software**<br><sub>This launcher, updater and device services. To update it like any other content, point it at your own copy of the repository: change this line to source = { type = "git", url = "https://…/your-repo.git", ref = "refs/heads/stable" }. Until then it is tracked, never fetched.</sub> | 0.05 | ● | ● | ● | ● | 1 | _manual_ | MIT |
+| **Honey Badger software**<br><sub>This launcher, updater and device services. To update it like any other content, point it at your own copy of the repository: change this line to source = { type = "git", url = "https://…/your-repo.git", ref = "refs/heads/stable" }. Until then it is tracked, never fetched.</sub> | 0.05 | ● | ● | ● | ● | 1 | _manual_ | AGPL-3.0-only |
 | **Kiwix for Android**<br><sub>Read ZIMs on an Android phone, away from the Badger. Sideload from the Badger; official standalone APK from download.kiwix.org.</sub> | 0.24 |  | ● | ● | ● | 4 | http | GPL-3.0 |
 | **Meshtastic for Android**<br><sub>Talk over LoRa mesh radios. Sideload from the Badger; F-Droid build.</sub> | 0.05 |  | ● | ● | ● | 4 | http | Open source (F-Droid) |
 | **Organic Maps for Android**<br><sub>Offline maps with turn-by-turn navigation. Sideload from the Badger; F-Droid build.</sub> | 0.10 |  | ● | ● | ● | 4 | http | Open source (F-Droid) |

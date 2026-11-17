@@ -16,6 +16,10 @@ the OS image or the content on the laptop.
 Typical first unit (Badger plugged into your router by Ethernet):
   sudo ./builder/prepper-build flash /dev/disk4 --tier base --ssid HoneyBadger --pin 246813
   ./builder/prepper-build watch badger.local
+Badgers you will SELL: add --for-sale. Content licensed for personal / non-commercial
+use only (catalog `use = "personal"`: iFixit, Khan Academy, LibreTexts, TED, …) is then
+never preloaded; the buyer is offered it at first setup and their Badger downloads it:
+  sudo ./builder/prepper-build flash /dev/disk4 --tier base --for-sale --pin 246813
 Extra units copy from the first one over the LAN, using no internet at all:
   sudo ./builder/prepper-build flash /dev/disk4 --tier base --hostname badger2 \\
        --peer http://badger.local/sync --trust-key "$(ssh badger.local cat /etc/prepper/keys/disk_ed25519.pub)"
@@ -79,12 +83,43 @@ def die(msg: str) -> None:
 
 # ─────────────────────────────── plan ────────────────────────────────────────
 
+NO_RECORD = REPO / ".no-personal-record"          # the laptop never holds an owner's acceptance
+
+
+def sale_cfg(cfg: upd.Config, for_sale: bool) -> upd.Config:
+    cfg.provisioning = "sale" if for_sale else "owner"
+    cfg.personal_file = NO_RECORD
+    return cfg
+
+
+def check_sale_pins(items: list, pins, for_sale: bool) -> None:
+    """A unit for sale can't be told to carry personal-use content, not even by a pin."""
+    if not for_sale:
+        return
+    by_id = {i.id: i for i in items}
+    bad = [by_id[p] for p in pins or [] if p in by_id and by_id[p].use != "any"]
+    if bad:
+        die("--for-sale: " + ", ".join(f"{i.id} ({i.license})" for i in bad) + " is licensed for personal / "
+            "non-commercial use only and can't be preloaded on a Badger that is sold. Remove the pin; "
+            "the owner is offered it at first setup.")
+
+
+def sale_summary(items: list, cfg: upd.Config) -> str:
+    held = upd.held_personal(items, cfg, {})
+    if not held:
+        return ""
+    gbs = sum(i.size_gb for i in held)
+    return (f"\n For sale: {len(held)} personal-use items ({gbs:,.1f} GB) are NOT preloaded; the owner is offered them at first setup:\n"
+            + "".join(f"     {i.size_gb:8.2f} GB  {i.title}  [{i.license}]\n" for i in held))
+
+
 def cmd_plan(a) -> int:
     items = upd.load_catalog(REPO / "content" / "catalog.toml")
-    cfg = upd.Config.load("/nonexistent")
+    cfg = sale_cfg(upd.Config.load("/nonexistent"), a.for_sale)
     cfg.tier, cfg.languages, cfg.budget_gb = a.tier, tuple(a.langs.split(",")), a.budget_gb
     cfg.pins = tuple(a.pin_item or [])
-    chosen = upd.wanted(items, cfg)
+    check_sale_pins(items, cfg.pins, a.for_sale)
+    chosen = upd.wanted(items, cfg, {})
     by_cat: dict[str, list] = {}
     for i in chosen:
         by_cat.setdefault(i.category, []).append(i)
@@ -109,6 +144,8 @@ def cmd_plan(a) -> int:
         print(f" First download at {a.mbps} Mbps: ~{hours:,.1f} h (the Badger is usable within minutes — smallest items land first)")
     if manual:
         print(f"\n {len(manual)} items you supply yourself: " + ", ".join(i.title for i in manual))
+    if a.for_sale:
+        print(sale_summary(items, cfg) or "\n For sale: nothing in this selection is personal-use only.")
     return 0
 
 
@@ -236,7 +273,7 @@ def cmd_flash(a) -> int:
         die("give the whole disk (e.g. /dev/disk4 or /dev/sdb), not a partition")
     render_config(a); ssh_keys(a.ssh_key or [])      # bad options stop us before the long write, not after
     plan_gb = sum(i.size_gb for i in upd.wanted(upd.load_catalog(REPO / "content/catalog.toml"),
-                                                 _cfg_for(a)))
+                                                 _cfg_for(a), {}))
     if info["size"] / 1e9 < plan_gb * 1.15 and not a.force:
         print(f" ⚠ tier '{a.tier}' needs ~{plan_gb:,.0f} GB; this drive is {human(info['size'])}.")
     if not a.yes:
@@ -253,13 +290,16 @@ def cmd_flash(a) -> int:
             subprocess.run(["diskutil", "eject", a.device], check=False, capture_output=True)
         elif ours:
             subprocess.run(["umount", str(mp)], check=False)
+    if a.for_sale:
+        print(" For sale: personal-use content will not be downloaded. Don't accept the licence offer in the"
+              " launcher yourself — that is the buyer's decision.")
     print("\n Done. Put the drive in the Badger, connect Ethernet (or see `relay`), power on.")
     print(f" Follow progress:  ./builder/prepper-build watch {a.hostname}.local")
     return 0
 
 
 def _cfg_for(a) -> upd.Config:
-    c = upd.Config.load("/nonexistent")
+    c = sale_cfg(upd.Config.load("/nonexistent"), getattr(a, "for_sale", False))
     c.tier, c.languages = a.tier, tuple(a.langs.split(","))
     return c
 
@@ -425,6 +465,7 @@ def render_config(a) -> str:
     setv("device", "edition", a.tier)
     setv("device", "disk_id", a.hostname)
     setv("device", "timezone", a.timezone)
+    setv("device", "provisioning", "sale" if getattr(a, "for_sale", False) else "owner")
     setv("network", "hostname", a.hostname)
     setv("network", "ssid", a.ssid)
     setv("network", "passphrase", a.passphrase or "")
@@ -561,7 +602,8 @@ def inject(boot: Path, a) -> None:
             cmd += " systemd.run=/boot/firmware/firstrun.sh systemd.run_success_action=reboot systemd.unit=kernel-command-line.target"
         (boot / "cmdline.txt").write_text(cmd + "\n")
     print(f" injected: software ({human(len(tgz))}), prepper.toml, first-boot ({mode})"
-          + (", relay proxy" if a.relay else "") + (f", {len(keys)} SSH key(s)" if keys else ", password SSH"))
+          + (", relay proxy" if a.relay else "") + (f", {len(keys)} SSH key(s)" if keys else ", password SSH")
+          + (", for sale (no personal-use content)" if getattr(a, "for_sale", False) else ""))
 
 
 def cmd_inject(a) -> int:
@@ -696,10 +738,27 @@ def cmd_watch(a) -> int:
             if line != last:
                 print(time.strftime("%H:%M:%S "), line, flush=True); last = line
             if b.get("phase") == "done" and not a.follow:
-                print(" ✓ Badger is ready."); return 0
+                print(" ✓ Badger is ready.")
+                sale_check(base)
+                return 0
         except (OSError, ValueError) as e:
             print(time.strftime("%H:%M:%S "), f"waiting for {base} … ({type(e).__name__})", flush=True)
         time.sleep(a.interval)
+
+
+def sale_check(base: str) -> None:
+    """On a unit built for sale, say whether it is clean to sell."""
+    try:
+        pc = get_json(base + "/api/content/personal")
+    except (OSError, ValueError):
+        return
+    if pc.get("provisioning") != "sale":
+        return
+    if pc.get("sale_ready"):
+        print(" ✓ For sale: no personal-use content on this unit, and nobody has accepted it on the buyer's behalf.")
+    else:
+        print(" ✗ For sale: NOT ready — personal-use content is installed or was accepted on this unit "
+              f"({', '.join(pc.get('installed') or []) or 'acceptance recorded'}). Re-flash it with --for-sale before selling.")
 
 
 def cmd_clone(a) -> int:
@@ -742,11 +801,14 @@ def main() -> int:
         p.add_argument("--ssh-key", action="append", help="public key file or line for SSH (default ~/.ssh/id_ed25519.pub)")
         p.add_argument("--ssh-password", help="only if you have no SSH key")
         p.add_argument("--mode", choices=("auto", "cloud-init", "firstrun"), default="auto")
+        p.add_argument("--for-sale", action="store_true",
+                       help="a Badger you will sell: never preload personal / non-commercial-use content")
 
     p = sub.add_parser("plan"); p.add_argument("--tier", choices=TIERS + ("pocket",), default="base")
     p.add_argument("--langs", default="eng"); p.add_argument("--drive-gb", type=int)
     p.add_argument("--budget-gb", type=float, default=0.0, help="laptop go-bag: fill this many GB by priority")
     p.add_argument("--pin-item", action="append"); p.add_argument("--mbps", type=float, default=100)
+    p.add_argument("--for-sale", action="store_true", help="show what a Badger built to be sold holds")
     p.add_argument("-v", "--verbose", action="store_true")
     p = sub.add_parser("flash"); p.add_argument("device"); unit_opts(p)
     p.add_argument("--image", default=DEFAULT_IMAGE); p.add_argument("--yes", action="store_true")

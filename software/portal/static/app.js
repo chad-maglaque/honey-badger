@@ -116,9 +116,11 @@
       "<h3>" + esc(it.title) + "</h3>" +
       (it.description ? "<p class=\"small\">" + esc(it.description) + "</p>" : "") +
       '<div class="meta">' + esc(it.kind_label) + " · " + gb(it.size_gb) +
-      (it.version ? " · " + esc(it.version) : "") + (it.lang && it.lang !== "eng" && it.lang !== "zxx" && it.lang !== "mul" ? " · " + esc(it.lang) : "") + "</div></div>" +
+      (it.version ? " · " + esc(it.version) : "") + (it.lang && it.lang !== "eng" && it.lang !== "zxx" && it.lang !== "mul" ? " · " + esc(it.lang) : "") +
+      (it.use === "personal" ? ' <span class="pill" title="' + esc("Licensed for personal, non-commercial use only: " + (it.license || "see its licence")) + '">Personal-use licence</span>' : "") + "</div></div>" +
       '<div class="btns">' + (r ? '<a class="btn" href="' + href(r.url) + '">Open</a>' : it.installed ?
         '<span class="pill warn" title="The app that opens this is stopped or not installed. An admin can start it under Settings → Services.">Installed — viewer offline</span>' :
+        it.held ? '<a class="pill warn" href="#/settings" title="Licensed for personal use only. It downloads once the Badger’s owner accepts that licence in Settings.">Waiting for the owner’s OK</a>' :
         '<span class="pill warn">Not downloaded yet</span>') +
       (it.renderers && it.renderers.length > 1 ? '<details class="chooser"><summary class="btn ghost" aria-label="Open with…">Open with ▾</summary><div class="opts">' + others +
         '<label class="small" style="font-weight:400"><input type="checkbox" class="remember" data-kind="' + esc(it.kind) + '"> Remember on this device for all ' + esc(it.kind_label) + "</label></div></details>" : "") +
@@ -189,6 +191,92 @@
     });
   }
 
+  // ── personal-use (non-commercial) content: a Badger built for sale offers it to its owner ──
+  var PERSONAL_INTRO = "Some free courses and repair guides (iFixit, Khan Academy, LibreTexts, TED, …) are licensed for " +
+    "personal, non-commercial use only. They aren’t included on the Badger as sold.";
+  function loadPersonal() {
+    return api("/api/content/personal").then(function (pc) {
+      if (pc._status !== 200 || !pc.items) throw new Error(pc.error || "no answer");
+      state.personal = pc; return pc;
+    });
+  }
+  function personalSig(pc) { return (pc.pending || []).join(","); }
+  function personalHidden(pc) { return lsGet("personalHide", "") === personalSig(pc); }
+  // The offer: every pending item with its size and licence; the admin can accept or put it off.
+  function personalOffer(pc, firstRun) {
+    var pend = {}; (pc.pending || []).forEach(function (id) { pend[id] = true; });
+    var rows = pc.items.filter(function (i) { return pend[i.id]; });
+    var admin = !!pc.admin && state.admin;
+    var out = (firstRun ? '<p class="small muted">Setup step</p>' : "") +
+      "<p>" + esc(PERSONAL_INTRO) + " <b>Download them now for your own personal use?</b></p>" +
+      '<table class="files">' + rows.map(function (i) {
+        return "<tr><td>" + (admin ? '<label style="font-weight:400"><input type="checkbox" class="pcPick" data-pid="' + esc(i.id) + '" checked> ' : "") +
+          esc(i.title) + (admin ? "</label>" : "") + '<div class="small muted">' + esc(i.license) +
+          (i.manual ? " · you copy this one in yourself (see the manual)" : "") + '</div></td><td class="sz">' + (i.manual ? "—" : esc(gb(num(i.size_gb)))) + "</td></tr>";
+      }).join("") + "</table>" +
+      '<p class="small muted">About ' + esc(gb(num(pc.pending_gb))) + " to download in all. Items that don’t fit in the free space are skipped and listed on the Status page. " +
+      "With no internet right now, they download the next time the Badger is online. This is a summary, not legal advice: each item’s own licence applies.</p>";
+    if (!admin) return out + '<p class="small">The Badger’s owner can accept this under <a href="#/settings">Settings → Badger administration</a>.</p>';
+    return out + '<label style="font-weight:400"><input type="checkbox" id="pcAgree"> I’ll use these for personal, non-commercial purposes only.</label>' +
+      '<label for="pcName">Your name (optional, kept with the record of this choice)</label><input type="text" id="pcName" maxlength="64" autocomplete="name">' +
+      '<div class="btns" style="margin-top:10px"><button class="btn" id="pcAccept">Accept &amp; download</button>' +
+      (firstRun || !pc.later_at ? '<button class="btn ghost" id="pcLater">Not now</button>' : "") + '</div><p class="small" id="pcMsg" role="status"></p>';
+  }
+  function wirePersonal(box, after) {
+    var msg = box.querySelector("#pcMsg");
+    function say(t) { if (msg) msg.textContent = t; }
+    function sent(r) {
+      if (r._status === 401) { state.admin = false; sessionSet("isAdmin", null); }
+      say(r.message || r.error || (r.ok ? "Done." : "Failed"));
+      if (r.ok) { state.lib = null; if (r.personal) state.personal = r.personal; if (after) after(r); }
+    }
+    var acc = box.querySelector("#pcAccept"), later = box.querySelector("#pcLater"), rm = box.querySelector("#pcRemove");
+    if (acc) acc.onclick = function () {
+      var ids = []; box.querySelectorAll(".pcPick").forEach(function (c) { if (c.checked) ids.push(c.getAttribute("data-pid")); });
+      if (!ids.length) { say("Tick at least one item, or choose Not now."); return; }
+      if (!box.querySelector("#pcAgree").checked) { say("Tick the box to agree to personal, non-commercial use first."); return; }
+      say("Saving…");
+      api("/api/admin/personal", { body: { action: "accept", agree: true, items: ids, name: box.querySelector("#pcName").value } }).then(sent);
+    };
+    if (later) later.onclick = function () { say("Saving…"); api("/api/admin/personal", { body: { action: "later" } }).then(sent); };
+    if (rm) rm.onclick = function () {
+      if (!confirm("Delete the personal-use courses and guides from this Badger? You can download them again later.")) return;
+      say("Removing…"); api("/api/admin/personal", { body: { action: "remove" } }).then(sent);
+    };
+  }
+  // A notice for the home and Status pages: the same offer, folded away, and hideable on this device.
+  function personalNotice(slotId) {
+    loadPersonal().then(function (pc) {
+      var slot = document.getElementById(slotId);
+      if (!slot || !pc.offer || personalHidden(pc)) return;
+      slot.innerHTML = '<div class="card warnbox"><b>' + (pc.offer === "first-run" ? "Finish setting up this Badger: " : "") +
+        "Personal-use courses and repair guides are available</b> (" + num((pc.pending || []).length) + " items, about " + esc(gb(num(pc.pending_gb))) + ")." +
+        '<details><summary class="small">See the list</summary>' + personalOffer(pc, false) + "</details>" +
+        '<div class="btns"><a class="btn ghost" href="#/settings">Review in Settings</a><button class="btn ghost" id="pcHide">Hide this notice</button></div></div>';
+      wirePersonal(slot, function (r) { personalNotice(slotId); if (r.message) alert(r.message); });
+      document.getElementById("pcHide").onclick = function () { lsSet("personalHide", personalSig(pc)); slot.innerHTML = ""; };
+    }).catch(function () {});
+  }
+  // Settings: the full picture — the offer, or what was accepted (and a way to remove it).
+  function personalCard(firstLogin, note) {
+    var el = document.getElementById("personalCard");
+    if (!el) return;
+    loadPersonal().then(function (pc) {
+      var admin = !!pc.admin && state.admin, acc = pc.accepted, out = "<h2>Personal-use content</h2>";
+      if (pc.offer) out += personalOffer(pc, pc.offer === "first-run");
+      else if (pc.provisioning === "owner" && !pc.withdrawn_at) out += '<p class="small muted">This Badger was built by its owner: courses and guides licensed for personal, non-commercial use are included with everything else. Don’t sell it with them on it.</p>';
+      else out += '<p class="small muted">Nothing is waiting. ' + esc(PERSONAL_INTRO) + "</p>";
+      if (acc && acc.items && acc.items.length) out += '<p class="small">Accepted for personal use' + (acc.by ? " by <b>" + esc(acc.by) + "</b>" : "") +
+        (acc.at ? " on " + esc(tfmt(acc.at, { date: true, short: true })) : "") + ": " + num(acc.items.length) + " items (" + esc((acc.licences || []).join(", ")) + ").</p>";
+      if (admin && (pc.installed || []).length) out += '<div class="btns"><button class="btn ghost" id="pcRemove">Remove personal-use content</button></div>' + (pc.offer ? "" : '<p class="small" id="pcMsg" role="status"></p>');
+      if (pc.withdrawn_at) out += '<p class="small muted">Removed on ' + esc(tfmt(pc.withdrawn_at, { date: true, short: true })) + ".</p>";
+      if (note) out += '<p class="small"><b>' + esc(note) + "</b></p>";
+      el.innerHTML = out;
+      wirePersonal(el, function (r) { personalCard(false, r.message); });
+      if (firstLogin && pc.offer === "first-run" && admin && el.scrollIntoView) el.scrollIntoView();
+    }).catch(function () { el.innerHTML = '<p class="small muted">Couldn’t check personal-use content.</p>'; });
+  }
+
   // ── views ──
   function home() {
     loadLib().then(function (lib) {
@@ -202,9 +290,10 @@
         '<a href="#/ask">💬 Ask the library</a>' +
         '<a class="alt" href="#/c/medical">⛑️ First aid & medical</a>' +
         '<a class="alt" href="/maps/">🗺️ Open map</a>' +
-        '<a class="alt" href="#/board">📋 Check-in board</a><span id="aidLink"></span></div>' +
+        '<a class="alt" href="#/board">📋 Check-in board</a><span id="aidLink"></span></div><div id="personalBanner"></div>' +
         '<div class="grid">' + cats + "</div>" + featureTiles() +
         '<p class="small muted section">On a phone, iPad or laptop? <a href="#/devices">Add the Badger to your home screen</a> — nothing to install, everything stays on the Badger.</p>');
+      personalNotice("personalBanner");
       if (featIds.aidstation) api("/api/aidstation/status").then(function (st) {   // neighbourhood aid station open?
         var el = document.getElementById("aidLink");
         if (el && st && st.set && st.open && !st.stale) el.innerHTML = '<a class="alt" href="#/aid">⛑️ Aid station open</a>';
@@ -410,7 +499,7 @@
       var s = r[0], u = r[1], b = u.build, rep = u.report;
       var svc = Object.keys(s.services || {}).map(function (k) { return '<span class="pill ' + (s.services[k] ? "ok" : "bad") + '">' + esc(k) + (s.services[k] ? " ✓" : " ✗") + "</span>"; }).join(" ");
       var p = s.power || {};
-      var out = "<h1>Status</h1>";
+      var out = '<h1>Status</h1><div id="personalStatus"></div>';
       if (b && b.phase && b.phase !== "done") out += '<div class="card"><h2>⏳ Building this Badger</h2><p>' + esc(b.message || b.phase) + '</p><div class="bar"><i style="width:' + Math.max(0, Math.min(100, num(b.pct))) + '%"></i></div><p class="small muted">' + num(b.done) + " of " + esc(b.total || "?") + " items · " + esc(b.current || "") + "</p></div>";
       out += '<div class="card"><dl class="kv">' +
         "<dt>Battery</dt><dd>" + (p.percent != null ? Math.round(num(p.percent)) + "% " + (p.charging ? "(charging" + (p.input_v ? ", " + num(p.input_v).toFixed(1) + " V in" : "") + ")" : "(on battery)") + (p.runtime_min ? " · ~" + (num(p.runtime_min) / 60).toFixed(1) + " h left" : "") : "no battery data") + "</dd>" +
@@ -436,6 +525,7 @@
       } else out += '<p class="muted">No update check yet. Connect the Badger to the internet (Ethernet, phone tethering, or another Wi-Fi) and run a check from Settings.</p>';
       if (u.history && u.history.length) out += '<h2 class="section">Recent changes</h2><div class="card small">' + u.history.slice().reverse().map(function (x) { return "<div>" + esc(tfmt(x.at, { date: true, short: true })) + " · " + esc(x.event) + " <b>" + esc(x.id) + "</b> " + esc(x.version || "") + "</div>"; }).join("") + "</div>";
       h(out);
+      personalNotice("personalStatus");
     });
   }
 
@@ -450,6 +540,7 @@
       '<label for="tx">Text size</label><select id="tx"><option value="normal"' + (text === "normal" ? " selected" : "") + '>Normal</option><option value="large"' + (text === "large" ? " selected" : "") + ">Large</option></select>" +
       '<h3 class="section">Open content with…</h3><div id="myRend" class="small muted">Loading…</div>' +
       '<h3 class="section">Family</h3><div id="meBox" class="small muted">Checking…</div></div>' +
+      '<div class="card section" id="personalCard"></div>' +
       '<div class="card section"><h2>Badger administration</h2><div id="adm"></div></div>' +
       // AGPL-3.0 §13: people using this Badger over the network can get its source. If you change the code,
       // point SOURCE_URL at the source of your version.
@@ -481,6 +572,7 @@
       });
       adminPanel(kinds, d.settings);
     });
+    personalCard(false);
   }
 
   function adminPanel(kinds, settings) {
@@ -490,7 +582,7 @@
       document.getElementById("lf").onsubmit = function (e) {
         e.preventDefault();
         api("/api/admin/login", { body: { pin: document.getElementById("pin").value } }).then(function (r) {
-          if (r.token) { state.admin = true; sessionSet("isAdmin", "1"); adminPanel(kinds, settings); }
+          if (r.token) { state.admin = true; sessionSet("isAdmin", "1"); adminPanel(kinds, settings); personalCard(true); }
           else document.getElementById("lm").textContent = r.error || "Failed";
         });
       };

@@ -17,6 +17,7 @@ a browser; nothing is installed on them.
                               (brief: two sentences, sized for a LoRa message)
   GET  /api/mesh/nodes        radios on the mesh that shared a position (for the map)
   GET  /api/updates           last update check + build/provisioning progress
+  GET  /api/content/personal  personal-use (non-commercial) content: items, the owner's decision, sale readiness
   GET  /api/settings          device defaults (renderer per kind, etc.)
   GET  /api/board             community check-in board (+ public mesh channel); ?board=family needs a member key
   POST /api/board             {"name","text","mesh","board"?} post a message (family: members only, under their name)
@@ -31,7 +32,8 @@ a browser; nothing is installed on them.
                               ?mode=utc|civil|solar|apparent &locale= &lat= &lon= &tz=
   POST /api/admin/login       {"pin"} → {"token"}
   POST /api/admin/logout      revoke the token sent in X-Admin-Token
-  POST /api/admin/<action>    updates | uplink | service | power | settings | usb | system
+  POST /api/admin/<action>    updates | uplink | service | power | settings | usb | system | personal
+                              (personal: {"action": "accept", "agree": true, "items"?, "name"?} | "later" | "remove")
 
 Every POST must be `Content-Type: application/json` and same-origin (see
 Handler.post_allowed): a page on another origin can neither send one without
@@ -194,6 +196,8 @@ class PortalConfig:
         self.board_file = rel(p.get("board_file", "/var/lib/prepper/portal/board.jsonl"))
         self.mesh_outbox = rel(p.get("mesh_outbox", "/var/lib/prepper/portal/mesh-outbox.jsonl"))
         self.mesh_nodes = rel(p.get("mesh_nodes", "/var/lib/prepper/portal/mesh-nodes.json"))
+        # Badgers heard on the mesh + what the mesh courtesy is doing (written by meshbridge, docs/MESH.md)
+        self.mesh_peers = rel(os.environ.get("MESH_PEERS") or p.get("mesh_peers", "/var/lib/prepper/portal/mesh-peers.json"))
         self.members_file = rel(p.get("members_file", "/var/lib/prepper/portal/members.json"))
         self.mesh_rotate_request = rel(p.get("mesh_rotate_request", "/var/lib/prepper/portal/mesh-rotate.json"))
         self.mesh_rotate_result = rel(p.get("mesh_rotate_result", "/var/lib/prepper/portal/mesh-rotate-result.json"))
@@ -647,6 +651,7 @@ def status() -> dict:
                     "download_human": report.get("download_human")},
         "build": read_json(CFG.build_file, None),
         "alerts": active_alerts(),
+        "mesh": mesh_courtesy_status(),
         "sdr": sdr_status(),
         "gps": gps_fix(),
         "clock": clock_now(),
@@ -702,6 +707,37 @@ def mesh_nodes() -> dict:
                     "age_s": None if heard is None else max(0, int(now - heard)),
                     "battery": bat, "self": n.get("self") is True})
     return {"nodes": out[:500], "updated": raw.get("updated") if isinstance(raw, dict) else None}
+
+
+def mesh_courtesy_status() -> dict | None:
+    """"Badgers nearby: 3 · channel busy 18 %" for the status bar, from meshbridge's mesh-peers.json.
+    Read-only and tolerant: None when the bridge isn't running (no file, or older than 15 minutes)."""
+    raw = read_json(CFG.mesh_peers, None)
+    if not isinstance(raw, dict):
+        return None
+
+    def num(v, lo, hi):
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and lo <= v <= hi else None
+    upd = num(raw.get("updated"), 0, 1e11)
+    if upd is None or not -60 <= time.time() - upd <= 900:
+        return None
+    peers = int(num(raw.get("peers_active"), 0, 10000) or 0)
+    util = num(raw.get("channel_util"), 0, 100)
+    air = raw.get("airtime") if isinstance(raw.get("airtime"), dict) else {}
+    counts = raw.get("counts") if isinstance(raw.get("counts"), dict) else {}
+    queued = air.get("queued") if isinstance(air.get("queued"), dict) else {}
+    deferred = air.get("deferred") if isinstance(air.get("deferred"), dict) else {}
+    total = lambda d: int(sum(v for v in d.values() if num(v, 0, 1e9) is not None))   # noqa: E731
+    silent = raw.get("silent") is True
+    line = f"Badgers nearby: {peers}"
+    if util is not None:
+        line += f" · channel busy {round(util)} %"
+    if silent:
+        line += " · radio silence"
+    return {"peers": peers, "channel_busy_pct": util, "air_tx_pct": num(raw.get("air_util_tx"), 0, 100),
+            "courtesy": raw.get("enabled") is not False, "silent": silent, "queued": total(queued),
+            "deferred": total(deferred), "suppressed": int(num(counts.get("suppressed"), 0, 1e9) or 0),
+            "line": line}
 
 
 def active_alerts() -> list[dict]:
@@ -798,6 +834,25 @@ def board_read(limit: int = 200, board: str = "community", for_member: bool = Fa
     return out
 
 
+MESH_KINDS = ("alert", "danger", "family", "reply", "community", "auto")
+
+
+def outbox_record(text: str, board: str, kind: str | None = None, dedupe: str | None = None,
+                  hop_limit: int | None = None, member: bool = False) -> dict:
+    """One mesh-outbox line (docs/MESH.md): {"text","board"} plus "kind" (priority; default: the board),
+    "at" (so the bridge can drop it if it waited too long), and optional "dedupe" (a key every Badger
+    computes the same way: only one of them sends it), "hop_limit" (1–7) and "member" (typed by a family
+    member: may still go out on the family channel during radio silence). Bad optional values are left out."""
+    rec = {"text": text, "board": board, "kind": kind if kind in MESH_KINDS else board, "at": int(time.time())}
+    if isinstance(dedupe, str) and 0 < len(dedupe) <= 120 and dedupe.isprintable():
+        rec["dedupe"] = dedupe
+    if isinstance(hop_limit, int) and not isinstance(hop_limit, bool) and 1 <= hop_limit <= 7:
+        rec["hop_limit"] = hop_limit
+    if member is True and board == "family":
+        rec["member"] = True
+    return rec
+
+
 def outbox_append(rec: dict) -> bool:
     """Queue one message for the mesh bridge (caller holds _board_lock). False when the queue is
     full (the bridge has been away a long time): the radio is slow, there is no point piling up."""
@@ -865,7 +920,8 @@ def board_post(ip: str, name: str, text: str, mesh: bool, board: str = "communit
     with _board_lock:
         path.parent.mkdir(parents=True, exist_ok=True)
         if mesh:
-            queued = outbox_append({"text": f"{name}: {text}", "board": board})
+            queued = outbox_append(outbox_record(f"{name}: {text}", board, board,
+                                                 member=bool(member) and not sys_post))
             if not queued:
                 rec["via"] = "local"
         with open(path, "a") as fh:
@@ -914,14 +970,16 @@ def library() -> dict:
     def run():
         items = upd.load_catalog(CFG.upd.catalog)
         state = upd.State(CFG.upd.state_file)
-        wanted_ids = {i.id for i in upd.wanted(items, CFG.upd)}
+        record = upd.load_personal_record(CFG.upd)
+        wanted_ids = {i.id for i in upd.wanted(items, CFG.upd, record)}
+        held_ids = {i.id for i in upd.held_personal(items, CFG.upd, record)}   # wait for the owner's OK
         rmap = load_renderers()
         up = services_up()
         defaults = settings().get("renderer_defaults", {})
         out = []
         for it in items:
             rec = state.get(it.id)
-            if not rec and it.id not in wanted_ids:
+            if not rec and it.id not in wanted_ids and it.id not in held_ids:
                 continue
             file_rel = f"{it.dir}/{rec['filename']}" if rec else ""
             # kiwix-serve runs with --nodatealiases, so the undated name keeps
@@ -944,7 +1002,7 @@ def library() -> dict:
                 "id": it.id, "title": it.title, "category": it.category, "kind": it.kind,
                 "kind_label": kind.get("label", it.kind), "description": it.description,
                 "lang": it.lang, "size_gb": it.size_gb, "priority": it.priority,
-                "license": it.license, "installed": bool(rec),
+                "license": it.license, "use": it.use, "held": it.id in held_ids, "installed": bool(rec),
                 "version": rec.get("version") if rec else None,
                 "renderers": rends if rec else [], "default_renderer": default,
             })
@@ -1218,15 +1276,21 @@ def _feature_send_file(req, path: Path, ctype: str, name: str | None = None, inl
     _feature_send_bytes(req, data, ctype, {"Content-Disposition": disp} if disp else None)
 
 
-def _feature_mesh_send(text: str, board: str = "community") -> bool:
-    """Queue a short message for the mesh radio (the bridge sends it on that board's channel)."""
+def _feature_mesh_send(text: str, board: str = "community", kind: str | None = None, dedupe: str | None = None,
+                       hop_limit: int | None = None) -> bool:
+    """Queue a short message for the mesh radio (the bridge sends it on that board's channel).
+    Optional (docs/MESH.md): kind = "alert" | "danger" | "family" | "reply" | "community" | "auto" (priority,
+    default: the board), dedupe = a key other Badgers compute the same way (one Badger on the mesh sends
+    it), hop_limit = 1–7. Old calls mesh_send(text, board) work as before."""
     text = " ".join(str(text).split())
     if not text or board not in ("community", "family"):
+        return False
+    if kind is not None and kind not in MESH_KINDS:
         return False
     while len(text.encode()) > 200:
         text = text[:-2] + "…"
     with _board_lock:
-        return outbox_append({"text": text, "board": board})
+        return outbox_append(outbox_record(text, board, kind, dedupe, hop_limit))
 
 
 def _feature_data_dir(fid: str) -> Path:
@@ -1696,6 +1760,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(res) if res else self.send_json({"error": "not found"}, 404)
         if u.path == "/api/search":
             return self.send_json(search(one("q")))
+        if u.path == "/api/content/personal":
+            return self.send_json(personal_view(self.is_admin()))
         if u.path == "/api/updates":
             return self.send_json({
                 "report": read_json(CFG.upd.report_dir / "last-check.json", None),
@@ -2037,9 +2103,52 @@ class Handler(SimpleHTTPRequestHandler):
         except SystemExit:
             pass
 
+    def handle_personal(self, d: dict):
+        """POST /api/admin/personal — the owner's decision about personal-use content."""
+        verb = d.get("action")
+        name = d.get("name") if isinstance(d.get("name"), str) else ""
+        items = d.get("items")
+        if verb == "accept":
+            if d.get("agree") is not True:
+                return self.send_json({"ok": False, "error": "tick the box to agree to the personal-use terms first"}, 400)
+            if items is not None and (not isinstance(items, list) or len(items) > 1000
+                                      or not all(isinstance(x, str) and len(x) <= 128 for x in items)):
+                return self.send_json({"ok": False, "error": "bad item list"}, 400)
+        elif verb not in ("later", "remove"):
+            return self.send_json({"ok": False, "error": "action must be accept, later or remove"}, 400)
+        if len(name) > 64:
+            return self.send_json({"ok": False, "error": "name is too long (64 characters at most)"}, 400)
+        try:
+            upd.record_personal_decision(CFG.upd, {"remove": "withdraw"}.get(verb, verb), items=items,
+                                         by=name, ip=self.client_ip())
+        except ValueError as e:
+            return self.send_json({"ok": False, "error": str(e)}, 400)
+        except OSError as e:
+            return self.send_json({"ok": False, "error": f"couldn't save the decision: {e.strerror or e}"}, 500)
+        _cache.pop("library", None)
+        msg = {"later": "OK — the offer stays in Settings and on the Status page."}.get(verb, "")
+        if verb == "accept":
+            why = download_deferred()
+            if why:
+                msg = (f"Accepted. Not downloading now because {why}; they download with the next update "
+                       "(weekly, or Settings → Download updates).")
+            else:
+                rc, out = ctl("update-apply")
+                msg = ("Accepted. Downloading now — progress on the Status page. With no internet right now, they "
+                       "download with the next update once the Badger is online (the weekly automatic update, "
+                       "or Settings → Download updates).") if rc == 0 else \
+                      "Accepted. The download couldn't start now (" + out.strip()[-200:] + "); it runs with the next update."
+        elif verb == "remove":
+            rc, out = ctl("update-apply")          # upd apply deletes them first, then carries on as usual
+            msg = "Removed from this Badger's list. Their files are being deleted." if rc == 0 else \
+                "Removed from this Badger's list. Their files are deleted with the next update."
+        return self.send_json({"ok": True, "message": msg, "personal": personal_view(True)})
+
     def handle_admin(self, action: str, d: dict):
         if action == "members":
             return self.handle_members(d)
+        if action == "personal":
+            return self.handle_personal(d)
         if action == "updates":
             verb = d.get("action")
             if verb == "check":
@@ -2052,6 +2161,9 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.send_json({"error": "the bundle must be a folder on a USB drive under "
                                                     f"{CFG.usb_root}"}, 400)
                 rc, out = ctl("update-" + verb, str(p))
+                if verb == "import" and upd.held_personal(upd.load_catalog(CFG.upd.catalog), CFG.upd):
+                    out += ("\nPersonal-use items in the bundle (non-commercial licences) are skipped until the "
+                            "owner accepts them: Settings → Personal-use content.")
             elif verb == "add-peer":
                 peer = str(d.get("peer", ""))
                 if not re.fullmatch(r"https?://[A-Za-z0-9.\-:\[\]]+(/[\w./-]*)?", peer):
@@ -2117,6 +2229,30 @@ class Handler(SimpleHTTPRequestHandler):
         else:
             return self.send_json({"error": "unknown admin action"}, 404)
         return self.send_json({"ok": rc == 0, "output": out[-4000:]}, 200 if rc == 0 else 500)
+
+
+def personal_view(admin: bool) -> dict:
+    """GET /api/content/personal: what everyone may see; who accepted from where, and
+    the history, only for the admin."""
+    view = upd.personal_offer(CFG.upd)
+    if view.get("accepted") and not admin:
+        view["accepted"] = {k: v for k, v in view["accepted"].items() if k not in ("ip", "by")}
+    if admin:
+        view["history"] = upd.load_personal_record(CFG.upd).get("history", [])[-20:]
+    view["admin"] = admin
+    return view
+
+
+def download_deferred() -> str | None:
+    """Endurance mode or running on battery: don't start a big download now."""
+    p = read_json(CFG.power_file, None)
+    if not isinstance(p, dict):
+        return None
+    if p.get("mode") == "endurance":
+        return "the Badger is in Endurance mode"
+    if p.get("external") is False:
+        return "the Badger is running on battery"
+    return None
 
 
 def usb_path(value) -> Path | None:

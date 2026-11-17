@@ -927,6 +927,8 @@ id = "x"
         out = [json.loads(x) for x in (self.tmp / "outbox.jsonl").read_text().splitlines()]
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0]["text"].startswith("Badger sensors: ⚠ Basement: water detected"))
+        self.assertEqual(out[0]["kind"], "danger")                # mesh courtesy: right after NOAA alerts
+        self.assertNotIn("dedupe", out[0])                        # local readings are unique
         self.assertLessEqual(len(out[0]["text"].encode()), 200)
         cur = json.loads((data / "current.json").read_text())
         self.assertEqual(cur["alerts"][0]["level"], "danger")
@@ -942,6 +944,7 @@ id = "x"
         lines = (self.tmp / "outbox.jsonl").read_text().splitlines()
         self.assertEqual(len(lines), 2)
         self.assertIn("dry again", json.loads(lines[1])["text"])
+        self.assertEqual(json.loads(lines[1])["kind"], "community")
         # readings stored
         st = sl.Store(data / "readings.db", readonly=True)
         self.assertTrue(st.history("basement:flood", 86400, t + 700))
@@ -1027,6 +1030,7 @@ id = "x"
         self.assertIn("RH", text)
         msgs = (self.tmp / "outbox.jsonl").read_text().splitlines()
         self.assertTrue(any("Badger sensors: " in m for m in msgs))
+        self.assertEqual(json.loads(msgs[-1])["kind"], "auto")    # the summary: lowest priority on the mesh
         n = len(msgs)
         self.tick(d, t + 600)
         self.assertEqual(len((self.tmp / "outbox.jsonl").read_text().splitlines()), n)   # ≤ 1 per hour

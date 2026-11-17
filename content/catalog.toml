@@ -7,6 +7,17 @@
 #   source    kiwix | http | hf | git | rsync | pmtiles | manual (see upd.py)
 #   size_gb   decimal GB, from the Kiwix mirror listing on 2026-11-16 (ZIM
 #             sizes drift every release; upd uses the live size when fetching)
+#   license   the item's licence, as its publisher states it
+#   use       "any"      — may come preloaded on a Badger that is sold (public domain,
+#                          CC BY, CC BY-SA, GPL, ODbL, …)
+#             "personal" — non-commercial / personal use only (any CC BY-NC-*, "non-
+#                          commercial" or "personal use" terms, creator-copyright video,
+#                          or a licence nobody has checked yet). Never preloaded on a unit
+#                          built with `prepper-build --for-sale` ([device] provisioning =
+#                          "sale"); the owner is offered it at first setup and downloads
+#                          it on their own Badger. A missing or unknown value counts as
+#                          "personal", and any licence naming NC is "personal" whatever
+#                          this field says (upd.py load_catalog). When unsure, "personal".
 #
 # Regenerate docs/CONTENTS.md after editing:  python3 tools/gen_contents.py
 
@@ -23,6 +34,7 @@ size_gb = 127.775
 tiers = ["field", "base", "ultimate"]
 priority = 1
 license = "CC BY-SA / per source"
+use = "any"
 description = "Every English article with images — the backbone of the library."
 source = { type = "kiwix", name = "wikipedia_en_all_maxi", path = "wikipedia/" }
 
@@ -36,6 +48,7 @@ size_gb = 13.959
 tiers = ["pocket"]
 priority = 2
 license = "CC BY-SA / per source"
+use = "any"
 description = "Lead section of every article; the go-bag edition."
 source = { type = "kiwix", name = "wikipedia_en_all_mini", path = "wikipedia/" }
 
@@ -49,6 +62,7 @@ size_gb = 36.507
 tiers = ["base", "ultimate"]
 priority = 3
 license = "CC BY-SA / per source"
+use = "any"
 description = "Spanish Wikipedia with images."
 source = { type = "kiwix", name = "wikipedia_es_all_maxi", path = "wikipedia/" }
 
@@ -62,6 +76,7 @@ size_gb = 4.08
 tiers = ["pocket"]
 priority = 3
 license = "CC BY-SA / per source"
+use = "any"
 description = "Spanish Wikipedia introductions."
 source = { type = "kiwix", name = "wikipedia_es_all_mini", path = "wikipedia/" }
 
@@ -75,6 +90,7 @@ size_gb = 12.885
 tiers = ["field"]
 priority = 3
 license = "CC BY-SA / per source"
+use = "any"
 description = "Spanish Wikipedia, text only."
 source = { type = "kiwix", name = "wikipedia_es_all_nopic", path = "wikipedia/" }
 
@@ -88,6 +104,7 @@ size_gb = 52.613
 tiers = []
 priority = 4
 license = "CC BY-SA / per source"
+use = "any"
 description = "Full text without images — pin this on a laptop with room to spare."
 source = { type = "kiwix", name = "wikipedia_en_all_nopic", path = "wikipedia/" }
 
@@ -101,6 +118,7 @@ size_gb = 15.032
 tiers = ["field", "base", "ultimate"]
 priority = 4
 license = "CC BY-SA / per source"
+use = "any"
 description = "Dictionary and thesaurus with etymologies and translations."
 source = { type = "kiwix", name = "wiktionary_en_all_nopic", path = "wiktionary/" }
 
@@ -114,6 +132,7 @@ size_gb = 4.724
 tiers = ["field", "base", "ultimate"]
 priority = 5
 license = "CC BY-SA / per source"
+use = "any"
 description = "Open textbooks and manuals, including cookbooks and how-tos."
 source = { type = "kiwix", name = "wikibooks_en_all_maxi", path = "wikibooks/" }
 
@@ -127,6 +146,7 @@ size_gb = 1.074
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 5
 license = "CC BY-SA / per source"
+use = "any"
 description = "Travel guides: regions, routes, local customs."
 source = { type = "kiwix", name = "wikivoyage_en_all_maxi", path = "wikivoyage/" }
 
@@ -140,6 +160,7 @@ size_gb = 0.407
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 6
 license = "Public domain"
+use = "any"
 description = "Country profiles: geography, people, economy, infrastructure."
 source = { type = "kiwix", name = "theworldfactbook_en_all", path = "other/" }
 
@@ -153,6 +174,7 @@ size_gb = 55.835
 tiers = ["ultimate"]
 priority = 6
 license = "CC BY-SA / per source"
+use = "any"
 description = "French Wikipedia with images."
 source = { type = "kiwix", name = "wikipedia_fr_all_maxi", path = "wikipedia/" }
 
@@ -166,6 +188,7 @@ size_gb = 5.691
 tiers = ["pocket"]
 priority = 6
 license = "CC BY-SA / per source"
+use = "any"
 description = "French Wikipedia introductions."
 source = { type = "kiwix", name = "wikipedia_fr_all_mini", path = "wikipedia/" }
 
@@ -182,6 +205,7 @@ size_gb = 0.5
 tiers = ["field", "base", "ultimate"]
 priority = 1
 license = "Hesperian terms (free non-commercial)"
+use = "personal"
 description = "Community health classics. Free PDFs from hesperian.org — download and copy into docs/hesperian_books/."
 source = { type = "manual" }
 
@@ -195,6 +219,7 @@ size_gb = 0.065
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 1
 license = "US Government public domain"
+use = "any"
 description = "US military medical field publications archived by the Federation of American Scientists."
 source = { type = "kiwix", name = "irp.fas.org_en_military-medicine", path = "zimit/" }
 
@@ -208,6 +233,7 @@ size_gb = 10.737
 tiers = ["base", "ultimate"]
 priority = 1
 license = "CC BY-SA / per source"
+use = "any"
 description = "WikiMed plus its medical video library."
 source = { type = "kiwix", name = "mdwiki_en_all", path = "other/" }
 
@@ -221,6 +247,7 @@ size_gb = 2.255
 tiers = ["field", "pocket"]
 priority = 1
 license = "CC BY-SA / per source"
+use = "any"
 description = "~70k medical articles (MDWiki): conditions, drugs, anatomy, procedures."
 source = { type = "kiwix", name = "mdwiki_en_all_maxi", path = "other/" }
 
@@ -234,6 +261,7 @@ size_gb = 0.07
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 1
 license = "CC BY-SA / per source"
+use = "any"
 description = "Curated first-aid and austere-medicine documents."
 source = { type = "kiwix", name = "zimgit-medicine_en", path = "other/" }
 
@@ -247,6 +275,7 @@ size_gb = 1.933
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 2
 license = "US Government (includes licensed A.D.A.M. content)"
+use = "personal"                 # the A.D.A.M. encyclopedia pages in it are licensed to NLM, not public domain
 description = "Plain-language health topics, drugs and supplements, medical tests."
 source = { type = "kiwix", name = "medlineplus.gov_en_all", path = "zimit/" }
 
@@ -260,6 +289,7 @@ size_gb = 0.016
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 2
 license = "OGL v3"
+use = "any"
 description = "What common medicines are for, how to take them, side effects."
 source = { type = "kiwix", name = "nhs.uk_en_medicines", path = "zimit/" }
 
@@ -273,6 +303,7 @@ size_gb = 1.718
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 3
 license = "US Government (includes licensed A.D.A.M. content)"
+use = "personal"                 # the A.D.A.M. encyclopedia pages in it are licensed to NLM, not public domain
 description = "MedlinePlus health topics in Spanish."
 source = { type = "kiwix", name = "medlineplus.gov_es_all", path = "zimit/" }
 
@@ -286,6 +317,7 @@ size_gb = 0.469
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 3
 license = "CC BY-SA"
+use = "any"
 description = "Spanish Wikipedia's medicine articles, with images."
 source = { type = "kiwix", name = "wikipedia_es_medicine_maxi", path = "wikipedia/" }
 
@@ -299,6 +331,7 @@ size_gb = 0.178
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 3
 license = "US Government public domain"
+use = "any"
 description = "Disease risks, vaccines and prevention by country."
 source = { type = "kiwix", name = "wwwnc.cdc.gov_en_all", path = "zimit/" }
 
@@ -312,6 +345,7 @@ size_gb = 10.0
 tiers = ["base", "ultimate"]
 priority = 4
 license = "US Government public domain"
+use = "any"
 description = "Every US drug label (indications, dosing, warnings). Bulk JSON from open.fda.gov; ~2 GB download."
 source = { type = "manual" }
 
@@ -324,7 +358,8 @@ lang = "eng"
 size_gb = 0.057
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 5
-license = "CC BY-SA / per source"
+license = "Not verified (listed as CC BY-SA / per source)"
+use = "personal"                 # licence not verified; kept personal until confirmed (set use = "any" once it is)
 description = "Veterinary reference for livestock, pets and working animals."
 source = { type = "kiwix", name = "wikivet.net_en_all_maxi", path = "other/" }
 
@@ -337,7 +372,8 @@ lang = "eng"
 size_gb = 1.181
 tiers = ["base", "ultimate"]
 priority = 6
-license = "CC BY-SA / per source"
+license = "Per book (CC BY, CC BY-SA, CC BY-NC-SA)"
+use = "personal"                 # LibreTexts licenses per book and many are CC BY-NC-SA
 description = "Open medical and nursing textbooks."
 source = { type = "kiwix", name = "libretexts.org_en_med", path = "libretexts/" }
 
@@ -351,6 +387,7 @@ size_gb = 0.061
 tiers = ["field", "base", "ultimate"]
 priority = 6
 license = "CC BY-SA / per source"
+use = "any"
 description = "Stack Exchange questions on medicine and physiology."
 source = { type = "kiwix", name = "medicalsciences.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -364,6 +401,7 @@ size_gb = 0.527
 tiers = ["base", "ultimate"]
 priority = 6
 license = "CC BY-SA / per source"
+use = "any"
 description = "Short clinical skills and procedure videos."
 source = { type = "kiwix", name = "quickguidesformedicine_en_all", path = "videos/" }
 
@@ -377,6 +415,7 @@ size_gb = 0.095
 tiers = ["base", "ultimate"]
 priority = 8
 license = "CC BY-SA / per source"
+use = "any"
 description = "Pathology reference for clinicians."
 source = { type = "kiwix", name = "librepathology_en_all_maxi", path = "other/" }
 
@@ -393,6 +432,7 @@ size_gb = 2.04
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 1
 license = "US Government public domain"
+use = "any"
 description = "Official US preparedness guidance for every hazard."
 source = { type = "kiwix", name = "ready.gov_en_all", path = "zimit/" }
 
@@ -406,6 +446,7 @@ size_gb = 0.645
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 1
 license = "CC BY-SA / per source"
+use = "any"
 description = "Curated manuals for shelter, sanitation, water, food and rebuilding."
 source = { type = "kiwix", name = "zimgit-post-disaster_en", path = "other/" }
 
@@ -419,6 +460,7 @@ size_gb = 8.268
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 2
 license = "US Government public domain"
+use = "any"
 description = "Field manuals and technical manuals from the Army Publishing Directorate."
 source = { type = "kiwix", name = "armypubs_en_all", path = "zimit/" }
 
@@ -432,6 +474,7 @@ size_gb = 2.04
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 2
 license = "US Government public domain"
+use = "any"
 description = "FEMA preparedness guidance in Spanish."
 source = { type = "kiwix", name = "ready.gov_es_all", path = "zimit/" }
 
@@ -445,6 +488,7 @@ size_gb = 0.142
 tiers = ["field", "base", "ultimate"]
 priority = 3
 license = "CC BY-SA / per source"
+use = "any"
 description = "Camping, hiking, navigation and wilderness skills Q&A."
 source = { type = "kiwix", name = "outdoors.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -458,6 +502,7 @@ size_gb = 0.028
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 3
 license = "CC BY-SA / per source"
+use = "any"
 description = "Knots, hitches and lashings."
 source = { type = "kiwix", name = "zimgit-knots_en", path = "other/" }
 
@@ -471,6 +516,7 @@ size_gb = 1.396
 tiers = ["field", "base", "ultimate"]
 priority = 4
 license = "Per source"
+use = "personal"                 # a commercial website, all rights reserved by its owner
 description = "Prepping guides and gear reviews."
 source = { type = "kiwix", name = "trueprepper.com_en_all", path = "other/" }
 
@@ -484,6 +530,7 @@ size_gb = 0.014
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 4
 license = "CC BY-SA / per source"
+use = "any"
 description = "Every knot article on Wikipedia, with diagrams."
 source = { type = "kiwix", name = "wikipedia_en_knots_maxi", path = "wikipedia/" }
 
@@ -497,6 +544,7 @@ size_gb = 0.137
 tiers = ["field", "base", "ultimate"]
 priority = 5
 license = "CC BY-SA / per source"
+use = "any"
 description = "Community survival knowledge base."
 source = { type = "kiwix", name = "survivors_en_all_maxi", path = "other/" }
 
@@ -510,6 +558,7 @@ size_gb = 220.117
 tiers = ["ultimate"]
 priority = 6
 license = "Public domain (scans)"
+use = "any"
 description = "Thousands of pre-1900s technical books: smithing, farming, chemistry, medicine, power."
 source = { type = "kiwix", name = "survivorlibrary.com_en_all", path = "zimit/" }
 
@@ -523,6 +572,7 @@ size_gb = 0.0
 tiers = []
 priority = 6
 license = "CC BY-NC-SA"
+use = "personal"
 description = "No current wikiHow ZIM is published. Build your own with zimit for personal use (CC BY-NC-SA)."
 source = { type = "manual" }
 
@@ -539,6 +589,7 @@ size_gb = 0.021
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 1
 license = "CC BY-SA / per source"
+use = "any"
 description = "Finding, treating and storing water."
 source = { type = "kiwix", name = "zimgit-water_en", path = "other/" }
 
@@ -552,6 +603,7 @@ size_gb = 0.098
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 2
 license = "CC BY-SA / per source"
+use = "any"
 description = "Preserving, cooking and storing food without utilities."
 source = { type = "kiwix", name = "zimgit-food-preparation_en", path = "other/" }
 
@@ -565,6 +617,7 @@ size_gb = 0.933
 tiers = ["field", "base", "ultimate"]
 priority = 3
 license = "CC BY-SA / per source"
+use = "any"
 description = "Growing food, soil, pests, plant problems."
 source = { type = "kiwix", name = "gardening.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -578,6 +631,7 @@ size_gb = 0.112
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 3
 license = "CC BY-SA / per source"
+use = "any"
 description = "Plant profiles and growing information."
 source = { type = "kiwix", name = "gardenology.org_en_all", path = "other/" }
 
@@ -591,6 +645,7 @@ size_gb = 0.238
 tiers = ["field", "base", "ultimate"]
 priority = 5
 license = "CC BY-SA / per source"
+use = "any"
 description = "Cooking technique, food safety and substitutions."
 source = { type = "kiwix", name = "cooking.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -604,6 +659,7 @@ size_gb = 0.027
 tiers = ["field", "base", "ultimate"]
 priority = 5
 license = "CC BY-SA / per source"
+use = "any"
 description = "Self-sufficiency, energy and resource questions."
 source = { type = "kiwix", name = "sustainability.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -617,6 +673,7 @@ size_gb = 0.023
 tiers = ["field", "base", "ultimate"]
 priority = 6
 license = "CC BY-SA / per source"
+use = "any"
 description = "Simple open recipe collection."
 source = { type = "kiwix", name = "based.cooking_en_all", path = "zimit/" }
 
@@ -630,6 +687,7 @@ size_gb = 0.03
 tiers = ["field", "base", "ultimate"]
 priority = 6
 license = "CC BY-SA / per source"
+use = "any"
 description = "Open recipe collection."
 source = { type = "kiwix", name = "foss.cooking_en_all", path = "zimit/" }
 
@@ -643,6 +701,7 @@ size_gb = 0.038
 tiers = ["base", "ultimate"]
 priority = 7
 license = "CC BY-SA / per source"
+use = "any"
 description = "Fermentation, brewing and sanitation."
 source = { type = "kiwix", name = "homebrew.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -656,6 +715,7 @@ size_gb = 0.087
 tiers = ["base", "ultimate"]
 priority = 8
 license = "CC BY-SA / per source"
+use = "any"
 description = "Animal care questions."
 source = { type = "kiwix", name = "pets.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -672,6 +732,7 @@ size_gb = 3.543
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 1
 license = "CC BY-NC-SA"
+use = "personal"
 description = "Step-by-step repair guides for vehicles, electronics, appliances and tools."
 source = { type = "kiwix", name = "ifixit_en_all", path = "ifixit/" }
 
@@ -685,6 +746,7 @@ size_gb = 2.04
 tiers = ["field", "base", "ultimate"]
 priority = 2
 license = "CC BY-SA / per source"
+use = "any"
 description = "Electrical, plumbing, carpentry, HVAC."
 source = { type = "kiwix", name = "diy.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -698,6 +760,7 @@ size_gb = 0.582
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 3
 license = "CC BY-SA / per source"
+use = "any"
 description = "Appropriate technology: water, sanitation, energy and building for low-resource settings."
 source = { type = "kiwix", name = "appropedia_en_all_maxi", path = "other/" }
 
@@ -711,6 +774,7 @@ size_gb = 0.573
 tiers = ["field", "base", "ultimate"]
 priority = 3
 license = "CC BY-SA / per source"
+use = "any"
 description = "Development and low-tech manuals: agriculture, construction, energy, health."
 source = { type = "kiwix", name = "cd3wdproject.org_en_all", path = "zimit/" }
 
@@ -724,6 +788,7 @@ size_gb = 0.342
 tiers = ["field", "base", "ultimate"]
 priority = 3
 license = "CC BY-SA / per source"
+use = "any"
 description = "Diagnosing and fixing cars, trucks and small engines."
 source = { type = "kiwix", name = "mechanics.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -737,6 +802,7 @@ size_gb = 4.295
 tiers = ["field", "base", "ultimate"]
 priority = 4
 license = "CC BY-SA / per source"
+use = "any"
 description = "Circuits, power supplies, batteries, solar."
 source = { type = "kiwix", name = "electronics.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -750,6 +816,7 @@ size_gb = 0.8
 tiers = ["field", "base", "ultimate"]
 priority = 4
 license = "CC BY-SA / per source"
+use = "any"
 description = "Off-grid and renewable energy knowledge."
 source = { type = "kiwix", name = "energypedia_en_all_maxi", path = "other/" }
 
@@ -763,6 +830,7 @@ size_gb = 0.499
 tiers = ["field", "base", "ultimate"]
 priority = 5
 license = "CC BY-SA / per source"
+use = "any"
 description = "Bike repair and maintenance — transport when fuel runs out."
 source = { type = "kiwix", name = "bicycles.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -775,7 +843,8 @@ lang = "mul"
 size_gb = 0.7
 tiers = ["field", "base", "ultimate"]
 priority = 5
-license = "CC BY-SA / per source"
+license = "(c) Kris De Decker (no open licence stated)"
+use = "personal"                 # the site states only (c) Kris De Decker; no open licence found
 description = "Low-energy technology, old and new."
 source = { type = "kiwix", name = "solar.lowtechmagazine.com_mul_all", path = "zimit/" }
 
@@ -789,6 +858,7 @@ size_gb = 0.005
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 5
 license = "CC BY-SA / per source"
+use = "any"
 description = "Step-by-step tech tree for rebuilding basic technology."
 source = { type = "kiwix", name = "wikiciv_en_all_maxi", path = "other/" }
 
@@ -802,6 +872,7 @@ size_gb = 0.107
 tiers = ["field", "base", "ultimate"]
 priority = 5
 license = "CC BY-SA / per source"
+use = "any"
 description = "Joinery, tools and finishing."
 source = { type = "kiwix", name = "woodworking.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -815,6 +886,7 @@ size_gb = 0.259
 tiers = ["base", "ultimate"]
 priority = 6
 license = "CC BY-SA / per source"
+use = "any"
 description = "Mechanical, civil and structural engineering."
 source = { type = "kiwix", name = "engineering.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -828,6 +900,7 @@ size_gb = 0.299
 tiers = ["field", "base", "ultimate"]
 priority = 6
 license = "CC BY-SA / per source"
+use = "any"
 description = "Fix and extend this device."
 source = { type = "kiwix", name = "raspberrypi.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -841,6 +914,7 @@ size_gb = 0.26
 tiers = ["base", "ultimate"]
 priority = 7
 license = "CC BY-SA / per source"
+use = "any"
 description = "Microcontrollers and sensors."
 source = { type = "kiwix", name = "arduino.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -854,6 +928,7 @@ size_gb = 0.059
 tiers = ["base", "ultimate"]
 priority = 7
 license = "CC BY-SA / per source"
+use = "any"
 description = "Sewing, leather, materials."
 source = { type = "kiwix", name = "crafts.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -867,6 +942,7 @@ size_gb = 0.049
 tiers = ["field", "base", "ultimate"]
 priority = 7
 license = "CC BY-SA / per source"
+use = "any"
 description = "Improvised fixes."
 source = { type = "kiwix", name = "lifehacks.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -879,7 +955,8 @@ lang = "eng"
 size_gb = 0.52
 tiers = ["base", "ultimate"]
 priority = 7
-license = "CC BY-SA / per source"
+license = "CC BY-NC-SA 4.0"
+use = "personal"                 # the OpenWrt wiki is CC BY-NC-SA 4.0
 description = "Router firmware — rebuild networks."
 source = { type = "kiwix", name = "openwrt.org_en_all", path = "zimit/" }
 
@@ -893,6 +970,7 @@ size_gb = 2.792
 tiers = ["ultimate"]
 priority = 8
 license = "CC BY-SA / per source"
+use = "any"
 description = "Ubuntu Linux Q&A."
 source = { type = "kiwix", name = "askubuntu.com_en_all", path = "stack_exchange/" }
 
@@ -906,6 +984,7 @@ size_gb = 3.973
 tiers = ["ultimate"]
 priority = 8
 license = "CC BY-SA / per source"
+use = "any"
 description = "Computer hardware and software Q&A."
 source = { type = "kiwix", name = "superuser.com_en_all", path = "stack_exchange/" }
 
@@ -919,6 +998,7 @@ size_gb = 1.288
 tiers = ["base", "ultimate"]
 priority = 8
 license = "CC BY-SA / per source"
+use = "any"
 description = "Linux administration."
 source = { type = "kiwix", name = "unix.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -932,6 +1012,7 @@ size_gb = 114.89
 tiers = ["ultimate"]
 priority = 9
 license = "CC BY-SA / per source"
+use = "any"
 description = "Programming Q&A — the whole thing."
 source = { type = "kiwix", name = "stackoverflow.com_en_all", path = "stack_exchange/" }
 
@@ -948,6 +1029,7 @@ size_gb = 0.01
 tiers = ["field", "base", "ultimate"]
 priority = 2
 license = "Per source"
+use = "personal"                 # RepeaterBook and club lists are typically for personal use only
 description = "Export your region from RepeaterBook or your club as CHIRP CSV; copy into data/repeaters_local/."
 source = { type = "manual" }
 
@@ -961,6 +1043,7 @@ size_gb = 0.078
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 3
 license = "CC BY-SA / per source"
+use = "any"
 description = "Antennas, propagation, licensing, digital modes."
 source = { type = "kiwix", name = "ham.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -977,6 +1060,7 @@ size_gb = 1.5
 tiers = ["pocket"]
 priority = 2
 license = "ODbL (OpenStreetMap contributors)"
+use = "any"
 description = "Your area at full detail — edit the bbox to your county/state."
 source = { type = "pmtiles", bbox = [-123.2, 36.9, -121.2, 38.4], maxzoom = 15 }
 
@@ -990,6 +1074,7 @@ size_gb = 28.0
 tiers = ["field", "base"]
 priority = 2
 license = "ODbL (OpenStreetMap contributors)"
+use = "any"
 description = "Street-level vector map of North America (zoom 15)."
 source = { type = "pmtiles", bbox = [-170, 5, -50, 84], maxzoom = 15 }
 
@@ -1003,6 +1088,7 @@ size_gb = 0.6
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 3
 license = "ODbL (OpenStreetMap contributors)"
+use = "any"
 description = "Whole planet to zoom 8: countries, cities, main roads."
 source = { type = "pmtiles", maxzoom = 8 }
 
@@ -1016,6 +1102,7 @@ size_gb = 5.0
 tiers = ["field", "base", "ultimate"]
 priority = 3
 license = "Public domain"
+use = "any"
 description = "US Topo GeoPDFs for your county/state from the USGS National Map."
 source = { type = "manual" }
 
@@ -1029,6 +1116,7 @@ size_gb = 139.5
 tiers = ["ultimate"]
 priority = 5
 license = "ODbL (OpenStreetMap contributors)"
+use = "any"
 description = "Street-level vector map of the entire planet (zoom 15)."
 source = { type = "pmtiles" }
 
@@ -1042,6 +1130,7 @@ size_gb = 3.0
 tiers = ["field", "base", "ultimate"]
 priority = 6
 license = "Public domain"
+use = "any"
 description = "Official park maps (public domain) from the NPS Harpers Ferry Center map library."
 source = { type = "manual" }
 
@@ -1055,6 +1144,7 @@ size_gb = 20.0
 tiers = ["base", "ultimate"]
 priority = 6
 license = "CC BY 4.0"
+use = "any"
 description = "Sentinel-2 cloudless (EOX, CC BY 4.0) or NAIP imagery converted to PMTiles for your region."
 source = { type = "manual" }
 
@@ -1068,6 +1158,7 @@ size_gb = 0.534
 tiers = ["base", "ultimate"]
 priority = 8
 license = "CC BY-SA / per source"
+use = "any"
 description = "How map data and tags work."
 source = { type = "kiwix", name = "openstreetmap-wiki_en_all_nopic", path = "other/" }
 
@@ -1084,6 +1175,7 @@ size_gb = 0.37
 tiers = ["field", "base", "ultimate"]
 priority = 5
 license = "CC BY-NC-SA / per book"
+use = "personal"
 description = "Open university and school textbooks."
 source = { type = "kiwix", name = "libretexts.org_en_k12", path = "libretexts/" }
 
@@ -1097,6 +1189,7 @@ size_gb = 0.514
 tiers = ["base", "ultimate"]
 priority = 5
 license = "CC BY-NC-SA / per book"
+use = "personal"
 description = "Open university and school textbooks."
 source = { type = "kiwix", name = "libretexts.org_en_workforce", path = "libretexts/" }
 
@@ -1110,6 +1203,7 @@ size_gb = 60.0
 tiers = ["base", "ultimate"]
 priority = 6
 license = "Per channel"
+use = "personal"                 # channels carry their own licences; Khan Academy, CK-12 and others are non-commercial
 description = "Import channels in Kolibri (/learn → Device → Channels) while online, or from another Badger."
 source = { type = "manual" }
 
@@ -1123,6 +1217,7 @@ size_gb = 2.255
 tiers = ["base", "ultimate"]
 priority = 6
 license = "CC BY-NC-SA / per book"
+use = "personal"
 description = "Open university and school textbooks."
 source = { type = "kiwix", name = "libretexts.org_en_bio", path = "libretexts/" }
 
@@ -1136,6 +1231,7 @@ size_gb = 2.147
 tiers = ["base", "ultimate"]
 priority = 6
 license = "CC BY-NC-SA / per book"
+use = "personal"
 description = "Open university and school textbooks."
 source = { type = "kiwix", name = "libretexts.org_en_chem", path = "libretexts/" }
 
@@ -1149,6 +1245,7 @@ size_gb = 0.678
 tiers = ["base", "ultimate"]
 priority = 6
 license = "CC BY-NC-SA / per book"
+use = "personal"
 description = "Open university and school textbooks."
 source = { type = "kiwix", name = "libretexts.org_en_eng", path = "libretexts/" }
 
@@ -1162,6 +1259,7 @@ size_gb = 0.109
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 6
 license = "CC BY"
+use = "any"
 description = "Interactive math and science simulations."
 source = { type = "kiwix", name = "phet_en_all", path = "phet/" }
 
@@ -1175,6 +1273,7 @@ size_gb = 0.425
 tiers = ["base", "ultimate"]
 priority = 7
 license = "CC BY-SA / per source"
+use = "any"
 description = "Life sciences: plants, animals, microbes and the human body."
 source = { type = "kiwix", name = "biology.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -1188,6 +1287,7 @@ size_gb = 0.42
 tiers = ["base", "ultimate"]
 priority = 7
 license = "CC BY-SA / per source"
+use = "any"
 description = "Practical and theoretical chemistry."
 source = { type = "kiwix", name = "chemistry.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -1201,6 +1301,7 @@ size_gb = 0.133
 tiers = ["base", "ultimate"]
 priority = 7
 license = "CC BY-SA / per source"
+use = "any"
 description = "Weather, geology, climate."
 source = { type = "kiwix", name = "earthscience.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -1214,6 +1315,7 @@ size_gb = 180.389
 tiers = ["ultimate"]
 priority = 7
 license = "CC BY-NC-SA"
+use = "personal"
 description = "Video lessons and exercises, K-12 through college."
 source = { type = "kiwix", name = "khanacademy_en_all", path = "other/" }
 
@@ -1227,6 +1329,7 @@ size_gb = 1.181
 tiers = ["base", "ultimate"]
 priority = 7
 license = "CC BY-NC-SA / per book"
+use = "personal"
 description = "Open university and school textbooks."
 source = { type = "kiwix", name = "libretexts.org_en_geo", path = "libretexts/" }
 
@@ -1240,6 +1343,7 @@ size_gb = 0.83
 tiers = ["base", "ultimate"]
 priority = 7
 license = "CC BY-NC-SA / per book"
+use = "personal"
 description = "Open university and school textbooks."
 source = { type = "kiwix", name = "libretexts.org_en_math", path = "libretexts/" }
 
@@ -1253,6 +1357,7 @@ size_gb = 0.56
 tiers = ["base", "ultimate"]
 priority = 7
 license = "CC BY-NC-SA / per book"
+use = "personal"
 description = "Open university and school textbooks."
 source = { type = "kiwix", name = "libretexts.org_en_phys", path = "libretexts/" }
 
@@ -1266,6 +1371,7 @@ size_gb = 2.147
 tiers = ["base", "ultimate"]
 priority = 7
 license = "CC BY-SA / per source"
+use = "any"
 description = "Open learning materials and course notes."
 source = { type = "kiwix", name = "wikiversity_en_all_maxi", path = "wikiversity/" }
 
@@ -1279,6 +1385,7 @@ size_gb = 22.549
 tiers = ["ultimate"]
 priority = 8
 license = "CC BY-NC-SA"
+use = "personal"
 description = "Fast-paced video courses across subjects."
 source = { type = "kiwix", name = "crashcourse_en_all", path = "other/" }
 
@@ -1292,6 +1399,7 @@ size_gb = 0.84
 tiers = ["ultimate"]
 priority = 8
 license = "CC BY-NC-SA / per book"
+use = "personal"
 description = "Open university and school textbooks."
 source = { type = "kiwix", name = "libretexts.org_en_biz", path = "libretexts/" }
 
@@ -1305,6 +1413,7 @@ size_gb = 4.402
 tiers = ["ultimate"]
 priority = 8
 license = "CC BY-NC-SA / per book"
+use = "personal"
 description = "Open university and school textbooks."
 source = { type = "kiwix", name = "libretexts.org_en_human", path = "libretexts/" }
 
@@ -1318,6 +1427,7 @@ size_gb = 2.04
 tiers = ["ultimate"]
 priority = 8
 license = "CC BY-NC-SA / per book"
+use = "personal"
 description = "Open university and school textbooks."
 source = { type = "kiwix", name = "libretexts.org_en_socialsci", path = "libretexts/" }
 
@@ -1331,6 +1441,7 @@ size_gb = 0.216
 tiers = ["base", "ultimate"]
 priority = 8
 license = "CC BY-NC-SA / per book"
+use = "personal"
 description = "Open university and school textbooks."
 source = { type = "kiwix", name = "libretexts.org_en_stats", path = "libretexts/" }
 
@@ -1344,6 +1455,7 @@ size_gb = 1.825
 tiers = ["ultimate"]
 priority = 8
 license = "CC BY-SA / per source"
+use = "any"
 description = "Mechanics, electricity, heat and optics explained."
 source = { type = "kiwix", name = "physics.stackexchange.com_en_all", path = "stack_exchange/" }
 
@@ -1357,6 +1469,7 @@ size_gb = 7.087
 tiers = ["ultimate"]
 priority = 8
 license = "Public domain"
+use = "any"
 description = "English lessons for non-native speakers."
 source = { type = "kiwix", name = "voa_learning_en_all", path = "videos/" }
 
@@ -1373,6 +1486,7 @@ size_gb = 1.533
 tiers = ["field", "base"]
 priority = 3
 license = "Public domain"
+use = "any"
 description = "Project Gutenberg books in this Library of Congress class."
 source = { type = "kiwix", name = "gutenberg_en_lcc-r", path = "books/" }
 
@@ -1386,6 +1500,7 @@ size_gb = 3.422
 tiers = ["field", "base"]
 priority = 3
 license = "Public domain"
+use = "any"
 description = "Project Gutenberg books in this Library of Congress class."
 source = { type = "kiwix", name = "gutenberg_en_lcc-s", path = "books/" }
 
@@ -1399,6 +1514,7 @@ size_gb = 9.566
 tiers = ["field", "base"]
 priority = 3
 license = "Public domain"
+use = "any"
 description = "Project Gutenberg books in this Library of Congress class."
 source = { type = "kiwix", name = "gutenberg_en_lcc-t", path = "books/" }
 
@@ -1412,6 +1528,7 @@ size_gb = 12.883
 tiers = ["field", "base"]
 priority = 4
 license = "Public domain"
+use = "any"
 description = "Project Gutenberg books in this Library of Congress class."
 source = { type = "kiwix", name = "gutenberg_en_lcc-q", path = "books/" }
 
@@ -1425,6 +1542,7 @@ size_gb = 14.537
 tiers = ["base"]
 priority = 5
 license = "Public domain"
+use = "any"
 description = "Project Gutenberg books in this Library of Congress class."
 source = { type = "kiwix", name = "gutenberg_en_lcc-pz", path = "books/" }
 
@@ -1438,6 +1556,7 @@ size_gb = 0.906
 tiers = ["field", "base"]
 priority = 5
 license = "Public domain"
+use = "any"
 description = "Project Gutenberg books in this Library of Congress class."
 source = { type = "kiwix", name = "gutenberg_en_lcc-u", path = "books/" }
 
@@ -1451,6 +1570,7 @@ size_gb = 221.191
 tiers = ["ultimate"]
 priority = 6
 license = "Public domain"
+use = "any"
 description = "Every English public-domain book on Project Gutenberg, with covers."
 source = { type = "kiwix", name = "gutenberg_en_all", path = "gutenberg/" }
 
@@ -1464,6 +1584,7 @@ size_gb = 12.959
 tiers = ["base"]
 priority = 6
 license = "Public domain"
+use = "any"
 description = "Project Gutenberg books in this Library of Congress class."
 source = { type = "kiwix", name = "gutenberg_en_lcc-pr", path = "books/" }
 
@@ -1477,6 +1598,7 @@ size_gb = 11.588
 tiers = ["base"]
 priority = 6
 license = "Public domain"
+use = "any"
 description = "Project Gutenberg books in this Library of Congress class."
 source = { type = "kiwix", name = "gutenberg_en_lcc-ps", path = "books/" }
 
@@ -1490,6 +1612,7 @@ size_gb = 0.812
 tiers = ["field", "base"]
 priority = 6
 license = "Public domain"
+use = "any"
 description = "Project Gutenberg books in this Library of Congress class."
 source = { type = "kiwix", name = "gutenberg_en_lcc-v", path = "books/" }
 
@@ -1503,6 +1626,7 @@ size_gb = 8.59
 tiers = ["base", "ultimate"]
 priority = 7
 license = "CC BY-SA / per source"
+use = "any"
 description = "Public-domain source texts: historical documents, laws, literature."
 source = { type = "kiwix", name = "wikisource_en_all_maxi", path = "wikisource/" }
 
@@ -1519,6 +1643,7 @@ size_gb = 1.288
 tiers = ["field", "base"]
 priority = 5
 license = "CC BY-NC-ND"
+use = "personal"
 description = "TED talks on agriculture."
 source = { type = "kiwix", name = "ted_mul_agriculture", path = "ted/" }
 
@@ -1532,6 +1657,7 @@ size_gb = 0.872
 tiers = ["field", "base"]
 priority = 5
 license = "CC BY-NC-ND"
+use = "personal"
 description = "TED talks on water."
 source = { type = "kiwix", name = "ted_mul_water", path = "ted/" }
 
@@ -1545,6 +1671,7 @@ size_gb = 5.476
 tiers = ["base", "ultimate"]
 priority = 6
 license = "Per creator"
+use = "personal"                 # YouTube videos: the creator keeps the copyright
 description = "Security, communications and preparedness training videos."
 source = { type = "kiwix", name = "s2underground_en_all", path = "videos/" }
 
@@ -1558,6 +1685,7 @@ size_gb = 1.933
 tiers = ["field", "base"]
 priority = 6
 license = "CC BY-NC-ND"
+use = "personal"
 description = "TED talks on energy."
 source = { type = "kiwix", name = "ted_mul_energy", path = "ted/" }
 
@@ -1571,6 +1699,7 @@ size_gb = 2.362
 tiers = ["field", "base"]
 priority = 6
 license = "CC BY-NC-ND"
+use = "personal"
 description = "TED talks on food."
 source = { type = "kiwix", name = "ted_mul_food", path = "ted/" }
 
@@ -1584,6 +1713,7 @@ size_gb = 0.326
 tiers = ["field", "base"]
 priority = 6
 license = "CC BY-NC-ND"
+use = "personal"
 description = "TED talks on gardening."
 source = { type = "kiwix", name = "ted_mul_gardening", path = "ted/" }
 
@@ -1597,6 +1727,7 @@ size_gb = 7.838
 tiers = ["field", "base"]
 priority = 6
 license = "CC BY-NC-ND"
+use = "personal"
 description = "TED talks on health."
 source = { type = "kiwix", name = "ted_mul_health", path = "ted/" }
 
@@ -1610,6 +1741,7 @@ size_gb = 3.651
 tiers = ["field", "base"]
 priority = 6
 license = "CC BY-NC-ND"
+use = "personal"
 description = "TED talks on medicine."
 source = { type = "kiwix", name = "ted_mul_medicine", path = "ted/" }
 
@@ -1623,6 +1755,7 @@ size_gb = 2.899
 tiers = ["base", "ultimate"]
 priority = 7
 license = "Per creator"
+use = "personal"                 # YouTube videos: the creator keeps the copyright
 description = "Video series from the Canadian Prepper channel."
 source = { type = "kiwix", name = "canadian-prepper_en_bugoutconcepts", path = "videos/" }
 
@@ -1636,6 +1769,7 @@ size_gb = 0.879
 tiers = ["base", "ultimate"]
 priority = 7
 license = "Per creator"
+use = "personal"                 # YouTube videos: the creator keeps the copyright
 description = "Video series from the Canadian Prepper channel."
 source = { type = "kiwix", name = "canadian-prepper_en_bugoutroll", path = "videos/" }
 
@@ -1649,6 +1783,7 @@ size_gb = 2.147
 tiers = ["base", "ultimate"]
 priority = 7
 license = "Per creator"
+use = "personal"                 # YouTube videos: the creator keeps the copyright
 description = "Video series from the Canadian Prepper channel."
 source = { type = "kiwix", name = "canadian-prepper_en_preppingfood", path = "videos/" }
 
@@ -1662,6 +1797,7 @@ size_gb = 1.288
 tiers = ["base", "ultimate"]
 priority = 7
 license = "Per creator"
+use = "personal"                 # YouTube videos: the creator keeps the copyright
 description = "Video series from the Canadian Prepper channel."
 source = { type = "kiwix", name = "canadian-prepper_en_winterprepping", path = "videos/" }
 
@@ -1675,6 +1811,7 @@ size_gb = 3.973
 tiers = ["base", "ultimate"]
 priority = 7
 license = "Per creator"
+use = "personal"                 # YouTube videos: the creator keeps the copyright
 description = "Bushcraft and self-reliance videos."
 source = { type = "kiwix", name = "lrnselfreliance_en_all", path = "videos/" }
 
@@ -1688,6 +1825,7 @@ size_gb = 5.906
 tiers = ["field", "base"]
 priority = 7
 license = "CC BY-NC-ND"
+use = "personal"
 description = "TED talks on sustainability."
 source = { type = "kiwix", name = "ted_mul_sustainability", path = "ted/" }
 
@@ -1701,6 +1839,7 @@ size_gb = 2.255
 tiers = ["base", "ultimate"]
 priority = 7
 license = "Per creator"
+use = "personal"                 # YouTube videos: the creator keeps the copyright
 description = "Practical preparedness videos."
 source = { type = "kiwix", name = "urban-prepper_en_all", path = "videos/" }
 
@@ -1714,6 +1853,7 @@ size_gb = 91.268
 tiers = ["ultimate"]
 priority = 8
 license = "CC BY-NC-ND"
+use = "personal"
 description = "The full TED archive."
 source = { type = "kiwix", name = "ted_mul_all", path = "ted/" }
 
@@ -1730,6 +1870,7 @@ size_gb = 1.1
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 3
 license = "Apache-2.0"
+use = "any"
 description = "Smaller, ~10 tokens/s on a Pi 5; used in Endurance power mode."
 source = { type = "hf", repo = "Qwen/Qwen2.5-1.5B-Instruct-GGUF", file = "qwen2.5-1.5b-instruct-q4_k_m.gguf" }
 
@@ -1743,6 +1884,7 @@ size_gb = 2.5
 tiers = ["field", "base", "ultimate"]
 priority = 4
 license = "Apache-2.0"
+use = "any"
 description = "Answers Ask-the-Library questions from retrieved articles. ~3–5 tokens/s on a Pi 5 (estimate)."
 source = { type = "hf", repo = "unsloth/Qwen3-4B-Instruct-2507-GGUF", file = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf" }
 
@@ -1758,7 +1900,8 @@ lang = "zxx"
 size_gb = 0.05
 tiers = ["field", "base", "ultimate", "pocket"]
 priority = 1
-license = "MIT"
+license = "AGPL-3.0-only"
+use = "any"
 description = "This launcher, updater and device services. To update it like any other content, point it at your own copy of the repository: change this line to source = { type = \"git\", url = \"https://…/your-repo.git\", ref = \"refs/heads/stable\" }. Until then it is tracked, never fetched."
 source = { type = "manual" }
 
@@ -1772,6 +1915,7 @@ size_gb = 0.236
 tiers = ["field", "base", "ultimate"]
 priority = 4
 license = "GPL-3.0"
+use = "any"
 description = "Read ZIMs on an Android phone, away from the Badger. Sideload from the Badger; official standalone APK from download.kiwix.org."
 source = { type = "http", index = "https://download.kiwix.org/release/kiwix-android/", pattern = "(?<=href=\")(?:kiwix|org\\.kiwix\\.kiwixmobile\\.standalone)-v?(?P<v>\\d+(?:\\.\\d+)+)\\.apk(?=\")" }
 
@@ -1785,6 +1929,7 @@ size_gb = 0.05
 tiers = ["field", "base", "ultimate"]
 priority = 4
 license = "Open source (F-Droid)"
+use = "any"
 description = "Talk over LoRa mesh radios. Sideload from the Badger; F-Droid build."
 source = { type = "http", index = "https://f-droid.org/en/packages/com.geeksville.mesh/", pattern = "com\\.geeksville\\.mesh_(?P<v>\\d+)\\.apk", download_base = "https://f-droid.org/repo/" }
 
@@ -1798,6 +1943,7 @@ size_gb = 0.1
 tiers = ["field", "base", "ultimate"]
 priority = 4
 license = "Open source (F-Droid)"
+use = "any"
 description = "Offline maps with turn-by-turn navigation. Sideload from the Badger; F-Droid build."
 source = { type = "http", index = "https://f-droid.org/en/packages/app.organicmaps/", pattern = "app\\.organicmaps_(?P<v>\\d+)\\.apk", download_base = "https://f-droid.org/repo/" }
 
@@ -1811,6 +1957,7 @@ size_gb = 0.389
 tiers = ["field", "base", "ultimate"]
 priority = 4
 license = "GPL-3.0 (free edition)"
+use = "any"
 description = "Offline maps, topo, tracks; imports .obf files. Sideload from the Badger; official universal release APK (all phone CPUs), not a beta."
 # F-Droid only ships per-CPU OsmAnd~ builds and lists betas first; the official release
 # folder has one universal APK per stable version as net.osmand-X.Y.Z.apk (betas, store
@@ -1827,6 +1974,7 @@ size_gb = 0.02
 tiers = ["field", "base", "ultimate"]
 priority = 4
 license = "Open source (F-Droid)"
+use = "any"
 description = "Compass, backtrack, weather, astronomy, signaling — uses phone sensors. Sideload from the Badger; F-Droid build."
 source = { type = "http", index = "https://f-droid.org/en/packages/com.kylecorry.trail_sense/", pattern = "com\\.kylecorry\\.trail_sense_(?P<v>\\d+)\\.apk", download_base = "https://f-droid.org/repo/" }
 
@@ -1840,6 +1988,7 @@ size_gb = 0.05
 tiers = ["field", "base", "ultimate"]
 priority = 7
 license = "GPL-3.0"
+use = "any"
 description = "Lets a browser open ZIM files directly."
 source = { type = "git", url = "https://github.com/kiwix/kiwix-js.git", ref = "HEAD" }
 
@@ -1856,5 +2005,6 @@ size_gb = 0.0
 tiers = ["field", "base", "ultimate"]
 priority = 1
 license = "Yours"
+use = "any"
 description = "IDs, insurance, deeds, medical records, emergency plan — encrypted on the Badger (see docs/OPERATIONS.md)."
 source = { type = "manual" }

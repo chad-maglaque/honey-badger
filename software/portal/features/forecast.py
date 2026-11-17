@@ -9,7 +9,9 @@ prepper-forecast.service (software/speech/forecastd.py), never in the portal. Th
     service) and switch the board / mesh posts on or off;
   * posts each NEW forecast once: to the community board (default on, at most every 6 h) and its
     short version (≤ 200 bytes) to the mesh community channel (default on, at most twice a day).
-    A small watcher thread started in setup() does this.
+    A small watcher thread started in setup() does this. On the mesh it is an automatic note (kind
+    "auto": lowest priority, local hop limit) with the dedupe key "forecast:<MHz>:<date>:<AM|PM>", so
+    of all the Badgers listening to the same NOAA transmitter only one posts it (docs/MESH.md).
 
 Files in ctx.data_dir() (written by the service unless noted): latest.json, index.json,
 history/<id>.json, status.json, settings.json (admin, from here), posted.json (here),
@@ -141,6 +143,22 @@ def save_settings(req, ctx, args):
 
 # ─────────────────────────────── posting ─────────────────────────────────────
 
+def mesh_key(rec: dict) -> str:
+    """The same on every Badger that hears the same transmitter in the same half day."""
+    f = rec.get("freq")
+    freq = f"{f:.3f}" if isinstance(f, (int, float)) and not isinstance(f, bool) else "?"
+    at = rec.get("at") if isinstance(rec.get("at"), (int, float)) and not isinstance(rec.get("at"), bool) else time.time()
+    lt = time.localtime(at)
+    return f"forecast:{freq}:{time.strftime('%Y-%m-%d', lt)}:{'AM' if lt.tm_hour < 12 else 'PM'}"
+
+
+def _mesh_send(ctx, text: str, key: str) -> bool:
+    try:
+        return bool(ctx.mesh_send(text, "community", kind="auto", dedupe=key))
+    except TypeError:                                  # an older portal: plain call
+        return bool(ctx.mesh_send(text, "community"))
+
+
 def board_text(rec: dict) -> str:
     lines = ["New NOAA forecast (automatically transcribed from the weather radio — may contain errors):"]
     if rec.get("short"):
@@ -180,7 +198,7 @@ def check_and_post(ctx, now: float | None = None) -> dict:
             sends = [t for t in posted.get("mesh_at", []) if isinstance(t, (int, float)) and now - t < 86400]
             short = rec.get("short")
             if c["post_mesh"] and isinstance(short, str) and short.strip() and len(sends) < c["mesh_per_day"]:
-                if ctx.mesh_send(short, "community"):
+                if _mesh_send(ctx, short, mesh_key(rec)):
                     sends.append(now)
                     did["mesh"] = True
             posted["mesh_at"] = sends

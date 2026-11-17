@@ -390,10 +390,14 @@ class FakeIface:
     def __init__(self, nodes=None):
         self.nodes = nodes or {}
         self.sent = []
+        self.data_sent = []
         self.localNode = FakeLocalNode()
 
     def sendText(self, text, destinationId=None, channelIndex=0):
         self.sent.append((text, destinationId, channelIndex))
+
+    def sendData(self, data, destinationId="^all", portNum=256, wantAck=False, channelIndex=0):
+        self.data_sent.append((bytes(data), portNum, channelIndex))     # mesh-courtesy control packets
 
     def getMyNodeInfo(self):
         return {"user": {"id": "!badger00"}}
@@ -430,7 +434,7 @@ class Bridge(unittest.TestCase):
                 sys.modules[k] = v
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_main(self, radio: dict, outbox=(), loops=1):
+    def run_main(self, radio: dict, outbox=(), loops=1, clock_step=None):
         t = self.tmp
         lines = [f"{k} = {json.dumps(v)}" for k, v in radio.items()]
         (t / "prepper.toml").write_text("[radio]\n" + "\n".join(lines) + f"""
@@ -462,12 +466,16 @@ mesh_bt_pin_file = "{t}/mesh-bt-pin.json"
         ps.pub = types.SimpleNamespace(subscribe=lambda fn, topic: self.subs.__setitem__(topic, fn))
         sys.modules.update({"meshtastic": mt, "meshtastic.serial_interface": si, "pubsub": ps})
         n = [0]
+        fake_now = [time.time()]
 
         def sleep(_s):
             n[0] += 1
+            if clock_step is not None:
+                fake_now[0] += clock_step                 # a fake clock: each loop is clock_step seconds
             if n[0] >= loops:
                 raise _Stop
-        mb.time = types.SimpleNamespace(time=time.time, sleep=sleep, strftime=time.strftime, gmtime=time.gmtime)
+        now = time.time if clock_step is None else (lambda: fake_now[0])
+        mb.time = types.SimpleNamespace(time=now, sleep=sleep, strftime=time.strftime, gmtime=time.gmtime)
         with contextlib.redirect_stderr(io.StringIO()):
             try:
                 mb.main()
@@ -630,13 +638,55 @@ mesh_bt_pin_file = "{t}/mesh-bt-pin.json"
         self.assertEqual(problems, [])
 
     def test_alerts_relayed_once_on_both_channels(self):
+        # CHANGED (mesh courtesy): an alert that is already live when the bridge starts waits a random
+        # 30–120 s quiet period (a town-wide restart must not storm the mesh), and even a Badger that has
+        # heard no other Badger waits 0–5 s. Here the quiet period is switched off and a fake clock runs
+        # 1 s per loop; it is still relayed exactly once per channel, now with its "#tag".
         (self.tmp / "alerts.json").write_text(json.dumps([
             {"id": "TOR", "event": "Tornado Warning", "areas": "here", "expires": "18:30", "expires_ts": time.time() + 600},
             {"id": "RWT", "event": "Test", "test": True, "expires_ts": time.time() + 600}]))
-        sent = self.run_main({"mesh_family_channel": 1, "mesh_public_channel": 0}, loops=3)
+        sent = self.run_main({"mesh_family_channel": 1, "mesh_public_channel": 0, "mesh_boot_quiet_s": 0},
+                             loops=12, clock_step=1.0)
         self.assertEqual(sorted(ch for t, _, ch in sent if "Tornado" in t), [0, 1])
+        self.assertTrue(all(t.endswith(" #" + mb.tag_of("alert:TOR")) for t, _, _ in sent if "Tornado" in t))
         self.assertFalse(any("Test" in t for t, _, _ in sent))
 
+    def test_alerts_live_at_boot_wait_for_the_quiet_period(self):
+        (self.tmp / "alerts.json").write_text(json.dumps([
+            {"id": "TOR", "event": "Tornado Warning", "areas": "here", "expires": "18:30", "expires_ts": time.time() + 900}]))
+        sent = self.run_main({"mesh_family_channel": 1, "mesh_public_channel": 0}, loops=29, clock_step=1.0)
+        self.assertEqual([t for t, _, _ in sent if "Tornado" in t], [])              # < 30 s after start: quiet
+        sent = self.run_main({"mesh_family_channel": 1, "mesh_public_channel": 0}, loops=130, clock_step=1.0)
+        self.assertEqual(sorted(ch for t, _, ch in sent if "Tornado" in t), [0, 1])   # by 120 s: relayed once
+
+
+    # — mesh courtesy in main() (more in tests/test_mesh_courtesy.py) —
+    def test_main_listens_for_badger_control_packets_and_writes_the_status_file(self):
+        self.run_main({"mesh_family_channel": 1, "mesh_public_channel": 0})
+        self.assertIn("meshtastic.receive", self.subs)                   # PRIVATE_APP beacons / claims
+        peers = self.tmp / "mesh-peers.json"
+        self.assertEqual(oct(peers.stat().st_mode & 0o777), "0o640")
+        doc = json.loads(peers.read_text())
+        self.assertEqual((doc["enabled"], doc["silent"], doc["peers_active"]), (True, False, 0))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.subs["meshtastic.receive"]({"fromId": "!0000beef", "channel": 1, "decoded": {
+                "portnum": "PRIVATE_APP", "payload": mb.encode_beacon()}}, self.iface)
+            self.subs["meshtastic.receive"]({"fromId": "!0000beef", "decoded": {"portnum": "PRIVATE_APP",
+                                                                                 "payload": b"\xff" * 70}}, self.iface)
+            self.subs["meshtastic.receive"](None, self.iface)
+
+    def test_main_radio_silence_flag_file(self):
+        (self.tmp / "mesh-silent").write_text(json.dumps({"until": time.time() + 600, "by": "panel"}))
+        (self.tmp / "alerts.json").write_text(json.dumps([
+            {"id": "TOR", "event": "Tornado Warning", "areas": "here", "expires": "18:30", "expires_ts": time.time() + 900}]))
+        sent = self.run_main({"mesh_family_channel": 1, "mesh_public_channel": 0, "mesh_boot_quiet_s": 0},
+                             [{"text": "C", "board": "community"}, {"text": "Ana: F", "board": "family", "member": True},
+                              {"text": "Supplies: F2", "board": "family"}], loops=12, clock_step=1.0)
+        self.assertEqual([(t, ch) for t, _, ch in sent], [("Ana: F", 1)])   # only what a member typed for family
+        self.rx("!help", "!12345678", 0)
+        self.assertEqual(len(self.iface.sent), 1)                        # heard, not answered
+        self.assertEqual(self.iface.data_sent, [])
+        self.assertTrue(json.loads((self.tmp / "mesh-peers.json").read_text())["silent"])
 
     # — fixes: pacing, mesh-in limits, telemetry —
     def test_community_flood_is_paced_and_never_delays_family_posts(self):

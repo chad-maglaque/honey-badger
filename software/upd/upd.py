@@ -98,13 +98,21 @@ class Config:
     protomaps_http: str = "https://build.protomaps.com/"
     timeout: int = 30
     hooks: dict[str, str] = dataclasses.field(default_factory=dict)
+    # [device] provisioning: "owner" (built by the people who use it: everything in the
+    # tier, as always) or "sale" (built to be sold: "personal" items wait for the owner's
+    # acceptance, recorded by the launcher in personal_file). See personal_allowed().
+    provisioning: str = "owner"
+    personal_file: Path = Path("/var/lib/prepper/portal/personal-content.json")
 
     @classmethod
     def load(cls, path: str | Path) -> "Config":
         p = Path(path)
         raw: dict[str, Any] = {}
+        device: dict[str, Any] = {}
         if p.exists():
-            raw = tomllib.loads(p.read_text()).get("upd", {})
+            doc = tomllib.loads(p.read_text())
+            raw = doc.get("upd", {})
+            device = doc.get("device", {}) if isinstance(doc.get("device"), dict) else {}
         base = Path(raw.get("data_root", "/srv/prepper"))
         cfg = cls(
             data_root=base,
@@ -113,14 +121,14 @@ class Config:
             report_dir=Path(raw.get("report_dir", "/var/lib/prepper/reports")),
         )
         for f in dataclasses.fields(cls):
-            if f.name in raw and f.name not in ("data_root", "state_file", "catalog", "report_dir"):
+            if f.name in raw and f.name not in ("data_root", "state_file", "catalog", "report_dir", "provisioning"):
                 v = raw[f.name]
                 try:
                     if f.name in ("peers", "languages", "pins"):
                         if isinstance(v, str):
                             raise TypeError("expected a list")
                         v = tuple(str(x) for x in v)
-                    elif f.name in ("allowed_signers", "signing_key"):
+                    elif f.name in ("allowed_signers", "signing_key", "personal_file"):
                         v = Path(v)
                     elif f.name in ("budget_gb", "reserve_gb"):
                         v = float(v)
@@ -137,7 +145,8 @@ class Config:
                     raise SystemExit(f"upd: bad [upd] {f.name} = {v!r} in {p}: {e}") from None
                 setattr(cfg, f.name, v)
         # relative paths in the config are relative to the config file
-        for name in ("catalog", "state_file", "report_dir", "allowed_signers", "signing_key"):
+        cfg.provisioning = provisioning_mode(device.get("provisioning", "owner"), p)
+        for name in ("catalog", "state_file", "report_dir", "allowed_signers", "signing_key", "personal_file"):
             val = getattr(cfg, name)
             if not val.is_absolute():
                 setattr(cfg, name, (p.parent / val).resolve())
@@ -160,6 +169,7 @@ class Item:
     description: str = ""
     license: str = ""
     priority: int = 5          # 1 = keep even on the smallest device … 9 = nice to have
+    use: str = "personal"      # "any" | "personal" (non-commercial only); unknown counts as personal
 
     @property
     def dir(self) -> str:
@@ -181,25 +191,37 @@ def load_catalog(path: Path) -> list[Item]:
             renderer=raw.get("renderer", raw["kind"]), lang=raw.get("lang", "eng"),
             description=raw.get("description", ""), license=raw.get("license", ""),
             priority=int(raw.get("priority", 5)),
+            use=item_use(raw.get("use"), raw.get("license", "")),
         ))
     return items
 
 
-def wanted(items: Iterable[Item], cfg: Config) -> list[Item]:
+def wanted(items: Iterable[Item], cfg: Config, record: dict | None = None) -> list[Item]:
     """Items this device should hold.
 
     Badger editions take everything tagged with their tier. Laptop / tablet
     editions set budget_gb: pins go first, then items by priority (smallest
     first within a priority) until the budget is spent. Anything left out is
     still reachable live from the Badger over Wi-Fi.
+
+    Items whose licence is for personal use only are left out — before tiers,
+    pins and the budget are looked at, so nothing can select them back in —
+    unless personal_allowed() says this Badger may hold them.
     """
+    if record is None:
+        record = load_personal_record(cfg)
+    items = [i for i in items if personal_allowed(i, cfg, record)]
+    return _select(items, cfg)
+
+
+def _select(items: list[Item], cfg: Config) -> list[Item]:
     langs = set(cfg.languages) | {"mul", "zxx"}
     pool = [i for i in items if cfg.tier in i.tiers and i.lang in langs]
     if cfg.budget_gb <= 0:
         return pool
     by_id = {i.id: i for i in items}
     chosen, used = [], 0.0
-    for pid in cfg.pins:                       # pins may come from outside the tier
+    for pid in cfg.pins:                       # pins may come from outside the tier (never past the licence rule)
         if pid in by_id and by_id[pid] not in chosen:
             chosen.append(by_id[pid]); used += by_id[pid].size_gb
     for i in sorted(pool, key=lambda i: (i.priority, i.size_gb)):
@@ -208,6 +230,261 @@ def wanted(items: Iterable[Item], cfg: Config) -> list[Item]:
         if used + i.size_gb <= cfg.budget_gb:
             chosen.append(i); used += i.size_gb
     return chosen
+
+
+# ─────────────────── personal-use (non-commercial) content ───────────────────
+#
+# Some catalog items are licensed for non-commercial / personal use only
+# (`use = "personal"`). A Badger built to be sold ([device] provisioning =
+# "sale", `prepper-build --for-sale`) never fetches them by itself: the owner is
+# offered them at first setup, and only what the owner accepts (recorded by the
+# launcher in [upd] personal_file) is downloaded — by the owner's own Badger.
+# Badgers built by the people who use them ("owner", the default) hold them as
+# always, unless the owner removed them. This is enforced in wanted(), so every
+# path that installs content (internet, peers, USB bundles, first pull, clone)
+# obeys it, and adopt() checks it too.
+
+USES = ("any", "personal")
+PROVISIONING = ("owner", "sale")
+# Any licence naming NC, "non-commercial" or "personal use" is personal-use
+# content, whatever the catalog's `use` says.
+NONCOMMERCIAL = re.compile(r"(?<![A-Za-z])NC(?![A-Za-z])|non-?commercial|personal[ -]use", re.I)
+PERSONAL_RECORD_LIMIT = 256 << 10
+PERSONAL_NOTICE = 1            # bump when the wording the owner agrees to changes (static/app.js)
+_personal_lock = threading.Lock()
+
+
+def licence_is_noncommercial(text: Any) -> bool:
+    return isinstance(text, str) and bool(NONCOMMERCIAL.search(text))
+
+
+def item_use(value: Any, licence: Any) -> str:
+    """The catalog's `use`, failing safe: missing, misspelt or contradicted by
+    the licence text → "personal"."""
+    if licence_is_noncommercial(licence):
+        return "personal"
+    return value if isinstance(value, str) and value in USES else "personal"
+
+
+def provisioning_mode(value: Any, source: Any = None) -> str:
+    if isinstance(value, str) and value in PROVISIONING:
+        return value
+    log(f"[device] provisioning = {value!r} in {source} is not \"owner\" or \"sale\"; "
+        "treating this Badger as built for sale (personal-use content waits for the owner)")
+    return "sale"
+
+
+def clean_personal_record(rec: Any) -> dict:
+    """Only well-formed fields of the launcher's record survive; anything else
+    reads as "nothing accepted"."""
+    if not isinstance(rec, dict):
+        return {}
+    out: dict[str, Any] = {}
+    acc = rec.get("accepted")
+    if isinstance(acc, dict) and isinstance(acc.get("items"), list):
+        items = []
+        for x in acc["items"][:1000]:
+            if isinstance(x, dict) and isinstance(x.get("id"), str) and SAFE_ID.fullmatch(x["id"]):
+                items.append({k: x[k] for k in ("id", "title", "license") if isinstance(x.get(k), str)}
+                             | ({"size_gb": x["size_gb"]} if isinstance(x.get("size_gb"), (int, float))
+                                and not isinstance(x.get("size_gb"), bool) else {}))
+        meta = {k: acc[k] for k in ("at", "by", "ip") if isinstance(acc.get(k), str)}
+        if isinstance(acc.get("notice"), int) and not isinstance(acc.get("notice"), bool):
+            meta["notice"] = acc["notice"]
+        if isinstance(acc.get("licences"), list):
+            meta["licences"] = [s for s in acc["licences"][:100] if isinstance(s, str)]
+        out["accepted"] = {**meta, "items": items}
+    for k in ("later_at", "withdrawn_at"):
+        if isinstance(rec.get(k), str) and rec[k]:
+            out[k] = rec[k][:40]
+    if isinstance(rec.get("history"), list):
+        out["history"] = [x for x in rec["history"][-50:] if isinstance(x, dict)]
+    return out
+
+
+def load_personal_record(cfg: Config) -> dict:
+    """The owner's decision about personal-use content ({} = none yet, or the
+    file can't be read: nothing is accepted)."""
+    p = cfg.personal_file
+    try:
+        if p.is_symlink() or not p.is_file() or p.stat().st_size > PERSONAL_RECORD_LIMIT:
+            return {}
+        return clean_personal_record(json.loads(p.read_text(encoding="utf-8")))
+    except (OSError, ValueError, RecursionError):
+        return {}
+
+
+def accepted_ids(record: dict) -> set[str]:
+    if record.get("withdrawn_at"):
+        return set()
+    return {x["id"] for x in (record.get("accepted") or {}).get("items", [])}
+
+
+def personal_allowed(item: Item, cfg: Config, record: dict) -> bool:
+    """May this Badger hold `item`? Everything licensed for any use: yes. Personal-
+    use items: not after the owner removed them; on an owner-built Badger, yes;
+    on a Badger built for sale, only the ones the owner accepted."""
+    if item.use == "any" and not licence_is_noncommercial(item.license):
+        return True
+    if record.get("withdrawn_at"):
+        return False
+    if cfg.provisioning == "owner":
+        return True
+    return item.id in accepted_ids(record)
+
+
+def held_personal(items: Iterable[Item], cfg: Config, record: dict | None = None) -> list[Item]:
+    """Personal-use items this Badger's tier, pins and budget would select but the
+    licence rule holds back (they wait for the owner's acceptance)."""
+    record = load_personal_record(cfg) if record is None else record
+    return [i for i in _select(list(items), cfg) if not personal_allowed(i, cfg, record)]
+
+
+def personal_offer(cfg: Config, items: list[Item] | None = None, state: "State | None" = None,
+                   record: dict | None = None) -> dict:
+    """Everything the launcher shows about personal-use content."""
+    items = load_catalog(cfg.catalog) if items is None else items
+    state = State(cfg.state_file) if state is None else state
+    record = load_personal_record(cfg) if record is None else record
+    acc = accepted_ids(record)
+    selectable = {i.id for i in _select(items, cfg)}
+    rows, pending = [], []
+    for i in items:
+        if i.use == "any" and not licence_is_noncommercial(i.license):
+            continue
+        installed = bool(state.get(i.id))
+        if i.id not in selectable and not installed and i.id not in acc:
+            continue
+        allowed = personal_allowed(i, cfg, record)
+        manual = i.source.get("type", "manual") == "manual"
+        if i.id in selectable and not allowed:
+            pending.append(i.id)
+        rows.append({"id": i.id, "title": i.title, "category": i.category, "license": i.license,
+                     "size_gb": i.size_gb, "manual": manual, "allowed": allowed,
+                     "accepted": i.id in acc, "installed": installed, "in_tier": i.id in selectable})
+    withdrawn = bool(record.get("withdrawn_at"))
+    if not pending or (cfg.provisioning == "owner" and not withdrawn):
+        offer = None
+    elif cfg.provisioning == "sale" and not acc and not record.get("later_at") and not withdrawn:
+        offer = "first-run"
+    else:
+        offer = "notice"
+    installed_ids = [r["id"] for r in rows if r["installed"]]
+    acc_meta = record.get("accepted") if not withdrawn else None
+    return {
+        "provisioning": cfg.provisioning,
+        "offer": offer,
+        "items": rows,
+        "pending": pending,
+        "pending_gb": round(sum(r["size_gb"] for r in rows if r["id"] in pending and not r["manual"]), 3),
+        "installed": installed_ids,
+        "accepted": ({k: v for k, v in acc_meta.items() if k != "items"} | {"items": sorted(acc)})
+        if acc_meta else None,
+        "later_at": record.get("later_at"),
+        "withdrawn_at": record.get("withdrawn_at"),
+        "notice": PERSONAL_NOTICE,
+        # A unit built for sale is ready to sell only while it holds no personal-use
+        # content and nobody has accepted on the buyer's behalf.
+        "sale_ready": cfg.provisioning == "sale" and not installed_ids and not acc,
+    }
+
+
+def record_personal_decision(cfg: Config, action: str, *, items: list[str] | None = None,
+                             by: str = "", ip: str = "") -> dict:
+    """The owner's choice, from the launcher: "accept" (all pending items, or the
+    listed ones), "later" (not now: keep offering in Settings / Status) or
+    "withdraw" (remove them; the next `upd apply` deletes them from the drive).
+    Returns the new record. ValueError for a bad request."""
+    if action not in ("accept", "later", "withdraw"):
+        raise ValueError("unknown action")
+    with _personal_lock:
+        catalog = load_catalog(cfg.catalog)
+        record = load_personal_record(cfg)
+        offer = personal_offer(cfg, catalog, record=record)
+        now = now_iso()
+        who = re.sub(r"[\x00-\x1f\x7f]", "", by).strip()[:64] or "the owner (admin)"
+        hist = list(record.get("history", []))
+        if action == "accept":
+            pending = offer["pending"]
+            if items is not None:
+                if not isinstance(items, list) or len(items) > 1000 \
+                        or not all(isinstance(x, str) for x in items):
+                    raise ValueError("items must be a list of ids")
+                bad = sorted(set(items) - set(pending))
+                if bad:
+                    raise ValueError("not offered on this Badger: " + ", ".join(bad[:5]))
+                chosen = [x for x in pending if x in set(items)]
+            else:
+                chosen = list(pending)
+            if not chosen:
+                raise ValueError("nothing to accept")
+            by_id = {i.id: i for i in catalog}
+            keep = [] if record.get("withdrawn_at") else list((record.get("accepted") or {}).get("items", []))
+            have = {x["id"] for x in keep}
+            keep += [{"id": x, "title": by_id[x].title, "license": by_id[x].license,
+                      "size_gb": by_id[x].size_gb} for x in chosen if x not in have]
+            record["accepted"] = {"at": now, "by": who, "ip": ip[:64], "notice": PERSONAL_NOTICE,
+                                  "licences": sorted({x.get("license", "") for x in keep}), "items": keep}
+            record.pop("withdrawn_at", None)
+            hist.append({"at": now, "event": "accepted", "by": who, "ip": ip[:64], "items": chosen,
+                         "licences": sorted({by_id[x].license for x in chosen}), "notice": PERSONAL_NOTICE})
+        elif action == "later":
+            record["later_at"] = now
+            hist.append({"at": now, "event": "not now", "by": who, "ip": ip[:64]})
+        else:
+            removed = sorted(accepted_ids(record)) or offer["installed"]
+            record.pop("accepted", None)
+            record["withdrawn_at"] = now
+            hist.append({"at": now, "event": "removed", "by": who, "ip": ip[:64], "items": removed})
+        record["history"] = hist[-50:]
+        record["format"] = 1
+        cfg.personal_file.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(cfg.personal_file, json.dumps(record, indent=2, sort_keys=True))
+        return clean_personal_record(record)
+
+
+def prune_withdrawn(cfg: Config, state: "State", items: list[Item], record: dict) -> list[str]:
+    """After the owner removed personal-use content (and only then — never just
+    because of the provisioning mode), delete those items from the drive, once
+    per removal. Paths come from the ledger and must stay inside data_root."""
+    at = record.get("withdrawn_at")
+    if not at or state.data.get("personal_pruned") == at:
+        return []
+    by_id = {i.id: i for i in items}
+    root = cfg.data_root.resolve()
+    removed, hooks = [], {}
+    for item_id, rec in sorted(state.data["items"].items()):
+        it = by_id.get(item_id)
+        if it is None or personal_allowed(it, cfg, record):
+            continue
+        for rel in (rec.get("path"), (rec.get("previous") or {}).get("path")):
+            rel = safe_rel(rel)
+            if not rel:
+                continue
+            p = cfg.data_root / rel
+            try:
+                parent = p.parent.resolve()
+            except OSError:
+                continue
+            if parent == root or root in parent.parents:
+                remove_path(parent / p.name)           # a symlink: only the link goes
+        cur = cfg.data_root / it.dir / f"{it.id}.current"
+        if cur.is_symlink():
+            cur.unlink()
+        state.data["items"].pop(item_id, None)
+        state.data["history"].append({"at": now_iso(), "id": item_id, "version": rec.get("version"),
+                                      "event": "removed (personal-use licence withdrawn)"})
+        removed.append(item_id)
+        cmd = hook_for(it, cfg)
+        if cmd and cmd not in hooks and "self-update-hook" not in cmd:
+            hooks[cmd] = it
+        log(f"removed {item_id} (the owner withdrew personal-use content)")
+    state.data["personal_pruned"] = at
+    state.data["history"] = state.data["history"][-500:]
+    state.save()
+    for it in hooks.values():                         # e.g. rebuild the Kiwix library without them
+        run_hook(it, cfg, None)
+    return removed
 
 
 # ───────────────────────────────── state ─────────────────────────────────────
@@ -966,8 +1243,13 @@ def build_plan(cfg: Config, offline: bool = False, only: set[str] | None = None,
             if k not in peer_offers or offer_is_newer(v, _as_local(peer_offers[k])):
                 peer_offers[k] = v
 
+    record = load_personal_record(cfg)
+    for i in held_personal(items, cfg, record):
+        if i.id in peer_offers and (not only or i.id in only):
+            log(f"not taking {i.id} from {peer_offers[i.id].origin}: licensed for personal use only "
+                "— the owner must accept it first (launcher: Settings)")
     plan = []
-    for item in wanted(items, cfg):
+    for item in wanted(items, cfg, record):
         if only and item.id not in only:
             continue
         local = state.get(item.id)
@@ -1023,7 +1305,12 @@ def write_report(cfg: Config, plan: list[PlanEntry]) -> Path:
         "download_bytes": sum(p.download_bytes or 0 for p in plan if p.status in ("update", "install")),
         "free_bytes": free_bytes(cfg.data_root),
         "items": [p.as_dict() for p in plan],
+        "provisioning": cfg.provisioning,
     }
+    try:                     # personal-use items waiting for the owner's acceptance (not downloaded)
+        summary["personal_held"] = [i.id for i in held_personal(load_catalog(cfg.catalog), cfg)]
+    except (OSError, tomllib.TOMLDecodeError, KeyError, ValueError):
+        summary["personal_held"] = []
     summary["download_human"] = human(summary["download_bytes"])
     path = cfg.report_dir / "last-check.json"
     atomic_write(path, json.dumps(summary, indent=2))
@@ -1559,6 +1846,8 @@ def cmd_apply(cfg: Config, args) -> int:
         return 0
     try:
         with run_lock(cfg):
+            if not args.dry_run:
+                prune_withdrawn(cfg, State(cfg.state_file), load_catalog(cfg.catalog), load_personal_record(cfg))
             plan = build_plan(cfg, offline=args.offline, only=set(args.only or []) or None)
             write_report(cfg, plan)
             rc = apply_plan(cfg, plan, args.dry_run)
@@ -1578,6 +1867,8 @@ def cmd_import(cfg: Config, args) -> int:
             if not offers:
                 log("nothing importable (missing, unsigned, or untrusted bundle)")
                 return 1
+            if not args.dry_run:
+                prune_withdrawn(cfg, State(cfg.state_file), load_catalog(cfg.catalog), load_personal_record(cfg))
             plan = build_plan(cfg, offline=True, only=set(args.only or []) or None, offers=offers)
             print_plan(plan)
             return apply_plan(cfg, plan, args.dry_run)
@@ -1721,6 +2012,11 @@ def cmd_status(cfg: Config, args) -> int:
             print(f"   ! post-install hook {h['status']}" + (f" (exit {h.get('rc')})" if "rc" in h else "")
                   + f" at {h.get('at')}: {h.get('cmd')}  — retried on the next apply")
     du = shutil.disk_usage(cfg.data_root) if cfg.data_root.exists() else None
+    held = held_personal(list(items.values()), cfg)
+    if cfg.provisioning == "sale" or held:
+        print(f"\n provisioning: {cfg.provisioning}"
+              + (f"; {len(held)} personal-use items wait for the owner's acceptance: "
+                 + ", ".join(i.id for i in held) if held else ""))
     print(f"\n {len(state.data['items'])} items, {human(total)}"
           + (f"; {human(du.free)} free of {human(du.total)}" if du else ""))
     return 0
@@ -1804,6 +2100,9 @@ def _adopt(cfg: Config, args) -> int:
     item = items.get(args.id)
     if not item:
         raise SystemExit(f"upd: no catalog item {args.id!r}")
+    if not personal_allowed(item, cfg, load_personal_record(cfg)):
+        raise SystemExit(f"upd: {item.id} is licensed for personal use only ({item.license}). This Badger was "
+                         "built for sale: its owner must accept the licence first (launcher → Settings)")
     target = Path(args.path) if args.path else cfg.data_root / item.dir / item.id
     if not target.is_absolute():
         target = cfg.data_root / target

@@ -513,7 +513,7 @@ def h_moderate(req, ctx, args):
             wait = _mesh_limit.check("mesh", cfg["mesh_hour"])
             if wait:
                 return (429, {"error": "Radio airtime limit reached (" + str(cfg["mesh_hour"]) + " announcements an hour). " + C.wait_msg(wait)}), False
-            if not ctx.mesh_send(msg, "community"):
+            if not _mesh_send(ctx, msg, f"missing:{p.get('id')}:{p.get('status')}"):
                 return (500, {"error": "Couldn't queue the announcement for the radio."}), False
             mesh.update(state="sent", sent_at=_now(), sent_status=p.get("status"), text=msg)
             if cfg["board_copy"]:
@@ -524,6 +524,15 @@ def h_moderate(req, ctx, args):
             return (200, {"ok": True, "sent": msg}), True
         return (200, {"ok": True}), True
     return _store(ctx).update(f)
+
+
+def _mesh_send(ctx, msg: str, key: str) -> bool:
+    """A community note on the mesh (docs/MESH.md), with a dedupe key from the post (and its status, so a
+    FOUND SAFE follow-up is not taken for a repeat of the MISSING note)."""
+    try:
+        return bool(ctx.mesh_send(msg, "community", kind="community", dedupe=key))
+    except TypeError:                                  # an older portal: plain call
+        return bool(ctx.mesh_send(msg, "community"))
 
 
 def setup(ctx):

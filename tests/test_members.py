@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -228,7 +229,11 @@ services = {{}}
         self.assertEqual((last["name"], last["text"], last["verified"]), ("Ana", "At the gym, all OK", True))   # name can't be spoofed
         self.assertNotIn("member", last)
         out = [json.loads(x) for x in (self.tmp / "mesh-outbox.jsonl").read_text().splitlines()]
-        self.assertEqual(out[-1], {"text": "Ana: At the gym, all OK", "board": "family"})
+        # CHANGED (mesh courtesy): outbox lines now also carry "kind" (priority), "at" (expiry) and "member"
+        # (typed by a member: may go out on the family channel during radio silence) — see docs/MESH.md
+        at = out[-1].pop("at")
+        self.assertLessEqual(abs(at - time.time()), 60)
+        self.assertEqual(out[-1], {"text": "Ana: At the gym, all OK", "board": "family", "kind": "family", "member": True})
         # the community board never sees family posts
         self.assertNotIn("At the gym, all OK", json.dumps(self.req("GET", "/api/board")[1]))
 

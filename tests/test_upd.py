@@ -537,6 +537,49 @@ source = { type = "kiwix", name = "gardenology.org_en_all", path = "other/" }
         cfg.budget_gb = 80
         self.assertIn("wikipedia_en_all_nopic", {i.id for i in upd.wanted(cat, cfg)})
 
+    def test_sale_editions_never_select_personal_items(self):
+        cat = upd.load_catalog(REPO / "content/catalog.toml")
+        personal = {i.id for i in cat if i.use == "personal"}
+        cfg = upd.Config.load("/nonexistent")
+        cfg.provisioning, cfg.personal_file = "sale", self.tmp / "no-record.json"
+        cfg.languages = ("eng", "spa", "fra")
+        for tier in ("field", "base", "ultimate", "pocket"):
+            cfg.tier, cfg.budget_gb, cfg.pins = tier, 0, ()
+            self.assertFalse({i.id for i in upd.wanted(cat, cfg)} & personal, tier)
+            cfg.budget_gb, cfg.pins = 5000, tuple(sorted(personal))
+            self.assertFalse({i.id for i in upd.wanted(cat, cfg)} & personal, f"{tier} with pins")
+
+    def test_internet_plan_skips_personal_items_on_a_sale_unit(self):
+        self.publish_base()
+        self.mirror.publish_zim("other", "nc_course_en", "2026-01", b"N" * 500, in_opds=False)
+        self.mirror.finalize(self.base)
+        # (the test catalog's items carry no `use`, which counts as personal: mark them open)
+        cat = self.catalog().replace("source = {", 'license = "CC BY-SA"\nuse = "any"\nsource = {') + """
+[[item]]
+id = "nc_course_en"
+title = "Non-commercial course"
+category = "learn"
+kind = "zim"
+size_gb = 0.0001
+tiers = ["base"]
+license = "CC BY-NC-SA"
+use = "personal"
+source = { type = "kiwix", name = "nc_course_en", path = "other/" }
+"""
+        owner = self.disk("own", catalog=cat)
+        self.assertEqual(self.plan(owner)["nc_course_en"].status, "install", "owner-built: as before")
+        sale = self.disk("sale", catalog=cat, extra='personal_file = "personal.json"')
+        (self.tmp / "sale" / "prepper.toml").write_text('[device]\nprovisioning = "sale"\n'
+                                                       + (self.tmp / "sale" / "prepper.toml").read_text())
+        sale = upd.Config.load(self.tmp / "sale" / "prepper.toml")
+        p = self.plan(sale)
+        self.assertNotIn("nc_course_en", p)
+        self.assertEqual(p["wiki_test_maxi"].status, "install")
+        self.assertEqual(upd.apply_plan(sale, list(p.values()), dry_run=False), 0)
+        self.assertFalse(list((sale.data_root / "zim").glob("nc_course_en*")))
+        upd.record_personal_decision(sale, "accept", by="new owner")
+        self.assertEqual(self.plan(sale)["nc_course_en"].status, "install", "after the owner accepts")
+
     def test_catalog_is_consistent(self):
         cat = upd.load_catalog(REPO / "content/catalog.toml")
         import tomllib

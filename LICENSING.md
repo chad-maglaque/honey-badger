@@ -41,6 +41,32 @@ compatible with AGPL-3.0. Pinned versions are in `os/versions.env` and `os/insta
 
 ## Library content and selling Badgers
 
-Some catalog items are licensed for non-commercial use only (CC BY-NC-SA: iFixit, Khan
-Academy, LibreTexts; CC BY-NC-ND: TED). They must not come preloaded on Badgers that are sold.
-Let the owner's Badger download them for personal use, or leave them out.
+Each catalog item in `content/catalog.toml` records its licence and a `use` field:
+
+- `use = "any"`: public domain, CC BY, CC BY-SA, GPL, ODbL and similar. May come preloaded on a
+  Badger that is sold, as long as you keep the attribution the licence asks for.
+- `use = "personal"`: personal / non-commercial use only. That is every CC BY-NC-* licence
+  (iFixit, Khan Academy, Crash Course, LibreTexts, TED, the OpenWrt docs), Hesperian's terms,
+  YouTube channels whose creators keep the copyright, MedlinePlus (it includes A.D.A.M.
+  pages licensed to the NLM), and anything whose licence hasn't been checked yet. The
+  updater treats a missing or unknown value, and any licence naming NC, as `"personal"`.
+
+The rule for selling:
+
+1. **Personal-use items must not be on a Badger when it is sold.** Build units for sale with
+   `prepper-build flash … --for-sale` (it sets `[device] provisioning = "sale"`). On such a unit
+   the updater never fetches personal-use items: not from the internet, another Badger, a USB
+   bundle, `upd adopt`, a pin or a tier.
+2. **The owner may download them, on their own Badger, for personal use.** When the buyer first
+   unlocks Settings, the launcher lists those items with their sizes and licences and asks
+   whether to download them. Accepting records who accepted, when, and which items and
+   licences, and the buyer's Badger then downloads them. The buyer can also say "Not now"
+   (the offer stays in Settings and on the Status page) or remove them later.
+3. **Don't accept on the buyer's behalf.** That choice is theirs. `prepper-build watch` tells
+   you whether a unit built for sale is clean to sell.
+
+If you sell a Badger you first used yourself, re-flash it with `--for-sale` first.
+
+This is a practical summary to help you follow the content licences, not legal advice. Check
+each item's own licence, and correct the catalog if you find a licence is stricter or looser
+than it says.

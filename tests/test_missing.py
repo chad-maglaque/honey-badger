@@ -411,7 +411,11 @@ class Mesh(Base):
         st, j, _ = self.req("POST", "/api/missing/moderate", {"id": a["id"], "op": "mesh_send"}, admin=self.admin)
         self.assertEqual(st, 200, j)
         out = self.outbox()
-        self.assertEqual(out, [{"text": text, "board": "community"}])
+        # CHANGED (mesh courtesy): kind, dedupe key (post id + status) and queue time ride along
+        self.assertEqual(len(out), 1)
+        self.assertEqual({k: out[0][k] for k in ("text", "board", "kind", "dedupe")},
+                         {"text": text, "board": "community", "kind": "community", "dedupe": f"missing:{a['id']}:missing"})
+        self.assertIsInstance(out[0]["at"], int)
         board = (self.tmp / "board.jsonl").read_text()
         self.assertIn("MISSING: Ana Ruiz", board)
         self.assertEqual(self.posts()[0]["mesh"], "sent")

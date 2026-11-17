@@ -41,6 +41,40 @@ sudo ./builder/prepper-build flash /dev/disk4 --tier base --hostname badger2 \
      --peer http://badger.local/sync --trust-key "ssh-ed25519 AAAA… prepper"
 ```
 
+### Building Badgers to sell
+
+Some library items are licensed for **personal, non-commercial use only** (catalog `use = "personal"`: iFixit, Khan Academy, Crash Course, LibreTexts, TED, Hesperian, creator-owned video channels, MedlinePlus and a few others; `plan -v --for-sale` lists them). They must not be on a Badger when it is sold. Add `--for-sale` to every unit you will sell:
+
+```bash
+./builder/prepper-build plan --tier base --for-sale -v          # what a unit for sale holds, and what waits for its owner
+sudo ./builder/prepper-build flash /dev/disk4 --tier base --for-sale --hostname badger \
+     --ssid HoneyBadger --pin 246813
+./builder/prepper-build watch badger.local                      # at the end: "✓ For sale: no personal-use content …"
+```
+
+- `--for-sale` writes `[device] provisioning = "sale"` into the unit's `prepper.toml`. Without it the unit is `"owner"`, which is today's behaviour for people building their own.
+- A unit for sale never downloads personal-use items, from anywhere: the internet, another Badger (`--peer`, `clone`), a USB bundle or `upd adopt`. Pins and tiers can't override it, and `plan --for-sale --pin-item <personal item>` refuses.
+- The first content pull, and every update after it, fetch only the rest.
+- **Don't accept the personal-use offer in the launcher yourself.** That is the buyer's decision (see [Handing a sold Badger to its owner](#handing-a-sold-badger-to-its-owner)). `watch` reports whether the unit is still clean to sell, and so does `GET /api/content/personal` (`"sale_ready": true`).
+- Selling a Badger you used yourself? Re-flash it with `--for-sale` first.
+
+## Handing a sold Badger to its owner
+
+On a Badger built with `--for-sale`:
+
+1. **First setup.** The home page shows "Finish setting up this Badger". When the owner unlocks *Settings* with the admin PIN, the first card is the setup step: *"Some free courses and repair guides (iFixit, Khan Academy, LibreTexts, TED, …) are licensed for personal, non-commercial use only. They aren't included on the Badger as sold. Download them now for your own personal use?"* It lists every item this Badger's tier would hold, with its size and licence. Each item has a tick box, so the owner can leave out big ones (Khan Academy alone is 180 GB on Ultimate).
+2. **Accept & download.** The owner ticks "I'll use these for personal, non-commercial purposes only" and, optionally, types their name. The Badger records who accepted, when, from which device address, and which items and licences, in `/var/lib/prepper/portal/personal-content.json`. Then it starts a normal update download. The usual rules apply: smallest first, resumable, items that don't fit in the free space past `[upd] reserve_gb` are skipped (Status shows them). In Endurance mode or on battery it doesn't start right away; the items come with the next update (the weekly one, or *Download updates*).
+3. **No internet at hand-off?** Accepting still works. The items download the next time the Badger is online.
+4. **Not now.** The offer stays in *Settings → Personal-use content* and as a notice on the home and Status pages. Anyone can hide that notice on their own device. It comes back if new items appear.
+5. **Everyone can see the list and whether it was accepted.** Only the admin can accept or remove, and only the admin sees who accepted.
+6. **Manual items** (Hesperian, Kolibri channels, a repeater list) are never downloaded automatically. Accepting lets the owner add them with `upd adopt`, which a unit for sale otherwise refuses.
+7. **USB bundles and other Badgers.** A unit for sale skips personal-use items in a bundle or from a peer until the owner has accepted them. *Import* says so.
+8. **Removing them.** *Settings → Personal-use content → Remove personal-use content* deletes them from the drive with the next update run (started right away) and stops future downloads, on any Badger. Accepting again brings them back.
+
+From the shell: `sudo python3 /opt/prepper/software/upd/upd.py status` shows the provisioning mode and what is waiting. The API is `GET /api/content/personal` (everyone; read-only) and `POST /api/admin/personal` with `{"action": "accept", "agree": true, "items": [...], "name": "..."}`, `{"action": "later"}` or `{"action": "remove"}` (admin).
+
+This follows each item's licence as recorded in the catalog. It is not legal advice.
+
 ## Everyday use
 
 - **Join** the Wi-Fi (scan the QR on the front panel → *Join Wi-Fi*). Phones usually pop the launcher open by themselves. If not, go to **http://badger.lan**.
@@ -59,7 +93,9 @@ sudo ./builder/prepper-build flash /dev/disk4 --tier base --hostname badger2 \
   - `!ai <question>`: a two-sentence answer from the AI solver, grounded in the library, with its source. It takes about a minute; one question at a time, one per radio every 2 minutes (`[radio] mesh_ai_cooldown_s`). With `mesh_ai = false` it answers like `!q`.
   - `!status`: battery, power source, mode, active alerts and how many people are on the Wi-Fi.
   - `!help`: the list.
-- **NOAA alerts over the mesh:** each new warning the SDR decodes is broadcast once to every radio on the channel (`[radio] mesh_alerts`). Tests aren't relayed.
+- **NOAA alerts over the mesh:** each new warning the SDR decodes is broadcast once to every radio on the channel (`[radio] mesh_alerts`). Tests aren't relayed. With other Badgers nearby, only one of them relays each alert on each channel (see below).
+- **Many Badgers on one mesh** ([MESH.md](MESH.md)): Badgers nearby take turns instead of all transmitting the same thing. Each NOAA alert is relayed once per channel for the whole mesh, a `!q` on a shared channel gets one answer, Badgers on the same NOAA transmitter post one forecast between them, and after a town-wide power cut alerts wait a random 30–120 s. Messages go out by priority (alerts, sensor danger, family posts, replies, community posts, automatic notes), with hourly budgets that shrink as more Badgers are heard, and automatic notes wait when the radio reports a busy channel. An alert is only ever skipped when this Badger *heard* another Badger relay it. The launcher's status shows "Badgers nearby: N · channel busy x %". Settings: `[radio] mesh_courtesy` (on), `mesh_max_util`, `mesh_budget` and others in MESH.md.
+- **Privacy and radio silence** ([MESH.md → Privacy on the mesh](MESH.md#privacy-on-the-mesh)): Badger-to-Badger packets carry nothing identifying, presence beacons stay on the family channel, and the radio's own position is not shared on the public channel (`[radio] mesh_public_position = "off"`, or `"coarse"` / `"precise"`). **Radio silence** (receive only): `[radio] mesh_silent = true`, or create `/var/lib/prepper/portal/mesh-silent` (no restart; optional JSON `{"until": <epoch>}`) — the Badger then sends nothing on its own except, if `mesh_silent_allow_family = true`, family posts a member chose to send. Give the radio an unremarkable name, not "Honey Badger".
 - **Radios on the map:** radios that share their position (Meshtastic app → Settings › Position) appear on the offline map: open *Maps* and tap *📡 Mesh radios*, or *Radios on the map* on the check-in board. Green means heard within the hour, amber within a day, grey older. Turn it off with `[radio] mesh_map = false`.
 - **Two mesh channels.** In the Meshtastic app, keep the public channel (LongFast) as channel 0 and add a private family channel with its own key as channel 1. Share the family channel only with family radios, by QR code. Then set `[radio] mesh_public_channel = 0` and `mesh_family_channel = 1`; use `-1` for `mesh_public_channel` to keep the community board off the air. Family features stay off until `mesh_family_channel` is set; it can't be `0` (the radio's primary, public channel) or the same as the public one. An older config with only `mesh_channel` bridges that channel as the public one. Messages hop through any nearby Meshtastic radio with the same radio settings. On the family channel the content stays encrypted while it does. Turn off position sharing on the public channel so only family can see where your radios are.
 
@@ -209,7 +245,7 @@ Nothing is installed on them, and nothing is stored on them unless the user choo
 - **Manual catalog items** (Hesperian books, NPS and USGS maps, local repeaters, openFDA labels, satellite imagery): copy the files to `/srv/prepper/<dir>/<id>/`. The item's description names the folder. Then register them:
   `sudo python3 /opt/prepper/software/upd/upd.py adopt hesperian_books`
   The launcher lists them, and peers and bundles share them like any other item.
-- **Any other ZIM:** add an `[[item]]` with `source = { type = "kiwix", name = "<file stem without date>", path = "<mirror dir>/" }`, then run `tools/gen_contents.py`.
+- **Any other ZIM:** add an `[[item]]` with `source = { type = "kiwix", name = "<file stem without date>", path = "<mirror dir>/" }`, its `license`, and `use = "any"` (open licence) or `use = "personal"` (non-commercial or unclear), then run `tools/gen_contents.py`. An item without `use` counts as personal-use only: a Badger built for sale won't fetch it until the owner accepts.
 - **Family papers:** use the **Document vault** on the launcher (Family → 🔐 Document vault). It encrypts everything on the Badger's disk and makes encrypted backups; see [vault.md](features/vault.md). Keep the passphrase in your head and the recovery key on paper, not on the Badger.
 
 ## Maintenance
@@ -240,7 +276,7 @@ Nothing is installed on them, and nothing is stored on them unless the user choo
 | `/etc/prepper/allowed_signers` | root | keys trusted for bundles and peers (`prepperctl trust`) |
 | `/etc/prepper/git_allowed_signers` | root | keys trusted for software updates (`prepperctl trust-maintainer`) |
 | `/var/lib/prepper` | root (only root writes here) | build status, update state, power mode |
-| `/var/lib/prepper/portal` | prepper (the launcher) | `portal-settings.json`, `board.jsonl`, `family-board.jsonl`, `members.json` (+ `.bak`), `mesh-outbox.jsonl`, `mesh-telemetry.jsonl`, `mesh-channel.json` (the radio key, 0600) |
+| `/var/lib/prepper/portal` | prepper (the launcher) | `portal-settings.json`, `board.jsonl`, `family-board.jsonl`, `members.json` (+ `.bak`), `mesh-outbox.jsonl`, `mesh-peers.json` (Badgers nearby + mesh courtesy status), `mesh-silent` (radio-silence flag), `mesh-telemetry.jsonl`, `mesh-channel.json` (the radio key, 0600) |
 | `/var/lib/prepper/portal/features/<name>` | prepper | each feature's own data (the vault's is encrypted; supplies and the aid-station log are not) |
 | `/etc/prepper/panel.key` | root, 0600 | the front panel's key (proves to the launcher that a request comes from the Badger's own screen) |
 | `/etc/prepper/panel.key.sha256` | root:prepper, 0640 | its hash, which the launcher checks against |

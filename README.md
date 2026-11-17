@@ -78,7 +78,11 @@ You need Python 3.11+. The Badger itself runs Raspberry Pi OS Lite 64-bit (Trixi
 
 ## Content licensing
 
-This is built for personal and family use. Everything in the catalog is public domain, openly licensed, or free to keep for personal use, and each item records its licence. A few are non-commercial (CC BY-NC-SA: iFixit, Khan Academy, LibreTexts; CC BY-NC-ND: TED), which is fine for a household Badger; they would only matter if Badgers were ever sold. wikiHow, RepeaterBook and commercial survival titles are not included.
+Everything in the catalog is public domain, openly licensed, or free to keep for personal use, and each item records its licence (`license`) and whether it may come preloaded on a Badger that is sold (`use = "any"` or `"personal"`). wikiHow, RepeaterBook and commercial survival titles are not included.
+
+Some items are for **personal, non-commercial use only**: everything CC BY-NC-SA or CC BY-NC-ND (iFixit, Khan Academy, Crash Course, LibreTexts, TED, OpenWrt docs), Hesperian's books, creator-owned YouTube channels, MedlinePlus (it includes licensed A.D.A.M. pages) and a few whose licence hasn't been checked. A Badger you build for your own household gets them like everything else.
+
+If you **sell** Badgers, build them with `prepper-build flash … --for-sale`. Those units never download personal-use items by themselves, whatever the tier or pins say. When the buyer first unlocks Settings, the launcher lists those items with their sizes and licences and offers to download them for the buyer's own personal use; the buyer's acceptance is recorded on the Badger and their Badger downloads them. See [LICENSING.md](LICENSING.md#library-content-and-selling-badgers) and [docs/OPERATIONS.md](docs/OPERATIONS.md#building-badgers-to-sell). This is a practical summary, not legal advice.
 
 ## Safety
 
