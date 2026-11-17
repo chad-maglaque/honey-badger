@@ -79,3 +79,18 @@ You need Python 3.11+. The Badger itself runs Raspberry Pi OS Lite 64-bit (Trixi
 ## Content licensing
 
 This is built for personal and family use. Everything in the catalog is public domain, openly licensed, or free to keep for personal use, and each item records its licence. A few are non-commercial (CC BY-NC-SA: iFixit, Khan Academy, LibreTexts; CC BY-NC-ND: TED), which is fine for a household Badger; they would only matter if Badgers were ever sold. wikiHow, RepeaterBook and commercial survival titles are not included.
+
+## Safety
+
+Honey Badger helps in emergencies, but it is not a substitute for professional help or official warnings:
+
+- Library and AI answers are **not medical, legal or professional advice**. In an emergency, call for help if you can.
+- The written forecast is **transcribed automatically** from NOAA Weather Radio and may contain errors. Weather alerts depend on radio reception.
+- Sensor readings, including radiation, are **warnings, not calibrated measurements**.
+- The software, design and docs come **without any warranty**; see the licences.
+
+## Licence
+
+Software: **AGPL-3.0-only** ([LICENSE](LICENSE)). Case design: **CERN-OHL-S-2.0**. Docs: **CC BY-SA 4.0**.
+The name "Honey Badger", the badger logo and "Nu:Time™" are trademarks and are not covered by these licences.
+Details: [LICENSING.md](LICENSING.md) · [TRADEMARKS.md](TRADEMARKS.md) · [CONTRIBUTING.md](CONTRIBUTING.md)

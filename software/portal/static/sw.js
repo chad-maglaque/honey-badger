@@ -1,7 +1,7 @@
 /* Offline shell for the Honey Badger launcher (only active over HTTPS).
    Caches the launcher and the self-contained tools so they work out of
    range of the Badger. Library content is never cached here — it lives on the Badger. */
-var SHELL = "badger-shell-v10";
+var SHELL = "badger-shell-v11";
 var FILES = ["/", "/index.html", "/style.css", "/app.js", "/manifest.webmanifest", "/icon.svg", "/icon-192.png",
   "/tools/tools.css", "/tools/morse.html", "/tools/phrases.html", "/tools/water.html",
   "/tools/radio.html", "/tools/convert.html", "/tools/sun.html", "/tools/nutime.html", "/tools/nutime.js"];

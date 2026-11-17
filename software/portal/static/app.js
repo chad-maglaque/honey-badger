@@ -439,6 +439,7 @@
     });
   }
 
+  var SOURCE_URL = "https://github.com/chad-maglaque/honey-badger";
   function settingsView() {
     var theme = lsGet("theme", "auto"), text = lsGet("text", "normal");
     var out = "<h1>Settings</h1>" +
@@ -449,7 +450,10 @@
       '<label for="tx">Text size</label><select id="tx"><option value="normal"' + (text === "normal" ? " selected" : "") + '>Normal</option><option value="large"' + (text === "large" ? " selected" : "") + ">Large</option></select>" +
       '<h3 class="section">Open content with…</h3><div id="myRend" class="small muted">Loading…</div>' +
       '<h3 class="section">Family</h3><div id="meBox" class="small muted">Checking…</div></div>' +
-      '<div class="card section"><h2>Badger administration</h2><div id="adm"></div></div>';
+      '<div class="card section"><h2>Badger administration</h2><div id="adm"></div></div>' +
+      // AGPL-3.0 §13: people using this Badger over the network can get its source. If you change the code,
+      // point SOURCE_URL at the source of your version.
+      '<p class="small muted section">Honey Badger is free software under the AGPL-3.0. <a href="' + href(SOURCE_URL) + '">Source code and licences</a>.</p>';
     h(out);
     document.getElementById("th").onchange = function () { lsSet("theme", this.value); applyPrefs(); };
     document.getElementById("tx").onchange = function () { lsSet("text", this.value); applyPrefs(); };
