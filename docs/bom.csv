@@ -47,7 +47,7 @@ Panel & I/O,Sensor socket (rear),1,"M8 4-pin A-coded female panel socket, front 
 Panel & I/O,Sensor polyfuse + pull-ups,1,"100 mA PTC resettable fuse, 4.7 kΩ (1-Wire) and 10 kΩ (float) resistors",generic,"Amazon, Digi-Key",PTC resettable fuse 100mA,2,protects the Pi 3.3 V rail from a crushed outdoor cable
 Case,"PETG filament, yellow",1,"~450 g used (base, sled)","Polymaker, Prusament, Overture, eSun","Amazon, maker stores",yellow PETG filament 1.75,20,1 kg spool; Honey Badger body colour; also the lid inlay colour
 Case,"PETG filament, black",1,~160 g used (lid),"Polymaker, Prusament, Overture, eSun","Amazon, maker stores",black PETG filament 1.75,15,0.5–1 kg spool
-Case,"TPU 95A filament, black",1,~240 g used,"Polymaker PolyFlex TPU95, Overture TPU, eSun eTPU-95A",Amazon,black TPU 95A filament,25,"2 frame bumpers, 4 edge bumpers, dampers, gasket, SDR clips"
+Case,"TPU 95A filament, black",1,~150 g used,"Polymaker PolyFlex TPU95, Overture TPU, eSun eTPU-95A",Amazon,black TPU 95A filament,25,"2 frame bumpers, dampers, gasket, SDR clips"
 Case,M3 heat-set inserts,24,M3 x 5.7 mm,CNC Kitchen or Ruthex,"Amazon, CNC Kitchen store",M3 heat set insert,0.2,"8 lid, 6 frame bottom, 4 power tray, 4 SDR clips, 2 SDR shelf"
 Case,M2.5 heat-set inserts,4,M2.5,CNC Kitchen or Ruthex,Amazon,M2.5 heat set insert,0.25,sled (Pi/UPS holes)
 Case,M3 screw kit,1,"button head: 6x M3x12 (frame tops = lid corner and middle screws), 6x M3x8 (frame bottoms), 10x M3x6 (2 side lid screws, SDR clips, tray), 6x M3x10 + nuts (USB-A, RJ45 ears), 4x M3x20 + nuts (fan), 2x M3x12 (SDR shelf); 12 washers",generic,"Amazon, hardware store",M3 button head screw kit,9,

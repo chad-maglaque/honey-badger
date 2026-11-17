@@ -87,7 +87,7 @@ Prices are rough US street prices in Nov 2026. RAM and SSD prices are moving fas
 | Part | ~USD | Notes |
 |---|---:|---|
 | PETG, about 625 g: **yellow** for the base, sled and SDR shelf, **black** for the lid | 35 | Honey Badger colours. See [Material](#material-petg-not-pla-tough) |
-| TPU 95A, **black**, about 240 g | 25 | 2 frame bumpers, 4 edge bumpers, 4 shock dampers, lid gasket, 2 SDR clips |
+| TPU 95A, **black**, about 150 g | 25 | 2 frame bumpers, 4 shock dampers, lid gasket, 2 SDR clips |
 | 24 M3 heat-set inserts, 4 M2.5 inserts | 5 | see [Hardware](#hardware-counts) |
 | M3 button-head screws and washers, M2.5 and M2 screws, M2 nylon spacers | 16 | see [Hardware](#hardware-counts) |
 | 3 mm closed-cell EVA or neoprene foam, 85 × 56 mm | 3 | between the lid hold-down posts and the NVMe HAT |
@@ -399,7 +399,7 @@ GPIO 25 is spare for a second float switch. UART0 (GPIO 14/15) is optional, for 
 
 The model is `case/honey_badger_case.scad`; every cutout is a parameter.
 
-- **Outside:** 204 × 168 × 82.5 mm with the lid on (79 mm base + 3.5 mm lid), and 216 × 180 × ~95 mm with the bumpers (6 mm of TPU on every side, top and bottom). Interior 196 × 160 × 76 mm, walls 4 mm. Each part fits a 220 × 220 mm bed.
+- **Outside:** 204 × 168 × 82.5 mm with the lid on (79 mm base + 3.5 mm lid), and 216 × 180 × ~95 mm over the bumper frames (they stand 6 mm proud of every face they cover; between them the case is 204 × 82.5 mm in section). Interior 196 × 160 × 76 mm, walls 4 mm. Each part fits a 220 × 220 mm bed.
 - **Parts:**
 
   | Part | Material | Qty | Command |
@@ -408,7 +408,6 @@ The model is `case/honey_badger_case.scad`; every cutout is a parameter.
   | lid | PETG, black | 1 | `openscad -D 'part="lid"' -o lid.stl case/honey_badger_case.scad` (exports face down) |
   | sled | PETG, yellow | 1 | `openscad -D 'part="sled"' -o sled.stl case/honey_badger_case.scad` |
   | frame | TPU 95A | 2 | `openscad -D 'part="frame"' -o frame.stl case/honey_badger_case.scad` (exports face down; the front and rear frames are the same part) |
-  | edge_bumper | TPU 95A | 4 | `openscad -D 'part="edge_bumper"' -o edge_bumper.stl case/honey_badger_case.scad` (exports lying on its side leg; all four are the same) |
   | damper | TPU 95A | 4 | `openscad -D 'part="damper"' -o damper.stl case/honey_badger_case.scad` |
   | gasket | TPU 95A | 1 | `openscad -D 'part="gasket"' -o gasket.stl case/honey_badger_case.scad` |
   | sdr_clip | TPU 95A | 2 | `openscad -D 'part="sdr_clip"' -o sdr_clip.stl case/honey_badger_case.scad` |
@@ -419,20 +418,20 @@ The model is `case/honey_badger_case.scad`; every cutout is a parameter.
   Add `--backend=manifold` if your OpenSCAD build has it; it renders much faster.
 
 - **Gasket:** printed as a 1.5 × 2.1 mm TPU cord that sits in a 2.2 × 1.6 mm groove in the lid. The lid's locating lip is notched around every screw boss.
-- **Showcase renders:** `part="showcase"` draws the finished Badger with the bought parts in place (screen, knob, button, ports, whip, fan) — see `case/renders/showcase_*.png`. Visual only; those stand-ins are not printed. `part="exploded"` shows the bumper fitting order (`case/renders/exploded.png`), and `frame_detail` / `edge_section` are cut-aways of the tenon under a frame and of the edge bumpers' tongues in their grooves.
-- **Fit check:** `openscad -D 'part="assembly"' case/honey_badger_case.scad` shows everything together. It prints the outer size, the headroom over the stack (6 mm), the plug room, the fan-to-cell gap, how far panel parts stand out, the frame window's margins to the panel bands and connectors, the louver positions, the bumper screw engagement and the whip tilt, and warns if any part or cutout collides (including a louver under a bumper or into a screw boss).
+- **Showcase renders:** `part="showcase"` draws the finished Badger with the bought parts in place (screen, knob, button, ports, whip, fan) — see `case/renders/showcase_*.png`. Visual only; those stand-ins are not printed. `part="exploded"` shows the two frames pulled off (`case/renders/exploded.png`), and `frame_detail` is a cut-away through a frame's wraps and their rounded back edges (`case/renders/frame_detail.png`; `frame_closeup.png` shows one from outside).
+- **Fit check:** `openscad -D 'part="assembly"' case/honey_badger_case.scad` shows everything together. It prints the outer size, the headroom over the stack (6 mm), the plug room, the fan-to-cell gap, how far panel parts stand out, the frame window's margins to the panel bands and connectors, the louver positions, the case edge radii, the bumper screw engagement and the whip tilt, and warns if any part or cutout collides (including a louver under a frame or into a screw boss, or a frame bottom insert breaking out of the rounded bottom edge).
 - **Measure first:** panel-mount connectors vary by vendor. Print `panel_test` and adjust the `*_cut` / `*_at` parameters before printing the base.
 
 ### Hardware counts
 
 | Item | Qty | Where |
 |---|:-:|---|
-| M3 heat-set inserts | 24 | 8 lid bosses, 6 frame bottoms (base corners + front/rear middle bosses, from below), 4 power tray, 4 SDR clips, 2 SDR shelf |
+| M3 heat-set inserts | 24 | 8 lid bosses, 6 frame bottoms (bosses just inside the rounded bottom edge, from below), 4 power tray, 4 SDR clips, 2 SDR shelf |
 | M3 × 12 | 2 | SDR shelf posts |
 | M2.5 heat-set inserts | 4 | sled, in the Pi/UPS holes |
 | M3 × 12 button head + washer | 6 | frame tops: through each frame and the lid into the 4 corner and the front/rear middle lid bosses (5 mm into the insert) |
 | M3 × 8 button head + washer | 6 | frame bottoms, into the base (4.6 mm into the insert) |
-| M3 × 6 button head | 2 | the side lid screws (y 50), in lid counterbores, hidden under the top edge bumpers |
+| M3 × 6 button head | 2 | the side lid screws (y 50), in lid counterbores (heads below the surface; 4.7 mm into the insert) |
 | M3 × 20 + nuts | 4 | fan (or the fan's own screws) |
 | M3 × 6 | 4 + 4 | SDR clips, power tray |
 | M3 × 10 + nuts | 6 | USB-A and RJ45 ears |
@@ -442,15 +441,13 @@ The model is `case/honey_badger_case.scad`; every cutout is a parameter.
 
 ### Assembly notes
 
-- **Bumpers:** every one of the 12 outside edges is covered by black TPU 95A, 6 mm thick all round:
-  - **2 frame bumpers** (one part, printed twice; the rear one is the front one turned round). Each is a rectangular frame over one face, 216 × 95 mm, that covers the face's four edges and wraps 16 mm back onto the top, bottom and sides. Its window (162 × 60 mm at the case face, with a rounded 45° lead-in) clears the front or rear panel band and its rim by at least 1 mm, so every connector, the knob, the screen, the folded whip and its clips stay reachable (the fit check measures it). Each frame is held by 6 screws with their heads sunk in counterbores: 3 on top (the 2 corner lid screws and the middle lid screw, M3 × 12 + washer, through the frame and the lid into the boss inserts) and 3 underneath (M3 × 8 + washer into inserts in the bottom of the same bosses).
-  - **4 edge bumpers** (one part, printed 4×) on the long front-to-rear edges: full size, the same 6 mm L profile as the frames, with 16 mm legs onto the side and the top (or bottom). A 45° dovetail tongue along the side leg slides into a matching groove in the side wall (3 mm mouth, 1.5 mm deep, 9 mm from the top or bottom face), so they can't peel off along their length. At each end the top/bottom leg carries on as a 2.5 mm **tenon** plate that tucks into a slot under the frame's wrap; the frame overlaps it and captures the bumper's ends, and the bumper's shoulder butts against the frame, so it can't slide either. No glue.
-  - The bottom wraps of the frames and the bottom edge bumpers make a continuous TPU ring under the case: they are the feet.
-- **Fitting order:** slide the four edge bumpers into their grooves from the front or rear (tongue first, flush with the case ends), then push each frame on over the case end so the tenons enter its slots, and fit its 6 screws.
-- **Edges:** every outside edge is rounded, so nothing cuts a hand. The vertical corners are 7 mm and the base bottom and lid top are 2 mm. The seam between base and lid is 0.8 mm on each side, which leaves a soft V. The bumpers' outer edges are rounded concentric with the case edges (8–13 mm), with a short 45° bevel where they meet the print bed, and 1.5 mm rounds on every other outside edge; the rims of the pockets, wells, louvers and screen window are 1–1.5 mm, and the SDR clips are rounded too. Cutouts that a connector's flange covers stay square.
-- **Lid:** 8 M3 screws: the 4 corner and the front/rear middle screws go through the frames (they hold the frames too), and the 2 side screws sit in counterbores under the top edge bumpers. Those two are hidden once the case is closed, which also makes it harder to open without knowing how.
-- **Opening the case** (one hex key: 2 mm, for the M3 button heads): (1) remove the 6 screws of the front frame and the 6 of the rear frame and pull both frames off; (2) slide the two top edge bumpers out of their grooves (either way); (3) remove the 2 side lid screws now uncovered; (4) lift the lid. The bottom edge bumpers can stay on. Close in the reverse order.
-- **Louvers:** four rain-shedding slots on the right wall, 5 × 20 mm, sloping down 0.6:1 toward the outside: three at y 19.5 / 29 / 38.5 mm (between the front frame and the side screw boss) and one at y 56.5 mm (between the boss and the Wi-Fi slot), z 43.5–63.5 mm on the outer face, clear of the edge bumpers above and below.
+- **Bumpers:** two black TPU 95A **frame bumpers** (one part, printed twice; the rear one is the front one turned round) protect the 8 corners and the 8 edges of the front and rear faces, where a dropped box lands most often. Each frame is 216 × 95 mm, stands 6 mm proud of the face and wraps 16 mm back onto the top, bottom and sides. The back edge of each wrap, where it steps down onto the case, is a full R5.4 round-over that blends the 6 mm step into the case surface (it ends in a 0.6 mm land), so nothing catches on a bag or a hand. Its window (162 × 60 mm at the case face, with a rounded 45° lead-in) clears the front or rear panel band and its rim by at least 1 mm, so every connector, the knob, the screen, the folded whip and its clips stay reachable (the fit check measures it). Each frame is held by 6 screws with their heads sunk in counterbores: 3 on top (the 2 corner lid screws and the middle lid screw, M3 × 12 + washer, through the frame and the lid into the boss inserts) and 3 underneath (M3 × 8 + washer into inserts in bosses just inside the rounded bottom edge). The two bottom wraps are the feet; the case floor between them stands 6 mm off the ground.
+- **Long edges:** the four front-to-rear edges between the frames are the case's own: R4 along the bottom of the base (it leaves 3 mm of PETG at the wall/floor corner) and R2.5 along the top of the lid (about 0.8 mm over the gasket groove), with R7 vertical corners under the frames.
+- **Fitting the frames:** push each frame onto its end of the closed case and fit its 6 screws.
+- **Edges:** every outside edge is rounded, so nothing cuts a hand. The vertical corners are 7 mm, the base bottom edges 4 mm and the lid top edges 2.5 mm. The seam between base and lid is rounded 0.8 mm on the base and 0.5 mm on the lid, which leaves a soft V. The frames' outer edges are rounded concentric with the case edges (8.5–13 mm), with a short 45° bevel where they meet the print bed; their back edges are R5.4 round-overs; the rims of the window, pockets, wells, louvers and screen are 1–1.5 mm, and the SDR clips are rounded too. Cutouts that a connector's flange covers stay square.
+- **Lid:** 8 M3 screws: the 4 corner and the front/rear middle screws go through the frames (they hold the frames too), and the 2 side screws sit in counterbores in the lid.
+- **Opening the case** (one hex key: 2 mm, for the M3 button heads): (1) remove the 6 screws of each frame (3 on top, 3 underneath) and pull both frames off the ends: their top wraps lie over the lid; (2) remove the 2 side lid screws; (3) lift the lid. Close in the reverse order.
+- **Louvers:** four rain-shedding slots on the right wall, 5 × 30 mm, sloping down 0.6:1 toward the outside: three at y 19.5 / 29 / 38.5 mm (between the front frame and the side screw boss) and one at y 56.5 mm (between the boss and the Wi-Fi slot), z 34–64 mm on the outer face, high on the wall where the warm air collects and below the lid lip inside.
 
 ### Lid markings
 
@@ -497,7 +494,7 @@ Two other options in the SCAD's `markings` parameter:
 | Infill | **40 % gyroid** | **20 % gyroid** (the soft infill is the cushion) |
 | Nozzle / bed | 240–250 °C / 80 °C | 220–230 °C / 50 °C, slow (≤ 25 mm/s) |
 | Cooling | 30–50 % (hotter layers bond better) | 50 % |
-| Orientation | base open side up; lid face down; sled flat | frames face down; edge bumpers on the side leg's outer face; dampers flat; clips on their backs |
+| Orientation | base open side up; lid face down; sled flat | frames face down; dampers flat; clips on their backs |
 
 Every recess in the case has a 45° roof or gusset, so nothing needs supports. Layer bonds are the weak direction on any FDM print. The bumpers take the edge and corner hits, and those are exactly what would split layers on a bare box.
 
@@ -505,13 +502,13 @@ Every recess in the case has a 45° roof or gusset, so nothing needs supports. L
 
 | Threat | Built-in answer |
 |---|---|
-| Corner and edge drops | all 12 outside edges and 8 corners are covered by 6 mm of rounded TPU: a frame over each end face, wrapping 16 mm onto the top, bottom and sides and screwed top and bottom (6 screws each), and four full-size edge bumpers along the long edges, held by a dovetail along their length and by tenons captured under the frames |
+| Corner and edge drops | the 8 corners and the front and rear edges are covered by 6 mm of rounded TPU: a frame over each end face, wrapping 16 mm onto the top, bottom and sides, screwed top and bottom (6 screws each). The frames stand proud of everything between them, so a flat drop on a side, the top or the bottom lands on the frames; the long edges between them are rounded R4 (bottom) and R2.5 (lid) |
 | Shock to the electronics | the whole Pi/UPS/NVMe stack screws to a PETG **sled** that floats on four TPU **dampers**. Lid **hold-down posts** press it down through a 3 mm foam pad, so it can't hammer up into the lid |
 | Cells shaking loose | strap slots in the sled for a hook-and-loop strap around the UPS cells |
 | Screen | no lens: the OLED sits about 3 mm behind the front face behind a bevelled bezel, so a flat hit lands on the case, not the glass |
 | Knob and jacks | the knob, button and LED sit in a recessed pocket; the GX16 and SDR jack sit in recesses; the frames stand 6 mm proud of both panels. Nothing stands out more than about 5.7 mm, inside the frames |
-| Lid popping open | 8 M3 screws into brass heat-set inserts, 6 of them through the frames; the top edge bumpers also hold the lid's side edges down |
-| Water and dust | TPU gasket on the lid; the lid seam is covered by the frames and top edge bumpers. The four exhaust louvers slope down toward the outside, so rain runs off. The fan intake has a grille and needs a filter. Splash-resistant, **not waterproof** |
+| Lid popping open | 8 M3 screws into brass heat-set inserts, 6 of them through the frames |
+| Water and dust | TPU gasket on the lid; the frames cover the lid seam at both ends. The four exhaust louvers slope down toward the outside, so rain runs off. The fan intake has a grille and needs a filter. Splash-resistant, **not waterproof** |
 | Loose parts inside | radio bay on zip-tie anchors, SDR 2 zip-tied to a screwed shelf, Wi-Fi adapter in a slot, SMA cables on bulkheads |
 
 Wi-Fi, LoRa and GPS antennas are built in. The SDR 1 whip folds into its channel; the short 1090 MHz whip on SDR 2 unscrews, and a dust cap goes on the jack.
@@ -531,6 +528,6 @@ Wi-Fi, LoRa and GPS antennas are built in. The SDR 1 whip folds into its channel
 
 1. Fully assemble, with the batteries in, and power it on.
 2. Drop it from 1 m onto plywood laid over concrete. Do it once on each of the 6 faces, the 12 edges and the 8 corners: 26 drops in all.
-3. After each set, check that it is still running, the Wi-Fi is up, the screen works, the cells are seated, no bumper has torn or come out of its groove and no layer has split.
+3. After each set, check that it is still running, the Wi-Fi is up, the screen works, the cells are seated, no frame has torn or loosened and no layer has split.
 4. Repeat at 1.2 m. For the transport configuration, keep going in steps of 0.5 m inside the hard case, as high as you're willing to risk.
 5. Write down the height where something first fails, and fix that part: more walls, thicker bumpers, or firmer foam.

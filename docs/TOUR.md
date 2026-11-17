@@ -1,6 +1,6 @@
 # How the Badger works
 
-Honey Badger is a sealed box about the size of a big hardback book: 216 × 180 × 91 mm with its rubbery TPU bumpers. It makes its own Wi-Fi network. **Your phone, iPad or laptop is the screen.** Join its Wi-Fi, open a browser, and the whole library, maps, tools and offline AI are there, along with family and neighbourhood pages, the forecast, aircraft and weather-satellite pictures (see [FEATURES](FEATURES.md)).
+Honey Badger is a sealed box about the size of a big hardback book: 216 × 180 × 95 mm over its rubbery TPU bumper frames. It makes its own Wi-Fi network. **Your phone, iPad or laptop is the screen.** Join its Wi-Fi, open a browser, and the whole library, maps, tools and offline AI are there, along with family and neighbourhood pages, the forecast, aircraft and weather-satellite pictures (see [FEATURES](FEATURES.md)).
 
 The Badger also has a small screen, a knob and a power button of its own. With those you can check on it, show the Wi-Fi QR code, change power modes, run updates and shut it down, without a phone.
 
@@ -98,10 +98,11 @@ Wi-Fi, LoRa and GPS antennas are **built in** under the lid. Plastic doesn't blo
 - **Top (lid):**
   - a printed label with the Honey Badger mark and "Join Wi-Fi · open badger.lan" (or the same, printed into the lid in colour)
   - a square recess for a QR sticker (print the Wi-Fi QR shown on the screen)
-  - 8 screws: 4 at the top of the corner bumpers and 4 along the edges
-- **Bottom:** the bumpers' bottom caps are the feet.
-- **Corners:** rounded TPU bumpers that wrap the corners, each screwed on at the top and the bottom with the screw heads sunk below the surface.
-- **Opening the lid:** remove the 4 corner screws at the top of the bumpers and the 4 edge screws, flex the bumper tops aside and lift the lid. The bumpers can stay on: their bottom screws hold them to the base.
+  - 8 screws: 6 through the bumper frames at the front and back edges and 2 on the sides
+- **Front and back:** a rubbery TPU bumper frame around each panel. It covers that face's edges and corners, wraps a little way onto the top, bottom and sides, and ends in a smooth rounded edge. Each is held by 6 screws with the heads sunk below the surface.
+- **Bottom:** the two frames' bottom edges are the feet.
+- **Long edges:** the case's own edges are well rounded.
+- **Opening the lid:** take off the two bumper frames (6 screws each), remove the 2 side screws and lift the lid.
 
 ## Inside (lid off)
 

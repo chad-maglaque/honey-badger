@@ -3,6 +3,19 @@
 All notable changes to Honey Badger™. Versions follow `MAJOR.MINOR.PATCH`; the running version is in
 [`VERSION`](VERSION) and on the launcher's Status page and the front panel.
 
+## Unreleased
+
+### Hardware
+- **Slimmer case:** the four front-to-rear edge bumpers are gone (with their dovetail grooves in the side walls and
+  the tenon slots in the frames). The front and rear bumper frames now protect the 8 corners and the front and rear
+  edges, and the back edge of each frame's wrap is a full R5.4 round-over that blends the 6 mm step into the case.
+- The case's own long edges are rounder: R4 along the bottom of the base (was R2) and R2.5 along the top of the lid
+  (was R1.7). The frame bottom screws moved to new bosses just inside the rounded bottom edge.
+- The two side lid screws are ordinary visible screws again (M3 × 6 in counterbores). Opening the case: frames off
+  (6 screws each), 2 side screws out, lift the lid.
+- Taller exhaust louvers: four 5 × 30 mm slots (were 5 × 20), high on the right wall.
+- Lid artwork re-centred; TPU for one Badger back to about 150 g.
+
 ## v0.4 — 2026-11-17 (pre-release)
 
 The first tagged release. Everything is built and tested in software (unit, adversarial, red-team and

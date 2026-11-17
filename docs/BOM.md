@@ -129,13 +129,13 @@ Every small component above, with its value and where it goes (no extra cost: th
 | Pull-up | 4.7 kΩ to 3.3 V | 1-Wire (GPIO 4) | DS18B20 temperature probe |
 | Pull-up | 10 kΩ to 3.3 V | float switch (GPIO 24) | flood switch input |
 
-### Case (≈ $86, unchanged: the SDR shelf and the frame/edge bumpers use filament and fasteners already listed)
+### Case (≈ $86, unchanged: the SDR shelf and the frame bumpers use filament and fasteners already listed)
 
 | Part | Qty | Buy | Search for | ~$ |
 |---|:-:|---|---|---:|
 | PETG filament, **yellow**, 1 kg (base, sled and SDR shelf, ~465 g; also the lid inlay colour) | 1 | Amazon, maker stores | "yellow PETG filament 1.75" | 20 |
 | PETG filament, **black** (lid, ~160 g; a 0.5–1 kg spool) | 1 | Amazon, maker stores | "black PETG filament 1.75" | 15 |
-| TPU 95A filament, **black**, 1 kg (2 frame bumpers, 4 edge bumpers, dampers, gasket, SDR clips, ~240 g) | 1 | Amazon | "black TPU 95A filament" | 25 |
+| TPU 95A filament, **black**, 1 kg (2 frame bumpers, dampers, gasket, SDR clips, ~150 g) | 1 | Amazon | "black TPU 95A filament" | 25 |
 | M3 heat-set inserts (8 lid, 6 frame bottom, 4 power tray, 4 SDR clips, 2 SDR shelf) | 24 | Amazon | "M3 heat set insert" | 4 |
 | M2.5 heat-set inserts (sled, Pi/UPS holes) | 4 | Amazon | "M2.5 heat set insert" | 1 |
 | M3 button-head screw kit: 6 × M3×12 (frame tops = lid corner and middle screws), 6 × M3×8 (frame bottoms), 10 × M3×6 (2 side lid screws, SDR clips, tray), 6 × M3×10 + nuts (USB-A, RJ45 ears), 4 × M3×20 + nuts (fan), 2 × M3×12 (SDR shelf), 12 washers | 1 | Amazon, hardware store | "M3 button head screw kit" | 9 |

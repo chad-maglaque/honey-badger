@@ -20,7 +20,7 @@ end.
 
 1. **Buy the parts:** [BOM](BOM.md) (with a four-order shopping plan and [bom.csv](bom.csv)). The Badger itself
    is roughly $900 plus the SSD; the [sensor kit](BOM.md#sensor-kit-optional) is optional.
-2. **Print the case:** [PRINTING](PRINTING.md): PETG base, lid, sled and SDR shelf; TPU frames, bumpers, dampers,
+2. **Print the case:** [PRINTING](PRINTING.md): PETG base, lid, sled and SDR shelf; TPU bumper frames, dampers,
    clips and gasket. No supports needed.
 3. **Assemble and wire it:** [HARDWARE](HARDWARE.md): wiring and the GPIO map, the solar/DC input chain, the
    second SDR, the sensor socket, connector fit and the case fan.

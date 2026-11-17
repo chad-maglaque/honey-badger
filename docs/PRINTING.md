@@ -15,22 +15,21 @@ Parts to buy: [BOM.md](BOM.md).
 | 3 | Sled (holds the Pi and UPS) | `sled.stl` | PETG, **yellow** | 1 | flat, as exported | none |
 | 4 | SDR shelf (carries SDR 2) | `sdr_shelf.stl` | PETG, **yellow** | 1 | deck down, as exported | none |
 | 5 | Front and rear frames | `frame.stl` | TPU 95A, **black** | **2** | face down (the wraps point up), as exported; the front and rear frames are the same part | none |
-| 6 | Edge bumpers | `edge_bumper.stl` | TPU 95A, **black** | **4** | lying on the side leg's outer face, tongue up, as exported; all four are identical | none |
-| 7 | Shock dampers | `damper.stl` | TPU 95A, **black** | **4** | flat, as exported | none |
-| 8 | SDR whip clips | `sdr_clip.stl` | TPU 95A, **black** | **2** | on their backs, as exported | none |
-| 9 | Lid gasket | `gasket.stl` | TPU 95A, **black** | 1 | flat, as exported | none |
+| 6 | Shock dampers | `damper.stl` | TPU 95A, **black** | **4** | flat, as exported | none |
+| 7 | SDR whip clips | `sdr_clip.stl` | TPU 95A, **black** | **2** | on their backs, as exported | none |
+| 8 | Lid gasket | `gasket.stl` | TPU 95A, **black** | 1 | flat, as exported | none |
 | – | Lid inlay (optional) | export yourself | PETG, yellow or cream | 1 | with the lid, multi-colour | none |
 
 Every part fits a 220 × 220 mm bed; the largest is the frame, 216 × 95 mm (22 mm tall), so centre it and skip the brim.
-Every recess in the case has a 45° roof or gusset, and the bumpers have 45° bevels where they meet the bed, so
+Every recess in the case has a 45° roof or gusset, and the frames have 45° bevels where they meet the bed, so
 **nothing needs supports**. The files are already in their print orientation: load them as they are.
 
 **Filament for one Badger:** about 465 g yellow PETG (base, sled, shelf), 160 g black PETG (lid),
-240 g black TPU 95A (2 frames ≈ 70 g each, 4 edge bumpers ≈ 20 g each, plus dampers, clips and gasket; at the settings below).
+150 g black TPU 95A (2 frames ≈ 66 g each, plus dampers, clips and gasket; at the settings below).
 
 ## Print settings
 
-| Setting | PETG (base, lid, sled, shelf) | TPU 95A (frames, edge bumpers, dampers, clips, gasket) |
+| Setting | PETG (base, lid, sled, shelf) | TPU 95A (frames, dampers, clips, gasket) |
 |---|---|---|
 | Layer height | 0.2 mm | 0.2 mm |
 | Walls | **6** (≈ 2.4 mm, so the 4 mm walls are nearly solid) | 3 |
@@ -50,10 +49,9 @@ printer is enclosed (see [HARDWARE.md › Material](HARDWARE.md#material-petg-no
    matching `*_cut`, `*_relief` or `*_at` parameter in the SCAD and re-export (commands below).
 2. Print the base, then the lid. Check the lid seats on the base before printing the bumpers.
 3. Print the sled and the SDR shelf.
-4. Print the TPU parts: 2 frames, 4 edge bumpers, 4 dampers, 2 clips, 1 gasket.
-5. Check for stringing in the screw holes, the gasket groove and the four edge-bumper grooves along the side walls;
-   clear them before assembly. Slide each edge bumper along its groove once before fitting the electronics: it should
-   run end to end with a firm push (a drop of soapy water helps the first time).
+4. Print the TPU parts: 2 frames, 4 dampers, 2 clips, 1 gasket.
+5. Check for stringing in the screw holes and the gasket groove; clear them before assembly. Push each frame onto the
+   empty base once to check the fit before fitting the electronics.
 6. Lightly deburr the two SDR whip clips: their ring crowns are cut flat so they sit below the bumpers, which leaves small
    sharp edges on the arm tops. A few strokes with a file or fine sandpaper.
 
@@ -64,7 +62,7 @@ Melt in **24 × M3** and **4 × M2.5** inserts (soldering iron with an insert ti
 | Where | Inserts |
 |---|---|
 | Base: top of the lid bosses | 8 × M3 |
-| Base, underneath: the four corners and the front and rear middle bosses (frame bottom screws) | 6 × M3 |
+| Base, underneath: 6 bosses just inside the rounded bottom edge, 3 at the front and 3 at the rear (frame bottom screws) | 6 × M3 |
 | Base floor: power tray bosses | 4 × M3 |
 | Base, rear: SDR clip bosses (from outside) | 4 × M3 |
 | Base floor: SDR shelf bosses (right of SDR 1) | 2 × M3 |
@@ -77,13 +75,13 @@ Assembly steps continue in [HARDWARE.md](HARDWARE.md); the bumper fitting order 
 
 For a Honey Badger enclosure kit (printed parts plus fasteners):
 
-**Printed parts:** base · lid · sled · SDR shelf · 2 frames · 4 edge bumpers · 4 dampers · 2 SDR clips · 1 gasket
+**Printed parts:** base · lid · sled · SDR shelf · 2 frames · 4 dampers · 2 SDR clips · 1 gasket
 
 **Fastener bag:**
 - 24 × M3 heat-set inserts, 4 × M2.5 heat-set inserts (or pre-installed)
 - 6 × M3 × 12 button head + 6 washers (frame tops: they are also the 4 corner and the front/rear middle lid screws)
 - 6 × M3 × 8 button head + 6 washers (frame bottoms, into the base)
-- 2 × M3 × 6 button head (the two side lid screws, hidden under the top edge bumpers)
+- 2 × M3 × 6 button head (the two side lid screws, in counterbores)
 - 8 × M3 × 6 (4 SDR clips, 4 power tray)
 - 6 × M3 × 10 + 6 nuts (USB-A and Ethernet panel ears)
 - 4 × M3 × 20 + 4 nuts (fan, unless it comes with its own)
@@ -105,7 +103,7 @@ After changing a parameter, re-export the part you changed (add `--backend=manif
 openscad --backend=manifold -D 'part="base"' -o case/stl/base.stl case/honey_badger_case.scad
 ```
 
-Parts: `base`, `lid`, `sled`, `sdr_shelf`, `frame`, `edge_bumper`, `damper`, `sdr_clip`, `gasket`, `panel_test`
+Parts: `base`, `lid`, `sled`, `sdr_shelf`, `frame`, `damper`, `sdr_clip`, `gasket`, `panel_test`
 (and `lid_inlay` with `-D 'markings="inlay"'`). Before printing a changed base, run the fit check and make sure it
 prints no `WARNING`:
 
