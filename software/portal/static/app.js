@@ -196,6 +196,8 @@
         bits.push('<a href="#/aircraft" class="warnpill">📻 Weather alerts paused' + (sd.by ? " (" + esc(sd.by) + ")" : "") +
           (sd.until ? " until " + esc(tfmt(sd.until * 1000, { short: true })) : "") + "</a>");
       if (sd && (sd.sdr2 === "missing" || sd.sdr2 === "failed")) bits.push('<a href="#/aircraft">SDR 2 not working</a>');
+      if (s.posture && s.posture.label)            // the security posture (family, admin, panel only)
+        bits.push('<a href="#/posture"' + (s.posture.level === "lockdown" ? ' class="warnpill"' : "") + ">🛡 " + esc(s.posture.label) + "</a>");
       bits.push('<a href="#/status">status</a>');
       document.getElementById("statusbar").innerHTML = bits.join("<span aria-hidden=true>·</span>");
       var al = s.alerts || [];
@@ -479,7 +481,11 @@
           return joinForm(); }
         if (!document.getElementById("bf")) postForm(d.member, d.mesh && d.mesh_visitors !== false, d.mesh_needs_ok);
         pendingBox(d.mesh_pending);
-        document.getElementById("msgs").innerHTML = d.messages.slice().reverse().map(function (m) {
+        var sealNote = d.sealed && d.sealed.locked
+          ? '<p class="card warnbox small">🔒 Family history is locked — the owner can unlock it (Settings → Sealed records).' +
+            (d.messages.length ? " Below: what was posted since it locked" + (d.sealed.recent_hours ? " (the last " + num(d.sealed.recent_hours) + " hours at most)" : "") + "." : "") +
+            " New posts are saved sealed.</p>" : "";
+        document.getElementById("msgs").innerHTML = sealNote + d.messages.slice().reverse().map(function (m) {
           // ✓ only for posts a family member made here; the Badger's own notes get a neutral mark;
           // radio posts are never "verified" (a radio's ID can be faked on the air).
           var badge = m.system ? ' <span class="pill" title="An automatic note from the Badger">Badger</span>' :
@@ -489,7 +495,7 @@
             m.mesh === "declined" ? " · not sent over the radio" : "";
           return '<div class="msg"><span class="who">' + esc(m.name) + badge + '</span><span class="when">' + esc(tfmt(m.at, { date: true, short: true })) +
             esc(via) + "</span><div>" + esc(m.text) + "</div></div>";
-        }).join("") || '<p class="muted">No messages yet.</p>';
+        }).join("") || (sealNote ? "" : '<p class="muted">No messages yet.</p>');
       });
     }
     // Visitors' "send over mesh" requests, for family members and the admin: send or keep on the board.
@@ -579,10 +585,12 @@
         "<dt>Case fan</dt><dd>" + (p.case_fan == null ? "—" : p.case_fan ? "on" : "off") + "</dd>" +
         "<dt>Storage</dt><dd>" + (s.storage ? esc(human(num(s.storage.used))) + " used · " + esc(human(num(s.storage.free))) + " free" : "?") + "</dd>" +
         "<dt>CPU</dt><dd>" + (s.cpu_temp_c != null ? Math.round(num(s.cpu_temp_c)) + "°C · " : "") + "load " + esc((s.load || []).map(num).join(" / ")) + "</dd>" +
+        (s.version ? "<dt>Software</dt><dd>Honey Badger v" + esc(s.version) + "</dd>" : "") +
         "<dt>Uptime</dt><dd>" + (s.uptime_s ? (num(s.uptime_s) / 3600).toFixed(1) + " h" : "?") + "</dd>" +
         "<dt>Time</dt><dd><b>" + esc(tfmt(Date.now(), { date: true })) + "</b><br><span class=\"small muted\">" +
           ["local", "utc", "nutime"].filter(function (m) { return !window.NuTime || m !== NuTime.pref(); }).map(function (m) { return esc(tfmt(Date.now(), { mode: m })); }).join(" · ") +
           " — tap the clock in the status bar to switch</span></dd>" +
+        (s.posture && s.posture.label ? '<dt>Security posture</dt><dd><a href="#/posture">' + esc(s.posture.label) + "</a></dd>" : "") +
         "<dt>Services</dt><dd>" + svc + "</dd></dl></div>";
       out += '<h2 class="section">Updates</h2>';
       if (rep) {
@@ -599,6 +607,94 @@
   }
 
   var SOURCE_URL = "https://github.com/chad-maglaque/honey-badger";
+  // Sealed records (docs/SECURITY.md): the owner passphrase that unlocks the family's sealed data after a restart.
+  function sealBox(note) {
+    var box = document.getElementById("sealBox"); if (!box) return;
+    api("/api/sealed").then(function (st) {
+      if (st._status !== 200) { box.innerHTML = ""; return; }
+      var secureMsg = st.secure ? "" : '<p class="small warnbox">This page isn’t encrypted (http://), so the passphrase isn’t typed here. Open <b>https://' +
+        esc(location.hostname) + "</b>, or unlock at the Badger itself.</p>";
+      var head = '<h3 class="section">🔒 Sealed records</h3>';
+      var out;
+      if (!st.available) {
+        out = head + '<p class="small warnbox">Sealing needs the openssl program, which isn’t working on this Badger.</p>';
+      } else if (!st.setup) {
+        out = head + '<div class="card warnbox"><p class="small"><b>Not protected yet.</b> Supplies, the aid-station log, family board history, family names and contact details are stored scrambled, but the key sits next to them until you set an owner passphrase. ' +
+          "With one, a Badger that is taken or stolen shows nothing of them. After every restart the Badger keeps working (alerts, library, maps, radio, new entries), and the owner unlocks the family’s records with the passphrase.</p>" +
+          '<p class="small">Use 16+ characters or four or more words — not the admin PIN. You’ll get a recovery key to write down, in case the passphrase is forgotten.</p>' + secureMsg +
+          (st.secure ? '<form id="sealSetup"><label for="sp1">Owner passphrase</label><input type="password" id="sp1" autocomplete="new-password">' +
+            '<label for="sp2">Type it again</label><input type="password" id="sp2" autocomplete="new-password">' +
+            '<div class="btns"><button class="btn">Set up sealed records</button></div></form>' : "") + "</div>";
+      } else if (st.unlocked) {
+        out = head + '<p class="small"><span class="pill ok">Unlocked</span> The family’s sealed records can be read until the Badger restarts or someone locks them' +
+          (st.idle_minutes ? " (or after " + num(st.idle_minutes) + " minutes without use)" : "") + ".</p>" +
+          (st.lockdown ? '<p class="small warnbox">The Badger is in lockdown and you chose to unlock anyway. Lock again when you’re done.</p>' : "") +
+          (st.recovery_ack === false ? '<p class="small warnbox">Have you written down the recovery key? Without it, a forgotten passphrase means the sealed records are gone. <button class="btn ghost" id="sealAck">Yes, it’s written down</button></p>' : "") +
+          '<div class="btns"><button class="btn" id="sealLock">Lock now</button></div>' + secureMsg +
+          (st.secure ? '<details><summary class="small">Change the owner passphrase · new recovery key</summary>' +
+            '<label for="sco">Current passphrase</label><input type="password" id="sco" autocomplete="current-password">' +
+            '<label for="scn">New passphrase</label><input type="password" id="scn" autocomplete="new-password">' +
+            '<div class="btns"><button class="btn ghost" id="sealChange">Change passphrase</button><button class="btn ghost" id="sealNewRk">Make a new recovery key</button></div></details>' : "");
+      } else {
+        out = head + '<p class="small"><span class="pill warn">Locked</span> ' + esc({ idle: "Locked after a while without use.", lockdown: "Locked because the Badger is in lockdown.",
+          locked: "Someone locked it." }[st.locked_reason] || "Locked since the Badger started.") +
+          " Everything else keeps working; new entries are saved sealed. Family board history, supplies, the aid-station log, names and contact details show once you unlock.</p>" + secureMsg +
+          (st.wait ? '<p class="small warnbox">Too many wrong tries. Wait ' + Math.ceil(num(st.wait) / 60) + " minute(s).</p>" : "") +
+          (st.secure ? '<form id="sealUnlock"><label for="sus">Owner passphrase (or the recovery key)</label><input type="password" id="sus" autocomplete="current-password">' +
+            (st.lockdown ? '<label style="font-weight:400"><input type="checkbox" id="sld"> The Badger is in lockdown. Unlock anyway — I’m sure nobody unwanted can reach it.</label>' : "") +
+            '<div class="btns"><button class="btn">Unlock</button></div></form>' +
+            '<details><summary class="small">Forgot the passphrase?</summary><label for="srk">Recovery key</label><input type="text" id="srk" autocomplete="off" class="mono">' +
+            '<label for="srn">New owner passphrase</label><input type="password" id="srn" autocomplete="new-password"><div class="btns"><button class="btn ghost" id="sealRecover">Set new passphrase</button></div></details>' : "");
+      }
+      box.innerHTML = out + '<div id="sealOut" class="small" role="status">' + esc(note || "") + "</div>";
+      function say(t) { var o = document.getElementById("sealOut"); if (o) o.textContent = t; }
+      function after(r, ok) { if (r.ok) sealBox(ok || ""); else say(r.error || "That didn’t work."); }
+      function showKey(rk) {
+        box.innerHTML = head + '<div class="card warnbox"><h3>Write down your recovery key</h3><p class="small">It unlocks the sealed records if the owner passphrase is forgotten. It is shown only now. Keep it somewhere safe, away from the Badger.</p>' +
+          '<p class="mono" style="font-size:1.1rem;word-break:break-all">' + esc(rk) + '</p><div class="btns"><button class="btn ghost" id="sealPrint">Print</button><button class="btn" id="sealKeyDone">I’ve written it down</button></div></div>';
+        document.getElementById("sealPrint").onclick = function () { window.print(); };
+        document.getElementById("sealKeyDone").onclick = function () { api("/api/sealed", { body: { op: "ack_recovery" } }).then(function () { sealBox(); }); };
+      }
+      var f = document.getElementById("sealSetup");
+      if (f) f.onsubmit = function (e) {
+        e.preventDefault();
+        var a = document.getElementById("sp1").value;
+        if (a !== document.getElementById("sp2").value) return say("The two passphrases don’t match.");
+        say("Setting up… this can take a minute.");
+        api("/api/sealed", { body: { op: "setup", passphrase: a } }).then(function (r) { if (r.ok) showKey(r.recovery_key); else say(r.error || "That didn’t work."); });
+      };
+      f = document.getElementById("sealUnlock");
+      if (f) f.onsubmit = function (e) {
+        e.preventDefault();
+        var ld = document.getElementById("sld");
+        say("Unlocking…");
+        api("/api/sealed", { body: { op: "unlock", secret: document.getElementById("sus").value, confirm_lockdown: !!(ld && ld.checked) } })
+          .then(function (r) { after(r, r.via === "recovery" ? "Unlocked with the recovery key. Consider setting a new passphrase." : "Unlocked."); });
+      };
+      var b = document.getElementById("sealLock");
+      if (b) b.onclick = function () { api("/api/sealed", { body: { op: "lock" } }).then(function (r) { after(r, "Locked."); }); };
+      b = document.getElementById("sealAck");
+      if (b) b.onclick = function () { api("/api/sealed", { body: { op: "ack_recovery" } }).then(function (r) { after(r); }); };
+      b = document.getElementById("sealChange");
+      if (b) b.onclick = function () {
+        api("/api/sealed", { body: { op: "change", old: document.getElementById("sco").value, "new": document.getElementById("scn").value } })
+          .then(function (r) { after(r, "Passphrase changed."); });
+      };
+      b = document.getElementById("sealNewRk");
+      if (b) b.onclick = function () {
+        if (!confirm("Make a new recovery key? The old one stops working.")) return;
+        api("/api/sealed", { body: { op: "new_recovery", passphrase: document.getElementById("sco").value } })
+          .then(function (r) { if (r.ok) showKey(r.recovery_key); else say(r.error || "Enter the current passphrase first."); });
+      };
+      b = document.getElementById("sealRecover");
+      if (b) b.onclick = function () {
+        var ld = document.getElementById("sld");
+        api("/api/sealed", { body: { op: "recover", recovery_key: document.getElementById("srk").value, "new": document.getElementById("srn").value,
+          confirm_lockdown: !!(ld && ld.checked) } }).then(function (r) { after(r, "New passphrase set; unlocked."); });
+      };
+    });
+  }
+
   function settingsView() {
     var theme = lsGet("theme", "auto"), text = lsGet("text", "normal");
     var out = "<h1>Settings</h1>" +
@@ -626,6 +722,7 @@
       if (!r.member) { box.innerHTML = 'This device isn’t a family member. <a href="#/board/family">Join with an invite code</a>.'; return; }
       var pr = r.member.pending_radios || [];
       box.innerHTML = "This device belongs to <b>" + esc(r.member.name) + '</b>. <button class="btn ghost" id="leave">Forget this device</button>' +
+        '<p class="small"><a href="#/posture">Security posture</a> · <a href="#/circles">Trusted circle</a></p>' +
         '<h4 class="section">Family radio link</h4><p class="small">The link (with the channel key) for your Meshtastic radio. Shown only on family members’ own devices, over https, and on the Badger’s screen.</p>' +
         '<div class="btns"><button class="btn ghost" id="myLink">Show family radio link</button></div><div id="myLinkOut"></div>' +
         '<h4 class="section">My radios</h4><p class="small">Your radio’s posts on the family channel carry your name. To link one, enter its ID; then send the code it gives you from that radio on the family channel.</p>' +
@@ -671,6 +768,156 @@
     personalCard(false);
   }
 
+  // ── Emergency: panic wipe, duress PIN, dead-man switch, handover (docs/SECURITY.md → "Panic wipe") ──
+  function wipeBox() {
+    var box = document.getElementById("wipeBox"); if (!box) return;
+    function post(body) { return api("/api/admin/wipe", { body: body }); }
+    function say(id, text) { var e = document.getElementById(id); if (e) e.textContent = text; }
+    function val(id) { var e = document.getElementById(id); return e ? e.value : ""; }
+    post({ op: "status" }).then(function (s) {
+      if (!s || !s.ok) { box.innerHTML = ""; return; }
+      var dm = s.deadman || {};
+      var lockNote = s.secure ? "" : '<p class="small warnbox">This page is not encrypted (http://), so these controls are switched off here. Open <b>https://' + esc(location.hostname) + '</b>, or use the Badger’s own screen (knob → System → Panic wipe / Hand over / sell).</p>';
+      var dis = s.secure ? "" : " disabled";
+      box.innerHTML =
+        '<h3 class="section">Emergency: panic wipe</h3>' +
+        '<p class="small muted">Erases the family’s data on this Badger in seconds: members, both boards, supplies and where they are kept, the aid log, skills, missing people, the document vault, radio and device keys, saved Wi-Fi passwords and logs. The library, maps and AI stay, so the Badger looks like a plain offline library. The radio gets new random keys (if its bridge is running — otherwise unplug it). The Wi-Fi gets a new password, shown only on the Badger’s screen. It can’t be undone.</p>' + lockNote +
+        '<label for="wipeWord">Type WIPE to confirm</label><div class="btns"><input type="text" id="wipeWord" autocomplete="off" autocapitalize="characters"' + dis + '><button class="btn danger" id="wipeGo"' + dis + '>Wipe family data now</button></div><p class="small" id="wipeMsg" role="status"></p>' +
+        '<h3 class="section">If someone forces you to unlock the Badger</h3>' +
+        '<p class="small muted"><b>People come first.</b> If the person forcing you can check what you say — they know the family, have seen this Badger before, or know what is on it — give the real PIN or passphrase. Use a duress secret only when they can’t tell the difference. Agree as a family: whoever is forced gives whatever keeps people safest, and nobody blames them afterwards.</p>' +
+        '<p class="small muted">A duress secret works exactly like the real one — same screens, same timing — but every screen and every family phone then shows a <b>made-up household</b> (below): a few ordinary supplies, everyday board posts, made-up first names. Nothing on the screen says so.</p>' +
+        '<h4 class="section">What happens behind the made-up household</h4>' +
+        '<label style="font-weight:400"><input type="radio" name="durAct" value="lock"' + (s.duress_action !== "wipe" ? " checked" : "") + dis + '> <b>Lock (recommended)</b> — nothing is erased. The family’s records and the vault lock so that the passphrases alone no longer open them: only the <b>recovery keys</b> do. When everyone is safe, type the sealed-records recovery key (Sealed records → Lock now → Unlock, or the Badger’s knob: System → Recovery key) and everything is back. No restart, no Wi-Fi change.</label>' +
+        '<label style="font-weight:400"><input type="radio" name="durAct" value="wipe"' + (s.duress_action === "wipe" ? " checked" : "") + dis + '> <b>Wipe</b> — the panic wipe runs quietly (the noticeable steps wait 10 minutes) and the made-up household stays in place of the family’s data. <b>There is nothing to get back afterwards.</b></label>' +
+        (s.duress_action !== "wipe" && !s.sealed_setup ? '<p class="small warnbox">Set up sealed records first (above): without the owner passphrase and its recovery key the lock can only last until the Badger restarts.</p>' : "") +
+        '<div class="btns"><input type="password" id="actPin" placeholder="Admin PIN" autocomplete="current-password"' + dis + '><button class="btn ghost" id="actSet"' + dis + '>Save choice</button></div><p class="small" id="actMsg" role="status"></p>' +
+        '<h4 class="section">Duress PIN</h4><p class="small muted">A second admin PIN. It must differ from the admin PIN. Status: <b>' + (s.duress_set ? "set" : "not set") + '</b>.</p>' +
+        '<div class="btns"><input type="password" id="durPin" placeholder="Admin PIN" autocomplete="current-password"' + dis + '><input type="password" id="durNew" placeholder="New duress PIN" autocomplete="new-password"' + dis + '><button class="btn ghost" id="durSet"' + dis + '>Set duress PIN</button>' + (s.duress_set ? '<button class="btn ghost" id="durClear"' + dis + '>Remove it</button>' : "") + '</div><p class="small" id="durMsg" role="status"></p>' +
+        '<h4 class="section">Duress passphrase (sealed records)</h4><p class="small muted">Typed where the owner passphrase is asked, it “unlocks” — into the made-up household. As strong as a passphrase, and different from it. Status: <b>' + (s.duress_phrase ? "set" : "not set") + '</b>.</p>' +
+        (s.sealed_setup ? '<div class="btns"><input type="password" id="dpOwner" placeholder="Owner passphrase" autocomplete="current-password"' + dis + '><input type="password" id="dpNew" placeholder="New duress passphrase" autocomplete="new-password"' + dis + '><button class="btn ghost" id="dpSet"' + dis + '>Set</button>' + (s.duress_phrase ? '<button class="btn ghost" id="dpClear"' + dis + '>Remove it</button>' : "") + '</div><p class="small" id="dpMsg" role="status"></p>' : '<p class="small">Set up sealed records first.</p>') +
+        '<h4 class="section">Duress code (front panel)</h4><p class="small muted">' + (s.panel_code ? "Set it at the Badger: knob → System → Panel lock → Duress code. It opens the panel like the panel code." : "First set a panel code (above), then a duress code at the Badger: knob → System → Panel lock → Duress code.") + '</p>' +
+        '<h4 class="section">The made-up household</h4><p class="small muted">Every Badger has one ready, made from ordinary templates with a little randomness, so no two are the same. It shows as many people as your family has. If someone who forces you might know your family’s first names, type believable ones (or your real ones) here.</p>' +
+        '<div class="btns"><button class="btn ghost" id="dcShow">Show and edit it</button></div><div id="dcBox"></div>' +
+        '<h4 class="section">Dead-man switch (off unless you turn it on)</h4>' +
+        (dm.armed ? '<div class="card ' + (dm.warning ? "warnbox" : "") + '"><p><b>ON:</b> if nobody checks in for ' + esc(String(dm.days)) + ' days of the Badger running, it wipes the family data by itself. ' +
+          'A check-in is any family member opening the Badger app on their device, or an admin login. Wipe in about <b>' + esc(String(Math.round(num(dm.left_h)))) + ' hours</b> unless someone checks in.</p><div class="btns"><button class="btn" id="dmOff">Turn the dead-man switch off</button></div></div>'
+          : '<p class="small warnbox"><b>Think hard before turning this on.</b> If everyone is away, sick or cut off from the Badger for that long, all family data is erased — there is no undo and no warning beyond this page and the Badger’s screen. Only time the Badger is running counts (a switched-off Badger never counts down; a wrong clock can’t trigger it).</p>' +
+            '<div class="btns"><input type="number" id="dmDays" min="3" max="365" value="14" style="width:6em"' + dis + '><span class="small">days</span><input type="password" id="dmPin" placeholder="Admin PIN" autocomplete="current-password"' + dis + '><button class="btn ghost" id="dmArm"' + dis + '>Set up…</button></div><div id="dmStep2"></div>') +
+        '<p class="small" id="dmMsg" role="status"></p>' +
+        '<h4 class="section">Hand over or sell this Badger</h4><p class="small muted">Everything the panic wipe does, plus factory settings: a new Wi-Fi name and password (on the Badger’s screen), no admin PIN (the next owner sets one at the Badger: <span class="mono">sudo prepperctl set-pin</span>), no duress PIN, dead-man switch off, no trusted Badgers. On a Badger built for sale, personal-use content (non-commercial licences) is removed and the next owner is asked again.</p>' +
+        '<div class="btns"><input type="text" id="hoWord" placeholder="Type HANDOVER" autocomplete="off" autocapitalize="characters"' + dis + '><input type="password" id="hoPin" placeholder="Admin PIN" autocomplete="current-password"' + dis + '></div>' +
+        '<label class="small"><input type="checkbox" id="hoSale"' + dis + '> I’m selling it: also remove personal-use content</label><div class="btns"><button class="btn danger" id="hoGo"' + dis + '>Reset for the next owner</button></div><p class="small" id="hoMsg" role="status"></p>';
+      var g = document.getElementById("wipeGo");
+      if (g) g.onclick = function () {
+        if (val("wipeWord") !== "WIPE") { say("wipeMsg", "Type WIPE in capital letters first."); return; }
+        if (!confirm("Erase all family data on this Badger now? This can't be undone.")) return;
+        say("wipeMsg", "Starting…");
+        post({ op: "panic", confirm: "WIPE" }).then(function (r) { say("wipeMsg", r.ok ? r.message : (r.error || "Failed")); });
+      };
+      var ds = document.getElementById("durSet");
+      if (ds) ds.onclick = function () {
+        post({ op: "duress_set", pin: val("durPin"), duress: val("durNew") }).then(function (r) {
+          document.getElementById("durPin").value = ""; document.getElementById("durNew").value = "";
+          say("durMsg", r.ok ? "Duress PIN set. Practise saying it calmly; write it nowhere near the admin PIN." : (r.error || "Failed"));
+        });
+      };
+      var dc = document.getElementById("durClear");
+      if (dc) dc.onclick = function () {
+        post({ op: "duress_clear", pin: val("durPin") }).then(function (r) { say("durMsg", r.ok ? "Duress PIN removed." : (r.error || "Failed")); if (r.ok) wipeBox(); });
+      };
+      var da = document.getElementById("dmArm");
+      if (da) da.onclick = function () {
+        post({ op: "deadman_arm", pin: val("dmPin"), days: parseInt(val("dmDays"), 10) }).then(function (r) {
+          document.getElementById("dmPin").value = "";
+          if (!r.ok) { say("dmMsg", r.error || "Failed"); return; }
+          document.getElementById("dmStep2").innerHTML = '<div class="card warnbox"><p>Last step. To turn the dead-man switch ON, type this code within 10 minutes: <b class="mono">' + esc(r.code) + '</b></p><div class="btns"><input type="text" id="dmCode" autocomplete="off" autocapitalize="characters"><button class="btn danger" id="dmConfirm">Turn it on</button></div></div>';
+          document.getElementById("dmConfirm").onclick = function () {
+            post({ op: "deadman_confirm", code: val("dmCode") }).then(function (x) { say("dmMsg", x.ok ? "The dead-man switch is ON." : (x.error || x.output || "Failed")); if (x.ok) wipeBox(); });
+          };
+        });
+      };
+      var dof = document.getElementById("dmOff");
+      if (dof) dof.onclick = function () { post({ op: "deadman_off" }).then(function (r) { say("dmMsg", r.ok ? "The dead-man switch is off." : (r.error || "Failed")); if (r.ok) wipeBox(); }); };
+      var as = document.getElementById("actSet");
+      if (as) as.onclick = function () {
+        var pick = document.querySelector('input[name="durAct"]:checked');
+        post({ op: "action", pin: val("actPin"), action: pick ? pick.value : "lock" }).then(function (r) {
+          document.getElementById("actPin").value = "";
+          say("actMsg", r.ok ? (r.duress_action === "wipe" ? "Saved: a duress secret wipes the family data." : "Saved: a duress secret locks the family data (the recovery key brings it back).") : (r.error || "Failed"));
+        });
+      };
+      var dps = document.getElementById("dpSet");
+      if (dps) dps.onclick = function () {
+        post({ op: "phrase_set", passphrase: val("dpOwner"), duress: val("dpNew") }).then(function (r) {
+          document.getElementById("dpOwner").value = ""; document.getElementById("dpNew").value = "";
+          say("dpMsg", r.ok ? "Duress passphrase set." : (r.error || "Failed"));
+        });
+      };
+      var dpc = document.getElementById("dpClear");
+      if (dpc) dpc.onclick = function () {
+        post({ op: "phrase_clear", passphrase: val("dpOwner") }).then(function (r) { say("dpMsg", r.ok ? "Duress passphrase removed." : (r.error || "Failed")); if (r.ok) wipeBox(); });
+      };
+      var dcs = document.getElementById("dcShow");
+      if (dcs) dcs.onclick = function () { post({ op: "decoy_get" }).then(decoyEditor); };
+      var ho = document.getElementById("hoGo");
+      if (ho) ho.onclick = function () {
+        if (val("hoWord") !== "HANDOVER") { say("hoMsg", "Type HANDOVER in capital letters first."); return; }
+        if (!confirm("Erase all family data AND reset this Badger to factory settings? This can't be undone.")) return;
+        post({ op: "handover", confirm: "HANDOVER", pin: val("hoPin"), sale: document.getElementById("hoSale").checked }).then(function (r) {
+          document.getElementById("hoPin").value = ""; say("hoMsg", r.ok ? r.message : (r.error || "Failed"));
+        });
+      };
+    });
+  }
+
+  // The made-up household a duress session sees: preview and edit (names, supplies, board posts), or regenerate.
+  function decoyEditor(r) {
+    var box = document.getElementById("dcBox"); if (!box) return;
+    if (!r || !r.ok) { box.innerHTML = '<p class="small">' + esc((r && r.error) || "Couldn’t load it.") + "</p>"; return; }
+    var p = r.profile, pv = r.preview || {}, cats = r.categories || [];
+    function row(it) {
+      it = it || { name: "", qty: 1, unit: "", category: "food", location: "", expires_in_days: "" };
+      return '<tr><td><input class="dcN" value="' + esc(it.name) + '" maxlength="60"></td><td><input class="dcQ" type="number" min="0" step="any" style="width:5em" value="' + esc(String(it.qty)) + '"></td>' +
+        '<td><input class="dcU" style="width:6em" value="' + esc(it.unit) + '" maxlength="16"></td><td><select class="dcC">' + cats.map(function (c) { return '<option' + (c === it.category ? " selected" : "") + ">" + esc(c) + "</option>"; }).join("") + "</select></td>" +
+        '<td><input class="dcL" style="width:8em" value="' + esc(it.location) + '" maxlength="60"></td><td><input class="dcE" type="number" min="-30" max="3650" style="width:5em" value="' + esc(it.expires_in_days === null || it.expires_in_days === undefined ? "" : String(it.expires_in_days)) + '"></td>' +
+        '<td><button class="btn ghost dcDel" type="button">✕</button></td></tr>';
+    }
+    box.innerHTML = '<div class="card"><p class="small">What a duress session shows now: <b>' + esc(String((pv.members || []).length)) + "</b> " + ((pv.members || []).length === 1 ? "person" : "people") + " (" + esc((pv.members || []).join(", ") || "none yet") + "), <b>" + esc(String(pv.supplies)) + "</b> supplies, <b>" + esc(String(pv.posts)) + "</b> board posts, the vault: " + esc(pv.vault || "") + ", posture: " + esc(pv.posture || "") + ".</p>" +
+      '<label for="dcNames">First names (one per line; the first ones are used, as many as your family has)</label><textarea id="dcNames" rows="4">' + esc((p.names || []).join("\n")) + "</textarea>" +
+      '<p class="small"><b>Supplies</b> — ordinary amounts and ordinary places (no hiding places). “Expires in” is days from the day it is shown.</p><div style="overflow-x:auto"><table class="small"><thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Kind</th><th>Where</th><th>Expires in</th><th></th></tr></thead><tbody id="dcRows">' + (p.supplies || []).map(row).join("") + "</tbody></table></div>" +
+      '<div class="btns"><button class="btn ghost" id="dcAdd" type="button">Add an item</button></div>' +
+      '<label for="dcPosts">Family board posts (one per line; spread over the last days, under the made-up names). Everyday things only: no places, no times when the house is empty.</label><textarea id="dcPosts" rows="6">' + esc((p.board || []).map(function (b) { return b.text; }).join("\n")) + "</textarea>" +
+      '<div class="btns"><button class="btn" id="dcSave" type="button">Save</button><button class="btn ghost" id="dcRegen" type="button">Make a new one</button></div><p class="small" id="dcMsg" role="status"></p></div>';
+    function wireDel() {
+      Array.prototype.forEach.call(box.querySelectorAll(".dcDel"), function (b) { b.onclick = function () { var tr = this.parentNode.parentNode; tr.parentNode.removeChild(tr); }; });
+    }
+    wireDel();
+    document.getElementById("dcAdd").onclick = function () {
+      var tb = document.getElementById("dcRows"), t = document.createElement("tbody");
+      t.innerHTML = row(null); tb.appendChild(t.firstChild); wireDel();
+    };
+    function msg(t) { var e = document.getElementById("dcMsg"); if (e) e.textContent = t; }
+    document.getElementById("dcSave").onclick = function () {
+      var items = [];
+      Array.prototype.forEach.call(box.querySelectorAll("#dcRows tr"), function (tr) {
+        function v(c) { var e = tr.querySelector(c); return e ? e.value : ""; }
+        if (!v(".dcN").replace(/\s/g, "")) return;
+        var old = null;
+        (p.supplies || []).forEach(function (x) { if (x.name === v(".dcN")) old = x; });
+        items.push({ name: v(".dcN"), qty: parseFloat(v(".dcQ")) || 0, unit: v(".dcU"), category: v(".dcC"), location: v(".dcL"),
+          expires_in_days: v(".dcE") === "" ? null : parseInt(v(".dcE"), 10), min: old ? old.min : 0,
+          kcal: old ? old.kcal : 0, litres: old ? old.litres : 0, hours: old ? old.hours : 0 });
+      });
+      var prof = { names: document.getElementById("dcNames").value.split("\n"), supplies: items,
+        board: document.getElementById("dcPosts").value.split("\n").map(function (t) { return { text: t }; }) };
+      api("/api/admin/wipe", { body: { op: "decoy_save", profile: prof } }).then(function (x) { if (x.ok) { decoyEditor(x); msg("Saved."); } else msg(x.error || "Failed"); });
+    };
+    document.getElementById("dcRegen").onclick = function () {
+      if (!confirm("Replace the made-up household with a new random one?")) return;
+      api("/api/admin/wipe", { body: { op: "decoy_regen" } }).then(function (x) { if (x.ok) { decoyEditor(x); msg("A new one is ready."); } else msg(x.error || "Failed"); });
+    };
+  }
+
   function adminPanel(kinds, settings) {
     var el = document.getElementById("adm");
     if (!state.admin) {
@@ -699,7 +946,8 @@
           return '<option value="' + esc(o.id) + '"' + ((rd[k] || kinds[k].default) === o.id ? " selected" : "") + ">" + esc(o.name) + "</option>"; }).join("") + "</select>"; }).join("") +
       '<div class="btns" style="margin-top:10px"><button class="btn ghost" id="saveDefaults">Save defaults</button></div>' +
       (state.weakPin ? '<p class="small warnbox">Your admin PIN is short or only digits. Anyone who copies the Badger’s disk could guess it. At the Badger, set a passphrase of 10+ characters (a few words): <span class="mono">sudo prepperctl set-pin</span></p>' : "") +
-      '<div id="panelLockBox"></div>' +
+      '<h3 class="section">Security</h3><div class="btns"><a class="btn ghost" href="#/posture">🛡️ Security posture</a><a class="btn ghost" href="#/reveal">👁️ What this Badger reveals</a><a class="btn ghost" href="#/circles">🤝 Trusted circle</a></div>' +
+      '<div id="panelLockBox"></div><div id="sealBox"></div>' +
       '<h3 class="section">Family members</h3><p class="small muted">Members can read and post on the family board and see family radios on the map. Radios on the family’s private channel can use !ai and !status. Removing someone cuts off all their devices at once. A device you add to an existing member only starts working when that member approves it on one of their own devices (or someone approves it at the Badger’s screen), and the family board says so. A radio is linked only after it sends a code on the family channel.</p>' +
       '<div class="btns"><input type="text" id="invName" maxlength="32" placeholder="Name (optional)"><button class="btn" id="invite">Invite a member</button></div><div id="invOut"></div><div id="storeBox"></div><div id="memList" class="list section"></div><div id="invList"></div>' +
       '<h3 class="section">Shared secrets</h3><p class="small muted">If someone you removed knew the Wi-Fi password, the family radio key or the admin PIN, change them. ' +
@@ -719,6 +967,7 @@
       '<h3 class="section">Services</h3><div id="svc" class="btns"></div>' +
       '<p class="small"><a href="#/solver">AI models → Problem solver page</a></p>' +
       '<h3 class="section">System</h3><div class="btns"><button class="btn ghost" data-sys="reboot">Restart</button><button class="btn danger" data-sys="shutdown">Shut down</button><button class="btn ghost" id="logout">Lock</button></div>' +
+      '<div id="wipeBox"></div>' +
       '<pre id="out" class="small mono" style="white-space:pre-wrap"></pre>';
     var out = document.getElementById("out");
     function done(r) { if (r._status === 401) { state.admin = false; sessionSet("isAdmin", null); } out.textContent = r.output || r.error || (r.ok ? "OK" : "Failed"); }
@@ -909,10 +1158,12 @@
       });
     };
     wifiPending();
+    sealBox();
     document.getElementById("invite").onclick = function () {
       api("/api/admin/members", { body: { op: "invite", name: document.getElementById("invName").value } }).then(function (r) { showInvite(r, document.getElementById("invName").value); members(); });
     };
     members();
+    wipeBox();
     document.getElementById("logoutAll").onclick = function () {
       if (!confirm("End every admin session on every device, this one too?")) return;
       api("/api/admin/logout", { body: { all: true } }).then(function (r) {

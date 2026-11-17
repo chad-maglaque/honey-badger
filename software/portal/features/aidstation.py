@@ -17,6 +17,11 @@ Records are deleted automatically after N days (default 30, admin can change it)
 for staff and admin; every export is noted in a short audit list the admin can see.
 An optional public status line ("Aid station open · water, food") is set by staff and shown
 to everyone; it says nothing about who came.
+
+Sealed records (docs/SECURITY.md): who came, their needs, notes and the volunteers' names are sealed at
+rest (one sealed map per log). The station keeps working while the Badger is locked: volunteers add
+records and see the ones written since it locked; counts, follow-up flags and the retention purge use only
+the unsealed parts (time, number of people, help types). Older records show again once the owner unlocks.
 """
 from __future__ import annotations
 
@@ -53,6 +58,8 @@ MAX_CODES = 20
 JOIN_FAILS, JOIN_WINDOW, JOIN_LOCK = 5, 600.0, 600.0
 TOKEN_HEADER = "X-Aid-Token"
 AUDIT_KEEP = 200
+PRIVATE = ("person", "needs", "notes", "followup_note", "handled_by", "by", "edited_by", "followup_by")
+SEALED_PERSON = "🔒 sealed"
 
 
 def _now() -> float:
@@ -281,6 +288,37 @@ def _s(ctx) -> dict:
         return _stores[key]
 
 
+def _priv(ctx) -> C.Private:
+    return C.Private(C.sealer_of(ctx), PRIVATE)
+
+
+def _migrate(ctx) -> None:
+    """Sealed-records setup (and older files): names and needs into the sealed map, re-sealed with this run's key."""
+    pv = _priv(ctx)
+
+    def f(d):
+        _move_plain(pv, d)
+        pv.reseal(d, [e.get("id") for e in d["entries"] if isinstance(e, dict)])
+        return None, True
+    _s(ctx)["log"].update(f)
+
+
+def _move_plain(pv: C.Private, d: dict) -> bool:
+    """Older records keep names in the clear (and "by" inside followup_done): seal them."""
+    changed = False
+    for e in d["entries"]:
+        if not isinstance(e, dict):
+            continue
+        fd = e.get("followup_done")
+        if isinstance(fd, dict) and "by" in fd:
+            pv.put(d, e, {"followup_by": str(fd.pop("by"))[:40]})
+            changed = True
+        if any(k in e for k in PRIVATE):
+            pv.migrate(d, [e])
+            changed = True
+    return changed
+
+
 def retention_days(ctx) -> int:
     over = _s(ctx)["settings"].view(lambda d: d.get("retention_days"))
     if isinstance(over, int) and not isinstance(over, bool) and 1 <= over <= 365:
@@ -297,12 +335,17 @@ def purge(ctx, force: bool = False) -> int:
     _last_purge[0] = now
     cutoff = now - retention_days(ctx) * 86400
 
+    pv = _priv(ctx)
+
     def f(d):
         keep = [e for e in d["entries"] if isinstance(e, dict) and isinstance(e.get("at"), (int, float)) and e["at"] >= cutoff]
         n = len(d["entries"]) - len(keep)
         if n:
             d["entries"] = keep
-        return n, n > 0
+        moved = _move_plain(pv, d) if any(isinstance(e, dict) and (any(k in e for k in PRIVATE) or (
+            isinstance(e.get("followup_done"), dict) and "by" in e["followup_done"])) for e in d["entries"]) else False
+        tidied = pv.tidy(d, [e.get("id") for e in d["entries"]]) if n or d.get("sealed_pending") else False
+        return n, bool(n or moved or tidied)
     n = _s(ctx)["log"].update(f)
     if n:
         ctx.log(f"retention: deleted {n} record(s) older than {retention_days(ctx)} days")
@@ -310,6 +353,10 @@ def purge(ctx, force: bool = False) -> int:
 
 
 def setup(ctx):
+    s = C.sealer_of(ctx)
+    if s is not None:
+        s.register_migrator("aidstation", lambda: _migrate(ctx))
+
     def loop():
         while True:
             try:
@@ -468,9 +515,19 @@ def _clean_entry(d: dict, who: dict, ctx, partial: bool = False) -> dict:
     return out
 
 
-def _public_entry(e: dict) -> dict:
-    return {k: e.get(k) for k in ("id", "at", "person", "count", "help", "needs", "notes", "followup",
-                                  "followup_note", "followup_done", "handled_by", "by", "updated")}
+def _public_entry(e: dict, pv: C.Private | None = None, priv: dict | None = None) -> dict:
+    out = {k: e.get(k) for k in ("id", "at", "person", "count", "help", "needs", "notes", "followup",
+                                 "followup_note", "followup_done", "handled_by", "by", "updated")}
+    if pv is not None:
+        sv = pv.view(e, priv or {})
+        fb = sv.pop("followup_by", "")
+        sv.pop("edited_by", None)
+        out.update(sv)
+        if sv.get("sealed") and not out.get("person"):
+            out["person"] = SEALED_PERSON
+        if isinstance(e.get("followup_done"), dict):
+            out["followup_done"] = {"at": e["followup_done"].get("at"), "by": fb or e["followup_done"].get("by", "")}
+    return out
 
 
 def h_entries(req, ctx, args):
@@ -485,25 +542,32 @@ def h_entries(req, ctx, args):
     limit = int(_num(_one(args, "limit"), 300) or 300)
     limit = max(1, min(1000, limit))
 
+    pv = _priv(ctx)
+    state = {}
+
     def f(d):
+        priv, complete = pv.reveal(d)
+        state["complete"] = complete
         out = []
         for e in reversed(d["entries"]):
             if not isinstance(e, dict) or not _mine(e, who):
                 continue
+            mine = priv.get(e.get("id")) or {}
             if since is not None and _at(e) < since:
                 continue
             if until is not None and _at(e) >= until:
                 continue
             if fu == "open" and not (e.get("followup") and not e.get("followup_done")):
                 continue
-            if q and not C.match(q, e.get("person"), e.get("needs"), e.get("notes"), e.get("handled_by"),
-                                 e.get("followup_note"), " ".join(str(h) for h in (e.get("help") if isinstance(e.get("help"), list) else []))):
+            if q and not C.match(q, mine.get("person"), mine.get("needs"), mine.get("notes"), mine.get("handled_by"),
+                                 mine.get("followup_note"), " ".join(str(h) for h in (e.get("help") if isinstance(e.get("help"), list) else []))):
                 continue
-            out.append(_public_entry(e))
+            out.append(_public_entry(e, pv, priv))
         return out
     found = _s(ctx)["log"].view(f)
     return {"entries": found[:limit], "total": len(found), "retention_days": retention_days(ctx),
-            "scope": "all" if who["all"] else "mine"}
+            "scope": "all" if who["all"] else "mine",
+            "sealed_locked": not state.get("complete", True)}
 
 
 def h_save(req, ctx, args):
@@ -524,28 +588,36 @@ def h_save(req, ctx, args):
     purge(ctx)
     now = _now()
     cap = C.cfg_int(ctx.cfg(), "max_entries", 10000, 100, 100000)
+    pv = _priv(ctx)
+    private = {k: fields.pop(k) for k in PRIVATE if k in fields}
+    if eid is not None and private.get("person") == SEALED_PERSON:
+        private.pop("person")                         # the locked placeholder sent back: keep the sealed name
 
     def f(log):
         if eid is None:
             if len(log["entries"]) >= cap:
                 return (507, {"error": f"The log is full ({cap} records). Export it, then lower the retention "
                                        "period or ask the admin to raise max_entries."}), False
-            e = {"id": C.new_id(), "at": now, "count": 1, "help": [], "needs": "", "notes": "", "followup": False,
-                 "followup_note": "", "followup_done": None, "handled_by": who["name"], "by": who["name"],
-                 "by_id": who["id"], "created": now, "updated": now}
+            e = {"id": C.new_id(), "at": now, "count": 1, "help": [], "followup": False,
+                 "followup_done": None, "by_id": who["id"], "created": now, "updated": now}
             e.update(fields)
+            vals = {"handled_by": who["name"], "by": who["name"], **private}
+            vals["handled_by"] = vals.get("handled_by") or who["name"]
+            pv.put(log, e, vals)
             log["entries"].append(e)
             log["entries"].sort(key=lambda x: _at(x) if isinstance(x, dict) else 0.0)
-            return (200, {"ok": True, "entry": _public_entry(e)}), True
+            return (200, {"ok": True, "entry": _public_entry(e, pv, {e["id"]: vals})}), True
         for e in log["entries"]:
             if isinstance(e, dict) and e.get("id") == eid and _mine(e, who):
                 e.update(fields)
-                e["updated"], e["edited_by"] = now, who["name"]
+                e["updated"] = now
+                pv.put(log, e, {**private, "edited_by": who["name"]})
                 if "followup" in fields and not fields["followup"]:
                     e["followup_done"] = None
+                    pv.put(log, e, {"followup_by": None})
                 if "at" in fields:
                     log["entries"].sort(key=lambda x: _at(x) if isinstance(x, dict) else 0.0)
-                return (200, {"ok": True, "entry": _public_entry(e)}), True
+                return (200, {"ok": True, "entry": _public_entry(e, pv, pv.reveal(log)[0])}), True
         return (404, {"error": "no such record (it may have been deleted)"}), False
     return _s(ctx)["log"].update(f)
 
@@ -561,14 +633,17 @@ def h_followup(req, ctx, args):
     if wait:
         return 429, {"error": C.wait_msg(wait)}
 
+    pv = _priv(ctx)
+
     def f(log):
         for e in log["entries"]:
             if isinstance(e, dict) and e.get("id") == d["id"] and _mine(e, who):
                 if not e.get("followup"):
                     return (400, {"error": "that record has no follow-up"}), False
-                e["followup_done"] = {"at": _now(), "by": who["name"]} if d["done"] else None
+                e["followup_done"] = {"at": _now()} if d["done"] else None
+                pv.put(log, e, {"followup_by": who["name"] if d["done"] else None})
                 e["updated"] = _now()
-                return (200, {"ok": True, "entry": _public_entry(e)}), True
+                return (200, {"ok": True, "entry": _public_entry(e, pv, pv.reveal(log)[0])}), True
         return (404, {"error": "no such record"}), False
     return _s(ctx)["log"].update(f)
 
@@ -586,6 +661,7 @@ def h_delete(req, ctx, args):
         if len(keep) == len(log["entries"]):
             return (404, {"error": "no such record"}), False
         log["entries"] = keep
+        _priv(ctx).drop(log, d["id"])
         return (200, {"ok": True}), True
     res = _s(ctx)["log"].update(f)
     if res[0] == 200:
@@ -642,9 +718,18 @@ def h_export(req, ctx, args):
         return 401, {"error": "aid staff only"}
     purge(ctx)
     since = _num(_one(args, "since"), None)
-    rows = _s(ctx)["log"].view(lambda log: [_public_entry(e) for e in log["entries"]
-                                            if isinstance(e, dict) and _mine(e, who)
-                                            and (since is None or _at(e) >= since)])
+    pv = _priv(ctx)
+
+    def rows_of(log):
+        priv, complete = pv.reveal(log)
+        if not complete:
+            return None
+        return [_public_entry(e, pv, priv) for e in log["entries"]
+                if isinstance(e, dict) and _mine(e, who) and (since is None or _at(e) >= since)]
+    rows = _s(ctx)["log"].view(rows_of)
+    if rows is None:
+        return 423, {"error": "The records are sealed and the Badger is locked. The owner can unlock it "
+                              "(Settings → Sealed records); then export again.", "locked": True}
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["time", "person", "people", "help given", "needs", "notes", "follow-up needed",
@@ -723,6 +808,8 @@ def h_admin_post(req, ctx, args):
             def w(log):
                 n = len(log["entries"])
                 log["entries"] = []
+                log.pop("sealed", None)
+                log.pop("sealed_pending", None)
                 return n, True
             n = _s(ctx)["log"].update(w)
             _audit(ctx, admin, f"deleted all {n} record(s)")

@@ -43,8 +43,9 @@ solver_install() {
     solver_warn "systemd $ver is too old for the sandbox (needs 247+: ProtectProc, PrivateIPC); Python runner stays off"
     return 0
   fi
+  # only an INSTALLED unit counts (install.sh copies os/systemd/*.socket); the source copy alone can't be started
   [ -f /etc/systemd/system/prepper-solver-sandbox.socket ] || [ -f /lib/systemd/system/prepper-solver-sandbox.socket ] \
-    || [ -f "$OPT/os/systemd/prepper-solver-sandbox.socket" ] || { solver_warn "sandbox units not found"; return 0; }
+    || { solver_warn "sandbox units not installed in /etc/systemd/system (re-run install.sh)"; return 0; }
   systemctl daemon-reload || true
   if ! systemctl enable --now prepper-solver-sandbox.socket >/dev/null 2>&1; then
     solver_warn "couldn't start prepper-solver-sandbox.socket (see: journalctl -u prepper-solver-sandbox.socket)"

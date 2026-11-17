@@ -39,8 +39,9 @@ def lon_step(lat_snapped: float) -> float:
 
 # /api/status keys that describe the household rather than the library: battery, mains or solar,
 # runtime left (power), how many devices are on the Wi-Fi (clients), how the Badger reaches the
-# internet (uplink) and how long since it last lost power (uptime).
-PRIVATE_STATUS_KEYS = ("power", "clients", "uplink", "uptime_s")
+# internet (uplink), how long since it last lost power (uptime), and the household's security posture
+# (whether it is locked down is the family's business, not a passer-by's).
+PRIVATE_STATUS_KEYS = ("power", "clients", "uplink", "uptime_s", "posture", "version")   # version: don't help attackers pick exploits
 
 
 def _num(v) -> float | None:

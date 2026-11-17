@@ -7,6 +7,10 @@ or remove it; the admin can hide or remove anything.
 Everything here is visible to anyone on the Wi-Fi, so the page asks people to share only what
 they're comfortable with. Abuse limits: per-address rate limits and entry caps, length limits
 on every field, a total cap, and entries expire unless renewed (default 90 days).
+
+Sealed records (docs/SECURITY.md): "Where / how to find you" (contact) is sealed at rest. What someone
+offers or needs stays readable so the community search keeps working while the Badger is locked; the
+contact shows again once the owner unlocks it. New entries and edits are taken while locked.
 """
 from __future__ import annotations
 
@@ -34,6 +38,7 @@ KINDS = ("offer", "need")
 CATEGORIES = ("medical", "trades", "radio", "care", "language", "food", "water", "power", "tools",
               "transport", "shelter", "other")
 FIELDS = {"title": 80, "name": 40, "contact": 200, "availability": 120, "details": 500}
+PRIVATE = ("contact",)                     # sealed at rest
 MAX_FLAGS = 20
 
 
@@ -66,6 +71,27 @@ def _store(ctx) -> C.JsonStore:
         return _stores[key]
 
 
+def _priv(ctx) -> C.Private:
+    return C.Private(C.sealer_of(ctx), PRIVATE)
+
+
+def _migrate(ctx) -> None:
+    """Sealed-records setup (and older files): contacts into the sealed map, re-sealed with this run's key."""
+    pv = _priv(ctx)
+
+    def f(d):
+        pv.migrate(d, d["entries"])
+        pv.reseal(d, [e.get("id") for e in d["entries"] if isinstance(e, dict)])
+        return None, True
+    _store(ctx).update(f)
+
+
+def setup(ctx):
+    s = C.sealer_of(ctx)
+    if s is not None:
+        s.register_migrator("skills", lambda: _migrate(ctx))
+
+
 def _cfg(ctx):
     c = ctx.cfg()
     return {"max": C.cfg_int(c, "max_entries", 500, 10, 5000), "per_ip": C.cfg_int(c, "per_ip", 10, 1, 100),
@@ -76,10 +102,12 @@ def _expired(e: dict, days: int, now: float) -> bool:
     return days > 0 and now - float(e.get("updated") or 0) > days * 86400
 
 
-def _purge(d: dict, days: int, now: float) -> bool:
+def _purge(d: dict, days: int, now: float, pv: C.Private | None = None) -> bool:
     keep = [e for e in d["entries"] if isinstance(e, dict) and not _expired(e, days, now)]
     if len(keep) != len(d["entries"]):
         d["entries"] = keep
+        if pv is not None:
+            pv.tidy(d, [e.get("id") for e in keep])
         return True
     return False
 
@@ -99,8 +127,11 @@ def _clean(data: dict, partial: bool = False) -> dict:
     return out
 
 
-def _public(e: dict, admin: bool) -> dict:
+def _public(e: dict, admin: bool, pv: C.Private | None = None, priv: dict | None = None) -> dict:
     out = {k: e.get(k) for k in ("id", "kind", "category", *FIELDS, "created", "updated")}
+    if pv is not None:
+        sv = pv.view(e, priv or {})
+        out.update(contact=sv["contact"], contact_sealed=bool(sv.get("sealed")))
     if admin:
         out["hidden"] = bool(e.get("hidden"))
         out["flags"] = len(e.get("flags") or [])
@@ -120,10 +151,13 @@ def h_list(req, ctx, args):
     cfg = _cfg(ctx)
     now = _now()
     st = _store(ctx)
-    if st.view(lambda d: any(isinstance(e, dict) and _expired(e, cfg["expire"], now) for e in d["entries"])):
-        st.update(lambda d: (None, _purge(d, cfg["expire"], now)))
+    pv = _priv(ctx)
+    if st.view(lambda d: any(isinstance(e, dict) and _expired(e, cfg["expire"], now) for e in d["entries"])
+               or any(isinstance(e, dict) and "contact" in e for e in d["entries"])):
+        st.update(lambda d: (None, _purge(d, cfg["expire"], now, pv) | pv.migrate(d, d["entries"])))
 
     def f(d):
+        priv, _ = pv.reveal(d)
         out = []
         for e in reversed(d["entries"]):
             if not isinstance(e, dict) or (e.get("hidden") and not admin):
@@ -133,9 +167,9 @@ def h_list(req, ctx, args):
             if cat in CATEGORIES and e.get("category") != cat:
                 continue
             if q and not C.match(q, e.get("title"), e.get("name"), e.get("details"), e.get("availability"),
-                                 e.get("contact"), e.get("category")):
+                                 (priv.get(e.get("id")) or {}).get("contact"), e.get("category")):
                 continue
-            out.append(_public(e, admin))
+            out.append(_public(e, admin, pv, priv))
         return out
     return {"entries": st.view(f), "categories": list(CATEGORIES), "expire_days": cfg["expire"]}
 
@@ -153,16 +187,19 @@ def h_add(req, ctx, args):
     tag = C.ip_tag(ctx.data_dir(), ip)
     raw, hashed = C.new_token()
     now = _now()
+    pv = _priv(ctx)
+    private = {k: fields.pop(k) for k in PRIVATE if k in fields}
 
     def f(d):
-        changed = _purge(d, cfg["expire"], now)
+        changed = _purge(d, cfg["expire"], now, pv)
         if sum(1 for e in d["entries"] if isinstance(e, dict) and e.get("ipt") == tag) >= cfg["per_ip"]:
             return (429, {"error": f"At most {cfg['per_ip']} entries from one device. Edit or remove one of yours first."}), changed
         if len(d["entries"]) >= cfg["max"]:
             return (507, {"error": "The directory is full. Ask the Badger's owner to tidy it up."}), changed
         e = {"id": C.new_id(), **fields, "created": now, "updated": now, "tok": hashed, "ipt": tag, "flags": []}
+        pv.put(d, e, private)
         d["entries"].append(e)
-        return (200, {"ok": True, "id": e["id"], "token": raw, "entry": _public(e, False)}), True
+        return (200, {"ok": True, "id": e["id"], "token": raw, "entry": _public(e, False, pv, {e["id"]: private})}), True
     return _store(ctx).update(f)
 
 
@@ -189,15 +226,20 @@ def h_edit(req, ctx, args):
     if wait:
         return 429, {"error": C.wait_msg(wait)}
 
+    pv = _priv(ctx)
+    private = {k: fields.pop(k) for k in PRIVATE if k in fields}
+
     def f(db):
         e = _find(db, d["id"])
         if not e:
             return (404, {"error": "no such entry (it may have expired or been removed)"}), False
         if not _owner_or_admin(e, d, args):
             return (403, {"error": "only the person who added this entry can change it"}), False
+        pv.migrate(db, [e])
         e.update(fields)
+        pv.put(db, e, private)
         e["updated"] = _now()                       # also "renews" an entry with no changes
-        return (200, {"ok": True, "entry": _public(e, bool(args["admin"]))}), True
+        return (200, {"ok": True, "entry": _public(e, bool(args["admin"]), pv, pv.reveal(db)[0])}), True
     return _store(ctx).update(f)
 
 
@@ -216,6 +258,7 @@ def h_remove(req, ctx, args):
         if not _owner_or_admin(e, d, args):
             return (403, {"error": "only the person who added this entry can remove it"}), False
         db["entries"] = [x for x in db["entries"] if x is not e]
+        _priv(ctx).drop(db, e.get("id"))
         return (200, {"ok": True}), True
     return _store(ctx).update(f)
 
@@ -253,6 +296,7 @@ def h_moderate(req, ctx, args):
             return (404, {"error": "no such entry"}), False
         if op == "remove":
             db["entries"] = [x for x in db["entries"] if x is not e]
+            _priv(ctx).drop(db, e.get("id"))
         elif op == "clear_flags":
             e["flags"] = []
         else:

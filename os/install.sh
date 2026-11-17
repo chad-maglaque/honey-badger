@@ -362,7 +362,7 @@ rm -f /etc/nginx/sites-enabled/default
 [ "$(toml network.https)" != "False" ] && [ ! -f /etc/prepper/tls/server.crt ] && "$OPT/os/bin/prepperctl" gen-tls
 [ -f /etc/prepper/keys/disk_ed25519 ] || "$OPT/os/bin/prepperctl" gen-key
 grep -q '^server ' /etc/chrony/chrony.conf || true
-for u in "$OPT"/os/systemd/*.service "$OPT"/os/systemd/*.timer "$OPT"/os/systemd/*.path; do
+for u in "$OPT"/os/systemd/*.service "$OPT"/os/systemd/*.timer "$OPT"/os/systemd/*.path "$OPT"/os/systemd/*.socket; do
   [ -f "$u" ] || continue                     # (a pattern with no match stays literal)
   install -m 644 "$u" /etc/systemd/system/
 done

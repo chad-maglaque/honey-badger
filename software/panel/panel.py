@@ -62,6 +62,12 @@ try:                                    # the radio features' shared settings (s
 except Exception:  # noqa: BLE001 — the panel must start without the radio code
     _sdrc = None
 
+try:                                    # the made-up household's state (software/common/decoy.py)
+    sys.path.append(str(Path(__file__).resolve().parent.parent / "common"))
+    import decoy as _decoy
+except Exception:  # noqa: BLE001 — the panel must start without it
+    _decoy = None
+
 CTL = os.environ.get("PREPPER_CTL", "/opt/prepper/bin/prepperctl")
 API = os.environ.get("PREPPER_API", "http://127.0.0.1:8000")
 # The panel proves to the portal that it is the panel (for invites and the precise GPS position)
@@ -72,6 +78,8 @@ _key_cache: dict = {}
 PANEL_LOCK = Path(os.environ.get("PANEL_LOCK", "/etc/prepper/panel-lock.json"))
 # Written by the portal when the admin taps "Set up a panel code" (setting one is allowed for 10 min).
 PANEL_LOCK_ARM = Path(os.environ.get("PANEL_LOCK_ARM", "/var/lib/prepper/portal/panel-lock-arm.json"))
+# The dead-man switch's counter (written by prepperctl deadman-check; no secrets).
+DEADMAN_STATE = Path(os.environ.get("PANEL_DEADMAN_STATE", "/var/lib/prepper/deadman-state.json"))
 
 
 # ───────────────────────────── data ──────────────────────────────────────────
@@ -116,6 +124,10 @@ def ensure_panel_key(key_path: Path = PANEL_KEY, hash_path: Path = PANEL_KEY_HAS
 
 
 def panel_headers() -> dict:
+    if _key_cache.get("key") and not PANEL_KEY_HASH.exists() and os.geteuid() == 0:
+        # a panic wipe destroyed the key and its hash: make a new pair (only root — the panel — can)
+        _key_cache.clear()
+        ensure_panel_key()
     if "key" not in _key_cache:
         try:
             _key_cache["key"] = PANEL_KEY.read_text().strip()
@@ -157,6 +169,17 @@ def read_secret_json(path: Path, key: str) -> str | None:
         return v if isinstance(v, str) and v else None
     except (OSError, ValueError):
         return None
+
+
+def ctl_output(*args: str, timeout: float = 60) -> str:
+    """The whole output of a prepperctl call (ctl() keeps only the last line)."""
+    if not Path(CTL).exists():
+        return ""
+    try:
+        r = subprocess.run([CTL, *args], capture_output=True, text=True, timeout=timeout)
+        return (r.stdout or "") + (r.stderr or "")
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def ctl(*args: str) -> str:
@@ -359,9 +382,9 @@ def write_antenna(value: str, now: float, by: str = "front panel") -> str | None
 
 # ───────────────────────────── panel lock ────────────────────────────────────
 
-LOCK_KEYS = ("invite", "radio", "services", "wifi_off", "usb_import", "shutdown",      # guarded by default
+LOCK_KEYS = ("invite", "radio", "services", "wifi_off", "usb_import", "shutdown", "posture",     # guarded by default
              "wifi_join", "app", "power", "updates", "usb_export", "eject", "time", "status")
-DEFAULT_PROTECT = LOCK_KEYS[:6]
+DEFAULT_PROTECT = LOCK_KEYS[:7]
 LOCK_KDF = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32, "maxmem": 64 * 1024 * 1024}
 LOCK_FREE_TRIES, LOCK_BASE_WAIT, LOCK_MAX_WAIT = 3, 30.0, 3600.0
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
@@ -453,14 +476,45 @@ class PanelLock:
         return isinstance(code, str) and code.isdigit() and code.isascii() and CODE_MIN <= len(code) <= CODE_MAX
 
     def set(self, code: str) -> str:
-        """Set (or change) the code; returns a new 12-digit recovery code to write down."""
+        """Set (or change) the code; returns a new 12-digit recovery code to write down. A duress code
+        survives a change of the code, unless the new code is the duress code (then it is dropped)."""
         if not self.valid_code(code):
             raise ValueError(f"the code must be {CODE_MIN}–{CODE_MAX} digits")
+        old = self._read() or {}
         rec = "".join(secrets.choice("0123456789") for _ in range(RECOVERY_LEN))
         salt, rsalt = secrets.token_hex(16), secrets.token_hex(16)
-        self._write({"v": 1, "salt": salt, "hash": _lock_hash(code, salt), "rsalt": rsalt,
-                     "rhash": _lock_hash(rec, rsalt), "fails": 0, "until": 0, "set_at": self.clock()})
+        d = {"v": 1, "salt": salt, "hash": _lock_hash(code, salt), "rsalt": rsalt,
+             "rhash": _lock_hash(rec, rsalt), "fails": 0, "until": 0, "set_at": self.clock()}
+        ds, dh = old.get("dsalt"), old.get("dhash")
+        if isinstance(ds, str) and isinstance(dh, str) and ds and dh \
+                and not hmac.compare_digest(_lock_hash(code, ds), dh):
+            d.update(dsalt=ds, dhash=dh)
+        self._write(d)
         return rec
+
+    # — duress code: opens the panel like the real code, and silently starts a panic wipe —
+    def has_duress(self) -> bool:
+        d = self._read() or {}
+        return bool(d.get("dhash")) and not d.get("damaged")
+
+    def set_duress(self, code: str) -> None:
+        d = self._read()
+        if d is None or d.get("damaged"):
+            raise ValueError("set the panel code first")
+        if not self.valid_code(code):
+            raise ValueError(f"the code must be {CODE_MIN}–{CODE_MAX} digits")
+        if hmac.compare_digest(_lock_hash(code, d["salt"]), d["hash"]):
+            raise ValueError("it must differ from the panel code")
+        ds = secrets.token_hex(16)
+        d.update(dsalt=ds, dhash=_lock_hash(code, ds))
+        self._write(d)
+
+    def clear_duress(self) -> None:
+        d = self._read()
+        if d and not d.get("damaged"):
+            d.pop("dsalt", None)
+            d.pop("dhash", None)
+            self._write(d)
 
     def _try(self, code: str, which: str) -> tuple[str, float]:
         d = self._read()
@@ -472,8 +526,19 @@ class PanelLock:
         if wait > 0:
             return "wait", wait
         salt, want = (d["salt"], d["hash"]) if which == "code" else (d["rsalt"], d["rhash"])
-        good = isinstance(code, str) and code.isdigit() and 0 < len(code) <= RECOVERY_LEN \
-            and hmac.compare_digest(_lock_hash(code, salt), want)
+        shaped = isinstance(code, str) and code.isdigit() and 0 < len(code) <= RECOVERY_LEN
+        good = shaped and hmac.compare_digest(_lock_hash(code, salt), want)
+        # The duress hash is computed on every try (a dummy one if none is set), so the time a check
+        # takes says nothing about which code was typed, or whether a duress code exists.
+        ds, dh = d.get("dsalt"), d.get("dhash")
+        has_d = which == "code" and isinstance(ds, str) and isinstance(dh, str) and bool(ds) and bool(dh)
+        dgot = _lock_hash(code if shaped else "0", ds if has_d else salt)
+        duress = has_d and shaped and not good and hmac.compare_digest(dgot, dh)
+        if duress:
+            if d.get("fails"):
+                d.update(fails=0, until=0, delay=0, mono_until=0)
+                self._write(d)
+            return "duress", 0.0
         if good:
             if d.get("fails"):
                 d.update(fails=0, until=0, delay=0, mono_until=0)
@@ -488,7 +553,7 @@ class PanelLock:
         return "bad", self.wait()
 
     def check(self, code: str) -> tuple[str, float]:
-        """("ok"|"bad"|"wait"|"damaged", seconds to wait)."""
+        """("ok"|"duress"|"bad"|"wait"|"damaged", seconds to wait)."""
         return self._try(code, "code")
 
     def recover(self, code: str) -> tuple[str, float]:
@@ -681,8 +746,10 @@ class Panel:
             self.psk = ""         # a password-free network: the QR must say nopass even if a passphrase is left in the file
         self.url = f"http://{net.get('hostname', 'badger')}.lan"
         portal = cfg.get("portal", {})
-        self.link_file = Path(portal.get("mesh_channel_link", "/var/lib/prepper/portal/mesh-channel.json"))
-        self.bt_pin_file = Path(portal.get("mesh_bt_pin_file", "/var/lib/prepper/portal/mesh-bt-pin.json"))
+        run_dir = Path(portal.get("run_dir") or "/run/prepper")        # the mesh bridge keeps these in RAM
+        self.link_file = Path(portal.get("mesh_channel_link") or run_dir / "mesh-channel.json")
+        self.bt_pin_file = Path(portal.get("mesh_bt_pin_file") or run_dir / "mesh-bt-pin.json")
+        self.circle_link_file = Path(portal.get("mesh_circle_link") or run_dir / "mesh-circle.json")
         self.stack: list[tuple[str, list]] = []
         self.sel = 0
         self.screen = "home"              # home | menu | qr | msg | confirm
@@ -712,6 +779,12 @@ class Panel:
         self.protect = {k for k in prot if k in LOCK_KEYS} if isinstance(prot, list) else set(DEFAULT_PROTECT)
         self.unlocked_until = 0.0         # monotonic; 0 = locked (when a code is set)
         self.code_buf, self.code_sel, self.code_mode, self.code_then, self.code_first = "", 0, "unlock", None, ""
+        self.decoy = False                # after the duress code: secrets are "not there", wipes only pretend
+        sd = os.environ.get("PANEL_SEALED_DIR")
+        self.sealed_dir = Path(sd) if sd else (_decoy.sealed_dir(cfg) if _decoy else Path("/var/lib/prepper/portal/sealed"))
+        self.hold_action, self.hold_text = None, []
+        self.wiping = False
+        self.cfg_path = Path(os.environ.get("PREPPER_CONFIG", "/etc/prepper/prepper.toml"))
 
     # — menu tree (built fresh so labels show current state) —
     def root(self) -> list:
@@ -726,7 +799,9 @@ class Panel:
             *self.approve_entries(),
             ("Family radio", self.guard("radio", lambda: self.show_list("Family radio", [
                 ("Channel link (QR)", lambda: self.confirm("Show radio\nkey QR?", self.radio_link_qr)),
+                ("Circle link (QR)", lambda: self.confirm("Show circle\nkey QR?", self.circle_link_qr)),
                 ("Bluetooth PIN", self.bt_pin)]))),
+            (f"Posture: {self.posture_label(s) or '?'}", self.guard("posture", self.posture_menu)),
             ("Status", self.guard("status", self.status_rows)),
             *self.feature_entries(),
             ("Power mode", self.guard("power", lambda: self.show_list("Power mode", [
@@ -750,8 +825,94 @@ class Panel:
                        ("Turn off", self.guard("wifi_off", lambda: self.confirm("Wi-Fi off?", lambda: self.run("wifi-off"))))]),
             ("System", [("Restart", self.guard("shutdown", lambda: self.confirm("Restart?", lambda: self.run("reboot")))),
                         ("Shut down", self.guard("shutdown", lambda: self.confirm("Shut down?", lambda: self.run("shutdown")))),
-                        ("Panel lock", self.lock_menu)]),
+                        ("Panel lock", self.lock_menu),
+                        ("Recovery key", lambda: self.ask_code("rkey")),
+                        ("Panic wipe", self.guard_always(self.wipe_start)),
+                        ("Hand over / sell", self.guard_always(self.handover_start))]),
         ]
+
+    # — security posture + "what this Badger reveals" (features/posture.py, features/reveal.py) —
+    POSTURE_LABEL = {"neighbourly": "Neighbourly", "guarded": "Guarded", "lockdown": "Lockdown"}
+
+    def posture_label(self, s: dict | None = None) -> str | None:
+        ps = (s if isinstance(s, dict) else api("/api/status")).get("posture")
+        if not isinstance(ps, dict) or ps.get("level") not in self.POSTURE_LABEL:
+            return None
+        return self.POSTURE_LABEL[ps["level"]] + (" (!)" if ps.get("damaged") else "")
+
+    def posture_menu(self):
+        """Posture: the current level, then a choice (each behind a yes/no), and the reveal check."""
+        cur = api("/api/posture", 65536)
+        lv = cur.get("level") if isinstance(cur, dict) else None
+        rows = [(f"Now: {self.POSTURE_LABEL.get(lv, '?')}", None)]
+        for key in ("neighbourly", "guarded", "lockdown"):
+            mark = "● " if key == lv else "  "
+            rows.append((mark + self.POSTURE_LABEL[key],
+                         (lambda key=key: self.confirm(f"{self.POSTURE_LABEL[key]}?", lambda: self.set_posture(key)))))
+        rows.append(("  Lockdown, Wi-Fi off", lambda: self.confirm("Lockdown and\nWi-Fi off?",
+                                                                  lambda: self.set_posture("lockdown", "off"))))
+        rows.append(("What it reveals", self.reveal_screen))
+        self.show_list("Posture", rows)
+
+    def set_posture(self, level: str, wifi: str | None = None):
+        body = {"level": level}
+        if wifi:
+            body["wifi"] = wifi
+        self.show_msg("Working…")
+        r = api_post("/api/posture/panel", body)
+        if not isinstance(r, dict) or not r.get("ok"):
+            err = r.get("error") if isinstance(r, dict) else None
+            return self.show_msg("Didn't work:\n" + (err if isinstance(err, str) else "?")[:40])
+        w = r.get("wifi") if isinstance(r.get("wifi"), dict) else None
+        msg = f"Posture is now\n{self.POSTURE_LABEL[level]}."
+        if w and w.get("action") == "password" and w.get("ok"):
+            msg += "\nWi-Fi password:\nJoin Wi-Fi (in 10s)"
+        elif w and w.get("action") == "off":
+            msg += "\nWi-Fi turned off."
+        self.show_msg(msg)
+
+    def reveal_screen(self):
+        """What this Badger reveals: "ok"/"!" lines; a line with a fix offers it (behind a yes/no)."""
+        r = api("/api/reveal", 262144)
+        items = r.get("items") if isinstance(r, dict) else None
+        if not isinstance(items, list):
+            return self.show_msg("Can't check now:\nlauncher not\nanswering")
+        rows = []
+        for it in items[:40]:
+            if not isinstance(it, dict):
+                continue
+            mark = {"ok": "ok ", "warn": "!  ", "info": "-  "}.get(it.get("state"), "?  ")
+            fix = it.get("fix") if isinstance(it.get("fix"), dict) else None
+            label = mark + clean(it.get("title"), 40)
+            if fix and isinstance(fix.get("action"), str):
+                rows.append((label, (lambda fix=fix: self.confirm(clean(fix.get("label"), 30) + "?",
+                                                                  lambda: self.reveal_fix(fix["action"])))))
+            else:
+                rows.append((label, None))
+        self.show_list("Reveals", rows or [("Nothing to show", None)])
+
+    def reveal_fix(self, action: str):
+        r = api_post("/api/reveal/fix", {"action": action})
+        if isinstance(r, dict) and r.get("ok"):
+            return self.show_msg("\n".join(wrap(clean(r.get("message") or "Done.", 200), W)[:5]))
+        err = r.get("error") if isinstance(r, dict) else None
+        self.show_msg("Didn't work:\n" + (err if isinstance(err, str) else "?")[:40])
+
+    def in_decoy(self) -> bool:
+        """After any duress (this panel's duress code, or the admin's duress PIN / passphrase, which hard-locks
+        the sealed records) the panel shows what the made-up household would: no radio link, no Bluetooth PIN,
+        no devices waiting, no duress code, no dead-man warning."""
+        if self.decoy:
+            return True
+        return bool(_decoy) and _decoy.hard_locked(self.sealed_dir) is not None
+
+    def circle_link_qr(self):
+        if self.locked("radio"):
+            return self.ask_code("unlock", self.circle_link_qr)
+        url = None if self.in_decoy() else read_secret_json(self.circle_link_file, "url")
+        if not url:
+            return self.show_msg("Not in a trusted\ncircle (or the\nradio isn't\nplugged in)")
+        self.show_qr(url, "Trusted\ncircle\nShow only\nin person")
 
     # — panel lock —
     def locked(self, key: str) -> bool:
@@ -779,13 +940,21 @@ class Panel:
         self.screen = "code"
         self.draw()
 
+    RK_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"     # the recovery key's alphabet (base32)
+
     def code_choices(self) -> list[str]:
+        if self.code_mode == "rkey":
+            return list(self.RK_CHARS) + ["OK", "Del", "Cancel"]
         extra = ["OK", "Del"] + (["Forgot?"] if self.code_mode == "unlock" else []) + ["Cancel"]
         return [str(i) for i in range(10)] + extra
 
     def code_press(self):
         ch = self.code_choices()[self.code_sel % len(self.code_choices())]
         limit = RECOVERY_LEN if self.code_mode == "recover" else CODE_MAX
+        if self.code_mode == "rkey" and len(ch) == 1:
+            if len(self.code_buf) < 52:
+                self.code_buf += ch
+            return self.draw()
         if ch.isdigit():
             if len(self.code_buf) < limit:
                 self.code_buf += ch
@@ -801,8 +970,13 @@ class Panel:
             return self.ask_code("recover", self.code_then)
         code, self.code_buf = self.code_buf, ""         # OK
         mode, then = self.code_mode, self.code_then
+        if mode == "rkey":
+            return self.recovery_unlock(code)
         if mode == "unlock":
             st, wait = self.plock.check(code)
+            if st == "duress":
+                self.start_duress()
+                st = "ok"
             if st == "ok":
                 self.unlocked_until = time.monotonic() + UNLOCK_FOR
                 self.screen = "menu" if self.stack else "home"
@@ -819,6 +993,22 @@ class Panel:
                 return self.show_msg(f"Use {CODE_MIN} to {CODE_MAX}\ndigits.")
             self.code_first = code
             return self.ask_code("set2")
+        if mode == "dset1":
+            if not PanelLock.valid_code(code):
+                return self.show_msg(f"Use {CODE_MIN} to {CODE_MAX}\ndigits.")
+            self.code_first = code
+            return self.ask_code("dset2")
+        if mode == "dset2":
+            first, self.code_first = self.code_first, ""
+            if code != first:
+                return self.show_msg("The two codes\ndiffer. Nothing\nwas changed.")
+            if self.in_decoy():                      # (after a duress: answers like the real thing, saves nothing)
+                return self.show_msg("Duress code set.\nIt opens the panel\nand secretly locks\nthe family data.")
+            try:
+                self.plock.set_duress(code)
+            except (OSError, ValueError) as e:
+                return self.show_msg("Not saved:\n" + str(e)[:40])
+            return self.show_msg("Duress code set.\nIt opens the panel\nand secretly locks\nthe family data.")
         if mode == "set2":
             first, self.code_first = self.code_first, ""
             if code != first:
@@ -850,6 +1040,7 @@ class Panel:
         return self.show_list("Panel lock", [
             ("Lock now", self.lock_now),
             ("Change code", self.guard_always(lambda: self.ask_code("set1"))),
+            ("Duress code", self.guard_always(self.duress_menu)),
             ("Turn lock off", self.guard_always(lambda: self.confirm("Turn the panel\nlock off?", self.lock_off)))])
 
     def guard_always(self, action):
@@ -869,8 +1060,160 @@ class Panel:
         self.unlocked_until = 0.0
         self.show_msg("Panel lock is off.")
 
+    # — panic wipe, handover reset, duress code (docs/SECURITY.md → "Panic wipe") —
+    def duress_menu(self):
+        rows = [("A 2nd code that", None), ("opens the panel", None), ("normally but locks", None),
+                ("family data quietly", None)]
+        if self.plock.has_duress() and not self.in_decoy():
+            rows += [("Change duress code", lambda: self.ask_code("dset1")),
+                     ("Remove duress code", lambda: self.confirm("Remove the\nduress code?", self.duress_off))]
+        else:
+            rows.append(("Set duress code", lambda: self.ask_code("dset1")))
+        self.show_list("Duress code", rows)
+
+    def recovery_unlock(self, key: str):
+        """System → Recovery key: the sealed records' recovery key, typed with the knob. Unlocks the family's
+        records (and, after a duress lock, ends it: the real household is back on every screen)."""
+        if len(key) != 52:
+            return self.show_msg("A recovery key\nhas 52 letters\nand digits.")
+        r = api_post("/api/sealed", {"op": "unlock", "secret": key})
+        if isinstance(r, dict) and r.get("ok"):
+            if r.get("via") == "recovery":
+                self.decoy = False
+                return self.show_msg("Unlocked with the\nrecovery key.")
+            return self.show_msg("Unlocked.")
+        err = r.get("error") if isinstance(r, dict) else None
+        return self.show_msg("Didn't work:\n" + (err if isinstance(err, str) else "?")[:40])
+
+    def duress_off(self):
+        try:
+            self.plock.clear_duress()
+        except OSError as e:
+            return self.show_msg("Not saved:\n" + str(e)[:40])
+        self.show_msg("Duress code\nremoved.")
+
+    def hold_screen(self, lines: list[str], action):
+        """Hold-to-confirm: holding the knob 3 s runs `action`; a short press (or sleep) cancels."""
+        self.hold_text, self.hold_action = lines, action
+        self.screen = "hold"
+        self.draw()
+
+    def wipe_start(self):
+        self.confirm("Wipe family\ndata now?", lambda: self.hold_screen(
+            ["Erases members,", "boards, keys…", "Hold knob 3 s", "Press = cancel"], lambda: self.do_wipe("panic-wipe", "panel")))
+
+    def handover_start(self):
+        self.confirm("Factory reset\nfor a new owner?", lambda: self.confirm(
+            "Erase ALL family\ndata + settings?", lambda: self.hold_screen(
+                ["Resets for the", "next owner.", "Hold knob 3 s", "Press = cancel"],
+                lambda: self.do_wipe("handover-reset", "panel"))))
+
+    def wipe_token(self, verb: str) -> str | None:
+        """The one-time confirm-token prepperctl prints (the panel runs it as root, directly)."""
+        out = ctl_output(verb)
+        for line in out.splitlines():
+            if line.startswith("confirm-token:"):
+                tok = line.split(":", 1)[1].strip()
+                if len(tok) <= 20:
+                    return tok
+        return None
+
+    def run_wipe(self, verb: str, trigger: str) -> str:
+        tok = self.wipe_token(verb)
+        if not tok:
+            return "could not start"
+        # (a long timeout: killing a wipe half-way would leave it to wipe-resume at the next boot)
+        out = ctl_output(verb, "--confirm", tok, "--trigger", trigger, timeout=900).strip()
+        return out.splitlines()[-1] if out else "OK"
+
+    def do_wipe(self, verb: str, trigger: str):
+        if self.wiping:
+            return self.show_msg("Already working…")
+        if self.decoy:                               # opened with the duress code: only pretend
+            self.show_msg("Wiping…\nKeep the Badger\npowered." if verb == "panic-wipe" else "Resetting…\nKeep the Badger\npowered.")
+
+            def pretend():
+                time.sleep(4)
+                self.show_msg("Wiped. New Wi-Fi\npassword: Join\nWi-Fi. radio: re-keyed" if verb == "panic-wipe" else
+                              "Reset done. New\nowner: Join Wi-Fi,\nthen set an admin\nPIN at the Badger.")
+            return self.spawn(pretend)
+        self.wiping = True
+        self.show_msg("Wiping…\nKeep the Badger\npowered." if verb == "panic-wipe" else "Resetting…\nKeep the Badger\npowered.")
+
+        def work():
+            try:
+                out = self.run_wipe(verb, trigger)
+            finally:
+                self.wiping = False
+            self.after_wipe()
+            radio = "radio: re-keyed" if "new random keys" in out or "factory-reset" in out else "Unplug the radio\nto be sure."
+            if verb == "panic-wipe":
+                self.show_msg("Wiped. New Wi-Fi\npassword: Join\nWi-Fi. " + radio)
+            else:
+                self.show_msg("Reset done. New\nowner: Join Wi-Fi,\nthen set an admin\nPIN at the Badger.")
+        self.spawn(work)
+
+    def start_duress(self):
+        """The duress code: everything looks normal; the wipe runs in the background and the secret
+        screens act as if nothing was ever set up (no radio link, no PIN, no devices waiting)."""
+        if self.decoy or self.wiping:            # once per panel run (the wipe is idempotent anyway)
+            self.decoy = True
+            return
+        self.decoy = True
+
+        def work():
+            self.wiping = True
+            try:
+                self.run_wipe("panic-wipe", "panel-duress")
+            finally:
+                self.wiping = False
+            self.after_wipe()
+        self.spawn(work)
+
+    def after_wipe(self):
+        """The wipe destroyed the panel key and lock and may have changed the Wi-Fi: carry on with new
+        ones without a restart (a restart would show)."""
+        _key_cache.clear()
+        if os.geteuid() == 0:
+            ensure_panel_key()
+        _file_cache.clear()
+        self.reload_network()
+
+    def reload_network(self):
+        """The hotspot name/password from prepper.toml (a wipe or a rotation may have changed them)."""
+        try:
+            net = tomllib.loads(self.cfg_path.read_text()).get("network", {})
+        except (OSError, ValueError):
+            return
+        if not isinstance(net, dict):
+            return
+        ssid, psk = net.get("ssid"), net.get("passphrase", "")
+        if isinstance(ssid, str) and ssid:
+            self.ssid = ssid
+        if isinstance(psk, str):
+            self.psk = "" if net.get("security") in ("owe", "open", "owe-transition") else psk
+
+    def deadman_page(self) -> list[str] | None:
+        """A loud warning while an armed dead-man switch is less than 2 days from wiping."""
+        if self.in_decoy():
+            return None
+        d = read_json_file(DEADMAN_STATE, 4096)
+        try:
+            days = tomllib.loads(self.cfg_path.read_text()).get("wipe", {}).get("deadman_days", 0)
+        except (OSError, ValueError, AttributeError):
+            days = 0
+        idle = finite(d.get("idle_s")) if isinstance(d, dict) else None
+        if not isinstance(days, int) or isinstance(days, bool) or days <= 0 or idle is None:
+            return None
+        left = days * 86400 - idle
+        if left > 48 * 3600:
+            return None
+        return ["! CHECK IN", "Dead-man wipe in", f"~{max(0, int(left // 3600))} h. Open the", "Badger app."]
+
     # — devices waiting for approval (a device the admin added to an existing member) —
     def approve_entries(self) -> list:
+        if self.in_decoy():
+            return []
         try:
             pend = api("/api/local/devices", 65536).get("pending")
         except Exception:  # noqa: BLE001
@@ -920,6 +1263,7 @@ class Panel:
         which the display draws in a smaller font)."""
         if self.locked("wifi_join"):
             return self.ask_code("unlock", self.wifi_screen)
+        self.reload_network()
         if not self.psk:
             return self.show_qr(self.wifi_qr(), f"{self.ssid[:9]}\nopen")
         self.show_qr(self.wifi_qr(), f"{self.ssid[:9]}\n" + "\n".join(self.psk[i:i + 9] for i in range(0, len(self.psk), 9)))
@@ -927,7 +1271,7 @@ class Panel:
     def radio_link_qr(self):
         if self.locked("radio"):
             return self.ask_code("unlock", self.radio_link_qr)
-        url = read_secret_json(self.link_file, "url")
+        url = None if self.in_decoy() else read_secret_json(self.link_file, "url")
         if not url:
             return self.show_msg("No radio link\nyet: is the mesh\nradio plugged in?")
         self.show_qr(url, "Family\nradio\nchannel\nScan in\nMeshtastic")
@@ -935,7 +1279,7 @@ class Panel:
     def bt_pin(self):
         if self.locked("radio"):
             return self.ask_code("unlock", self.bt_pin)
-        pin = read_secret_json(self.bt_pin_file, "pin")
+        pin = None if self.in_decoy() else read_secret_json(self.bt_pin_file, "pin")
         self.show_msg(f"Radio Bluetooth\nPIN: {pin}" if pin else "Radio Bluetooth\nPIN: unchanged\n(see the radio's\nown screen/manual)")
 
     def wifi_qr(self) -> str:
@@ -966,6 +1310,7 @@ class Panel:
             f"CPU {s.get('cpu_temp_c') or '?'}C  {s['clients'] if s.get('clients') is not None else '?'} users",
             f"Updates: {(u.get('update', 0) + u.get('install', 0))} pending",
             f"GPS {g['lat']:.3f},{g['lon']:.3f}" if g.get("lat") is not None else "GPS: no fix",
+            f"Software v{s.get('version') or '?'}",
         ]
         items = [(r, None) for r in rows]
         try:
@@ -1311,6 +1656,12 @@ class Panel:
         """Home-screen pages for things that need eyes: a paused weather radio, sensor alerts."""
         pages = []
         try:
+            dm = self.deadman_page()
+            if dm:
+                pages.append(dm)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             p = self.wx_pause(self.sdr_status())
             if p:
                 pages.append(["! WX RADIO PAUSED", f"{p[0]} → {hm(p[1])}", "Weather alerts", "not heard till then"])
@@ -1394,7 +1745,8 @@ class Panel:
                 if p.get("input_w") is not None and p.get("input_v", 0) > 1:
                     batt += f"  sun {p['input_w']:.0f}W"
                 pages = [
-                    [self.ssid, f"{s.get('clients') or 0} connected", batt, self.url.replace("http://", "")],
+                    [self.ssid, f"{s.get('clients') or 0} connected", batt,
+                     ("Posture: " + self.posture_label(s)) if self.posture_label(s) else self.url.replace("http://", "")],
                     ["Time", "  " + self.clock_text(s)[0], *self.clock_text(s)[1]],
                     ["Join Wi-Fi, open", self.url.replace("http://", ""), "", "Press knob: menu"],
                 ]
@@ -1415,9 +1767,16 @@ class Panel:
             elif self.screen == "code":
                 ch = self.code_choices()
                 cur = ch[self.code_sel % len(ch)]
-                title = {"unlock": "Panel code", "recover": "Recovery code", "set1": "New code",
-                         "set2": "Same again"}.get(self.code_mode, "Code")
-                self.d.lines([("•" * len(self.code_buf)) or "-", f"‹ {cur} ›", "turn · press", ""], title=title, sel=1)
+                title = {"unlock": "Panel code", "recover": "Recovery code", "set1": "New code", "rkey": "Recovery key",
+                         "set2": "Same again", "dset1": "Duress code", "dset2": "Same again"}.get(self.code_mode, "Code")
+                if self.code_mode == "rkey":
+                    b = self.code_buf
+                    grp = " ".join(b[i:i + 4] for i in range(0, len(b), 4))
+                    self.d.lines([grp[-19:] or "-", f"‹ {cur} ›", f"{len(b)}/52 · press", ""], title=title, sel=1)
+                else:
+                    self.d.lines([("•" * len(self.code_buf)) or "-", f"‹ {cur} ›", "turn · press", ""], title=title, sel=1)
+            elif self.screen == "hold":
+                self.d.lines(self.hold_text or ["Hold the knob", "for 3 seconds", "", "Press = cancel"], title="Hold to confirm")
 
     # — input —
     def wake(self) -> bool:
@@ -1452,6 +1811,9 @@ class Panel:
                 self.screen = "menu" if self.stack else "home"
             elif self.screen == "code":
                 return self.code_press()
+            elif self.screen == "hold":                 # a short press cancels the hold-to-confirm
+                self.hold_action = None
+                self.screen = "menu" if self.stack else "home"
             elif self.screen == "confirm":
                 act, self.confirm_action = self.confirm_action, None
                 self.screen = "menu"
@@ -1473,6 +1835,9 @@ class Panel:
 
     def hold(self):
         self.wake()
+        if self.screen == "hold" and self.hold_action:
+            act, self.hold_action = self.hold_action, None
+            return act()
         if self.screen == "home":
             self.stack = [("Menu", [])]
             self.guard("shutdown", lambda: self.confirm("Shut down?", lambda: self.run("shutdown")))()
@@ -1483,8 +1848,8 @@ class Panel:
         except Exception:  # noqa: BLE001
             pass
         if not self.asleep and time.monotonic() - self.last_input > self.sleep_after:
-            if self.screen in ("msg", "qr", "confirm", "menu", "code"):
-                self.screen, self.stack = "home", []
+            if self.screen in ("msg", "qr", "confirm", "menu", "code", "hold"):
+                self.screen, self.stack, self.hold_action = "home", [], None
             self.unlocked_until, self.code_buf, self.code_then = 0.0, "", None    # asleep = locked again
             self.asleep = True; self.d.sleep(True)
             return

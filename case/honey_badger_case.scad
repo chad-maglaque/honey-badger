@@ -12,13 +12,16 @@
 //   • rear: USB-C PD in, RJ45 (flush); GX16 solar/DC in in a well; SDR whip folds into a recessed channel
 //     (the SDR is the only external antenna; set lora_ext = true for an optional capped mast jack)
 //   • built-in Wi-Fi/LoRa flex antennas and GPS cradle under the lid
-//   • 40 mm intake fan (left), rain-shedding exhaust louvers (right), TPU lid gasket,
-//     8 M3 lid screws, rounded TPU corner bumpers screwed on top and bottom (heads sunk below the surface).
+//   • 40 mm intake fan (left), 4 rain-shedding exhaust louvers (right), TPU lid gasket, 8 M3 lid screws
+//   • TPU armour on every outside edge: a FRONT and a REAR FRAME (one part, printed twice) wrap the 4 edges of each face and
+//     16 mm onto the top, bottom and sides; FOUR EDGE BUMPERS (one part, printed 4×) cover the long front-to-rear edges.
+//     The edge bumpers slide into dovetail grooves in the side walls first; their thin end tenons tuck under the frames,
+//     which then screw on (6 screws each, heads sunk in counterbores) and capture them.
 //   Nothing on the front or rear stands out more than the bumpers' 6 mm, and every recess has 45° roofs and gussets so it prints without supports.
 //
 // Export one part at a time:   openscad --backend=manifold -D 'part="base"' -o base.stl honey_badger_case.scad
-//   parts: base · lid · sled · damper · bumper · gasket · sdr_clip · sdr_shelf (optional 2nd SDR) · panel_test
-//   views: assembly (fit check + clearance report) · showcase · lid_inside · front_view · rear_view · lid_view
+//   parts: base · lid · sled · damper · frame (×2) · edge_bumper (×4) · gasket · sdr_clip · sdr_shelf (optional 2nd SDR) · panel_test
+//   views: assembly (fit check + clearance report) · showcase · exploded · frame_detail · edge_section · lid_inside · front_view · rear_view · lid_view
 //
 // Print: PETG (yellow body, black lid), TPU 95A (black) for bumpers, dampers, gasket. See docs/HARDWARE.md.
 // MEASURE YOUR PARTS: every cutout and envelope below is a parameter. Dimensions in mm.
@@ -183,7 +186,10 @@ tray_boss = [8.5, 7];         // boss diameter, height above the floor top
 fan = 40;
 fan_hole_spacing = 32;
 fan_at = [118, 40];           // y, z on the left wall
-louver_y = [12, 23, 34];      // right wall, clear of the side screw (y 50) and the Wi-Fi slot (y ≥ 64)
+louver_y = [19.5, 29, 38.5, 56.5];   // right wall: front edge of each slot. Three between the front frame (y ≤ 16) and the side
+                              // screw boss (y 45.5-54.5), one between the boss and the Wi-Fi slot (y ≥ 64)
+louver_size = [5, 20];        // slot width (y) × height (z)
+louver_z = 43.5;              // slot bottom on the outer face (box z): between the edge bumpers (z ≤ 16 and ≥ 66.6); slopes down 0.6:1 outward
 
 /* [Ruggedization] */
 sled_t = 4;
@@ -196,13 +202,20 @@ cup_h = 5;
 foam_t = 3;
 post_d = 8;
 post_preload = 1.0;           // posts press 1 mm into the foam
-bumper_t = 6;                 // wrap thickness all round the corner
-bumper_leg = 16;              // how far each bumper wraps along a face
-bumper_cap = 4;               // top and bottom caps (the bottom ones are the feet)
-bumper_cbore = [7.4, 2.8];
-bumper_fillet = 1.5;          // every outside edge of the bumpers is rounded    // counterbore for an M3 button-head screw + washer: head ends 0.65 mm below the cap
-bumper_lip = 3;
-bumper_key = [2.0, 1.0];      // tongue width × depth (groove in the case is 0.3 larger)
+bumper_t = 6;                 // TPU thickness over every face: frames and edge bumpers stand 6 mm off the case all round
+bumper_leg = 16;              // how far the front and rear frames wrap onto the top, bottom and sides
+bumper_cbore = [7.4, 2.8];    // counterbore for an M3 button-head screw + washer: head ends 0.65 mm below the surface
+bumper_fillet = 1.5;          // every outside edge of the bumpers is rounded
+bumper_clear = 0.2;           // gap between the TPU and the case
+edge_leg = 16;                // the edge bumpers wrap this far onto the top/bottom and the side, measured from the edge
+edge_r = 2;                   // case edge radius the bumpers follow (lid top 1.7, base bottom 2)
+tenon = [2.5, 8, 0.3];        // edge-bumper end tenon: plate thickness, starts this far from the face (y), clearance in the frame slot
+dove = [3, 1.5, 9, 0.2];      // edge-bumper tongue / side-wall groove: mouth width, depth (45° flanks), centre from the top/bottom face, clearance
+frame_open = [21, 183, 11.5, 71.5];   // frame window at the case face (box x0, x1, z0, z1): clears both bands' rims by ≥ 1 mm
+frame_open_r = 5.5;
+frame_chamfer = 4;            // 45° lead-in round the window (also lets the SDR whip stand up)
+clip_top = bumper_t + rear_depth - sdr_whip_offset - 0.3;   // SDR clip ring crown above the whip axis: 0.3 mm inside the bumpers
+frame_boss = 4.4;             // solid TPU round each corner screw where the tenon slot stops (the tenon is notched 0.3 more)
 
 $fn = 48;
 outer = [inner.x + 2 * wall, inner.y + 2 * wall, inner.z + floor_t];
@@ -211,12 +224,16 @@ damper_pts = [for (x = [damper_inset.x, sled_size.x - damper_inset.x], y = [damp
 stack_z0 = floor_t + damper_h + sled_t;
 stack_top = stack_z0 + ups_h + pi_h + nvme_h;
 pi_hole_pts = [for (dx = [0, pi_holes.x], dy = [0, pi_holes.y]) pi_at + [pi_hole_inset + dx, pi_hole_inset + dy]];
+Hc = outer.z + lid_t + 0.1;   // top of the lid (+0.1 slack): the height the bumpers wrap
+lid_ft = min(edge_fillet, lid_t - 1 - seam_fillet);   // the lid's rounded top edge
 corner_pts = [[corner_r - 1, corner_r - 1], [outer.x - corner_r + 1, corner_r - 1],
               [corner_r - 1, outer.y - corner_r + 1], [outer.x - corner_r + 1, outer.y - corner_r + 1]];
 // lid screws: 4 corners + a mirror-symmetric set of 4 edge screws (front/rear on the centre line, left/right level at y 50,
 // clear of the Wi-Fi slot). The front and rear ones pass above the front band and the whip channel.
 screw_pts = concat(corner_pts, [[outer.x / 2, wall + 1.5], [outer.x / 2, outer.y - wall - 1.5],
                                 [wall + 1.5, 50], [outer.x - wall - 1.5, 50]]);
+frame_pts = [screw_pts[0], screw_pts[1], screw_pts[4]];   // front frame: 2 corner + middle lid screws on top, the same 3 underneath
+                                                        // (the rear frame is the same part turned round: screw_pts 2, 3, 5)
 rv = function(x) outer.x - x;  // rear-view x → box x
 
 // ───────────────────────── helpers ─────────────────────────
@@ -326,9 +343,9 @@ module base() {
                 translate([-4.5, -7, -11.5]) difference() { cube([9, 7, 7]); translate([-1, 0, 0]) rotate([45, 0, 0]) cube([11, 10, 10]); }
             }
         }
-        // lid inserts (top of every boss) + bumper retention screws (bottom of the corner bosses)
+        // lid inserts (top of every boss) + frame bottom screws (bottom of the corner and front/rear middle bosses)
         for (p = screw_pts) translate([p.x, p.y, outer.z - insert_depth]) cylinder(d = insert_d, h = insert_depth + 1);
-        for (p = corner_pts) translate([p.x, p.y, -1]) cylinder(d = insert_d, h = insert_depth + 1);
+        for (i = [0:5]) translate([screw_pts[i].x, screw_pts[i].y, -1]) cylinder(d = insert_d, h = insert_depth + 1);
         // tray inserts
         for (x = [4.25, power_tray.x - 4.25], y = [4.25, power_tray.y - 4.25])
             translate([power_tray_at.x + x, power_tray_at.y + y, floor_t + tray_boss[1] - insert_depth]) cylinder(d = insert_d, h = insert_depth + 1);
@@ -337,22 +354,14 @@ module base() {
         // SDR clip inserts (blind from outside into the boss)
         for (cx = sdr_clip_x, dx = [-clip_screw_dx, clip_screw_dx]) translate([rv(cx) + dx, outer.y - rear_depth + 0.01, floor_t + sma_at[0].y])
             rotate([90, 0, 0]) cylinder(d = insert_d, h = insert_depth);
-        // bumper key grooves on the four vertical corners
-        for (c = [[0, 0], [1, 0], [0, 1], [1, 1]]) bumper_groove(c);
+        // dovetail grooves along the side walls for the edge bumpers' tongues (open at both ends, so the bumpers slide in)
+        for (i = [0:3]) at_edge(i) w_extrude(-1, outer.y + 1) dove2d(0);
         wells(1);
         front_cutouts();
         rear_cutouts();
         left_cutouts();
         right_cutouts();
     }
-}
-
-module bumper_groove(c) {
-    // a shallow vertical groove at each rounded corner (45°) that the bumper's tongue snaps into
-    p = [c[0] ? outer.x - corner_r : corner_r, c[1] ? outer.y - corner_r : corner_r];
-    a = c[0] ? (c[1] ? 45 : -45) : (c[1] ? 135 : 225);
-    translate([p.x, p.y, 6]) rotate([0, 0, a]) translate([corner_r - bumper_key[1] - 0.3, -(bumper_key[0] + 0.3) / 2, 0])
-        cube([bumper_key[1] + 1.3, bumper_key[0] + 0.3, outer.z - 12]);
 }
 
 module front_cutouts() {
@@ -400,11 +409,12 @@ module left_cutouts() {
 }
 
 module right_cutouts() {
-    // louvers slope DOWN toward the outside, so rain runs off instead of in
-    module stadium() hull() for (z = [3, 13]) translate([3, z]) circle(d = 6);        // 6 × 16 slot in (y, z)
+    // louvers slope DOWN toward the outside, so rain runs off instead of in; their round tops print as short bridges
+    lw = louver_size[0]; lh = louver_size[1];
+    module stadium() hull() for (z = [lw / 2, lh - lw / 2]) translate([lw / 2, z]) circle(d = lw);   // lw × lh slot in (y, z)
     module yz_slab(x0, x1) translate([x0, 0, 0]) rotate([90, 0, 90]) linear_extrude(x1 - x0) children();
     st = fillet_steps(1.0);
-    for (y = louver_y) translate([outer.x - wall - 1, y, floor_t + inner.z - 26])
+    for (y = louver_y) translate([outer.x - wall - 1, y, louver_z + 0.6 * (wall + 1)])
         multmatrix([[1, 0, 0, 0], [0, 1, 0, 0], [-0.6, 0, 1, 0]]) {
             yz_slab(0, wall + 2) stadium();
             for (i = [0:len(st) - 2]) hull() {
@@ -418,7 +428,7 @@ module right_cutouts() {
 module lid() {
     difference() {
         union() {
-            rbox_f([outer.x, outer.y, lid_t], corner_r, fb = seam_fillet, ft = min(edge_fillet, lid_t - 1 - seam_fillet));
+            rbox_f([outer.x, outer.y, lid_t], corner_r, fb = seam_fillet, ft = lid_ft);
             fpc_frame(wifi_a_at, wifi_fpc);
             fpc_frame(wifi_b_at, [wifi_fpc.y, wifi_fpc.x]);
             fpc_frame(lora_at, lora_fpc);
@@ -453,11 +463,12 @@ module lid() {
         }
         for (i = [0:len(screw_pts) - 1]) translate([screw_pts[i].x, screw_pts[i].y, -lip_h - 1]) {
             cylinder(d = m3_clear, h = lid_t + lip_h + 2);
-            // edge screws sit in counterbores; the 4 corner screws clamp the bumper tab, so the lid stays flat there
-            if (i >= 4) translate([0, 0, lip_h + 1 + lid_t - 2.2]) { cylinder(d = m3_head_d, h = 3); translate([0, 0, 2.2 - 0.4]) cylinder(d1 = m3_head_d, d2 = m3_head_d + 0.8, h = 0.41); }
+            // the 2 side screws sit in counterbores (the top edge bumpers lie over them); the corner and front/rear middle
+            // screws clamp the frames, so the lid stays flat there
+            if (i >= 6) translate([0, 0, lip_h + 1 + lid_t - 2.2]) { cylinder(d = m3_head_d, h = 3); translate([0, 0, 2.2 - 0.4]) cylinder(d1 = m3_head_d, d2 = m3_head_d + 0.8, h = 0.41); }
         }
         if (markings != "none") translate([0, 0, lid_t - logo_depth]) linear_extrude(logo_depth + 1) lid_marks();
-        translate([outer.x - 50, 18, lid_t - 0.5]) linear_extrude(1) rr2d([30, 30], 2);   // QR sticker recess, clear of the bumper caps
+        translate([outer.x - 50, 18, lid_t - 0.5]) linear_extrude(1) rr2d([30, 30], 2);   // QR sticker recess, clear of the frame and edge bumper
     }
 }
 
@@ -470,7 +481,7 @@ module fpc_frame(at, size) {
 }
 
 // The lid artwork (2D): badger mark, name and join hint. Used as engraving, multi-colour inlay, or the printed label in renders.
-module lid_logo() translate([14, outer.y / 2 - 19]) badger_coat(logo_mm);
+module lid_logo() translate([21, outer.y / 2 - 19]) badger_coat(logo_mm);   // clear of the left edge bumper (x ≤ 16)
 module lid_text() {
     translate([outer.x / 2 + 18, outer.y / 2 + 6]) text("HONEY BADGER", size = 11, halign = "center", font = "Liberation Sans:style=Bold");
     translate([outer.x / 2 + 18, outer.y / 2 - 10]) text("Join Wi-Fi · open badger.lan", size = 5, halign = "center", font = "Liberation Sans");
@@ -495,54 +506,197 @@ module damper() {
     difference() { cylinder(d = damper_d, h = damper_h); translate([0, 0, 2]) cylinder(d = damper_peg_d - 0.4, h = damper_h); }
 }
 
-module bumper() {
-    // Rounded TPU 95A corner guard for the (0,0) corner; mirror for the others. It follows the case's corner radius,
-    // wraps bumper_leg along both faces and caps the top and bottom edges. Every outside edge is rounded.
-    // Print it upside down (top cap on the bed).
-    // Held by: a screw through the top cap (the corner lid screw) and one through the bottom cap into the base, the caps' lips,
-    // and a tongue in the corner groove. Screw heads sit in counterbores below the cap surfaces.
-    h = outer.z + lid_t + 0.1;
-    z0 = -bumper_cap; z1 = h + bumper_cap;
-    module plan() intersection() {          // convex outline of the whole bumper seen from above
-        offset(r = bumper_t) rr2d([outer.x, outer.y], corner_r);
-        offset(r = 3) offset(delta = -3) translate([-bumper_t - 1, -bumper_t - 1]) square(bumper_leg + bumper_t + 1);
+// ───────────────────────── TPU armour: front/rear frames + four edge bumpers ─────────────────────────
+// Every outside edge is covered. Each FRAME wraps one face's 4 edges and 16 mm onto the top, bottom and sides, around a window that
+// leaves the panel band and its rim clear. The four EDGE BUMPERS cover the long front-to-rear edges, full size (6 mm, the frames'
+// profile); a dovetail tongue on the side leg slides into a groove in the side wall, and at each end the top/bottom leg carries on
+// as a 2.5 mm tenon plate that tucks into a slot under the frame's wrap. Fit order: edge bumpers (slide in) → frames (6 screws each).
+// Both shapes print without supports: frames face down; edge bumpers on the side leg's outer face (45° bevels where they meet the bed).
+
+// 2D rounded rectangle whose corners bevel 45° on the half next to the vertical sides (the same corner as the edge bumpers)
+module td_rect(x0, x1, z0, z1, r) hull() for (left = [true, false], top = [true, false]) {
+    c = [left ? x0 + r : x1 - r, top ? z1 - r : z0 + r];
+    translate(c) circle(r = r);
+    translate([left ? x0 : x1 - 0.01, c.y + (top ? 0.414 * r : -0.414 * r - 0.01)]) square(0.01);
+}
+// outward size of the frame's outer surface at depth y (case y; the face is at y = -bumper_t) over a case edge of radius a:
+// a rounded fillet at the face, a 45° bevel (prints face down) and then a round concentric with the case edge
+function eprof(y, a, t = bumper_t, f = bumper_fillet) =
+    let(R = a + t, e0 = R * sqrt(2) - 2 * a - t, yc = -t + f, ec = e0 - f * (sqrt(2) - 1))
+    y < yc - f / sqrt(2) ? ec + f * sqrt(max(0, 1 - pow((yc - y) / f, 2)))
+    : y < a - R / sqrt(2) ? e0 + (y + t)
+    : y < a ? sqrt(R * R - (a - y) * (a - y)) - a
+    : t;
+function eend(y, L = bumper_leg, t = bumper_t, f = bumper_fillet) = y <= L - f ? t : t - f + sqrt(max(0, f * f - pow(y - (L - f), 2)));
+
+module case_solid(c = 0) translate([-c, -c, -c]) rbox_f([outer.x + 2 * c, outer.y + 2 * c, Hc + 2 * c], corner_r + c, fb = edge_fillet + c, ft = lid_ft + c);
+
+module frame_env() {   // the convex outer shape of the front frame
+    t = bumper_t; f = bumper_fillet; L = bumper_leg;
+    ys = concat([for (i = [0:5]) -t + f - f * cos(45 * i / 5)],
+                [for (y = [-t + f * (1 - 1 / sqrt(2)) + 0.25 : 0.5 : corner_r]) y],
+                [for (i = [0:6]) L - f + f * sin(90 * i / 6)]);
+    hull() for (y = ys) let(ex = min(eprof(y, corner_r), eend(y)), ez = min(eprof(y, edge_r), eend(y)))
+        xz_extrude(y - 0.005, y + 0.005) td_rect(-ex, outer.x + ex, -ez, Hc + ez, edge_r + max(0, min(ex, ez)));
+}
+module frame_window() {   // the window, with a rounded 45° lead-in at the outer face
+    t = bumper_t; ch = frame_chamfer; f = bumper_fillet; o = frame_open;
+    prof = concat([[-1, ch + 0.414 * f + 1]],
+                  [for (i = [0:4]) let(a = 45 * i / 4) [f - f * cos(a), ch + 0.414 * f - f * sin(a)]],
+                  [for (i = [0:4]) let(b = 45 - 45 * i / 4) [ch + 0.414 * f - f * sin(b), f - f * cos(b)]], [[t + 1, 0]]);
+    for (i = [0:len(prof) - 2]) hull() for (p = [prof[i], prof[i + 1]])
+        xz_extrude(-t + p[0] - 0.005, -t + p[0] + 0.005) offset(r = p[1]) translate([o[0], o[2]]) rr2d([o[1] - o[0], o[3] - o[2]], frame_open_r);
+}
+module frame_screw(p, top) {   // through hole + counterbore, teardrops pointing up in the print (+y), so they print without support
+    t = bumper_t; cb = bumper_cbore;
+    translate([p.x, p.y, 0]) {
+        translate([0, 0, top ? Hc - 1 : -t - 1]) linear_extrude(t + 2) teardrop2d(m3_clear);
+        translate([0, 0, top ? Hc + t - cb[1] : -t - 1]) linear_extrude(cb[1] + 1) teardrop2d(cb[0]);
+        translate([0, 0, top ? Hc + t - 0.8 : -t - 0.01]) cylinder(d1 = top ? cb[0] : cb[0] + 1.6, d2 = top ? cb[0] + 1.6 : cb[0], h = 0.81);
     }
-    module screw_tab() intersection() { translate([corner_r - 1, corner_r - 1]) circle(d = 11); rr2d([outer.x, outer.y], corner_r); }
-    module opening() difference() { offset(delta = -bumper_lip) rr2d([outer.x, outer.y], corner_r); screw_tab(); }   // open centre of the caps
-    st = fillet_steps(bumper_fillet);
-    difference() {
-        union() {
-            hull() for (p = st) {
-                translate([0, 0, z0 + p[0]]) linear_extrude(0.01) offset(delta = -p[1]) plan();
-                translate([0, 0, z1 - p[0] - 0.01]) linear_extrude(0.01) offset(delta = -p[1]) plan();
-            }
-        }
-        translate([0, 0, 0]) linear_extrude(h) offset(delta = 0.2) rr2d([outer.x, outer.y], corner_r);   // the case
-        translate([0, 0, z0 - 1]) linear_extrude(z1 - z0 + 2) opening();
-        // rounded rims where the caps open onto the lid and under the base
-        for (i = [0:len(st) - 2]) {
-            translate([0, 0, z1 - st[i + 1][0]]) linear_extrude(st[i + 1][0] - st[i][0] + 1) offset(delta = st[i][1]) opening();
-            translate([0, 0, z0 + st[i][0] - 1]) linear_extrude(st[i + 1][0] - st[i][0] + 1) offset(delta = st[i][1]) opening();
-        }
-        // corner screws pass through the top cap (lid screw, M3×10) and the bottom cap (into the base, M3×8);
-        // button heads + washers sit in counterbores, below the cap surfaces
-        translate([corner_r - 1, corner_r - 1, 0]) {
-            translate([0, 0, h - 1]) cylinder(d = m3_clear, h = bumper_cap + 2);
-            translate([0, 0, z1 - bumper_cbore[1]]) cylinder(d = bumper_cbore[0], h = bumper_cbore[1] + 1);
-            translate([0, 0, z1 - 0.8]) cylinder(d1 = bumper_cbore[0], d2 = bumper_cbore[0] + 1.6, h = 0.81);
-            translate([0, 0, z0 - 1]) cylinder(d = m3_clear, h = bumper_cap + 2);
-            translate([0, 0, z0 - 1]) cylinder(d = bumper_cbore[0], h = bumper_cbore[1] + 1);
-            translate([0, 0, z0 - 0.01]) cylinder(d1 = bumper_cbore[0] + 1.6, d2 = bumper_cbore[0], h = 0.81);
-        }
-    }
-    // anti-peel tongue
-    translate([corner_r, corner_r, 6.3]) rotate([0, 0, 225]) translate([corner_r - bumper_key[1], -bumper_key[0] / 2, 0])
-        cube([bumper_key[1] + 0.21, bumper_key[0], outer.z - 12.6]);
 }
 
-module bumpers() {
-    for (m = [[0, 0], [1, 0], [0, 1], [1, 1]])
-        translate([m[0] * outer.x, m[1] * outer.y, 0]) mirror([m[0], 0, 0]) mirror([0, m[1], 0]) bumper();
+// Edge-bumper local coordinates: u = out from the side face, v = out from the top (or bottom) face, w = case y.
+function edge_m(i) = let(sx = i % 2 == 0 ? -1 : 1, x0 = i % 2 == 0 ? 0 : outer.x, top = i < 2)
+    [[sx, 0, 0, x0], [0, 0, 1, 0], [0, top ? 1 : -1, 0, top ? Hc : 0], [0, 0, 0, 1]];
+module at_edge(i) multmatrix(edge_m(i)) children();           // 0 top-left · 1 top-right · 2 bottom-left · 3 bottom-right
+module w_extrude(w0, w1) translate([0, 0, w0]) linear_extrude(w1 - w0) children();
+eb_screw_w = [corner_r - 1, outer.y - corner_r + 1];           // corner screws in edge-bumper coordinates (u = -(corner_r - 1))
+module eb_outer2d(tau = bumper_t, L = edge_leg) let(R = edge_r + tau, f = bumper_fillet) hull() {
+    translate([-edge_r, -edge_r]) circle(r = R);
+    translate([tau - 0.01, -edge_r + 0.414 * R]) square(0.01);   // 45° bevel on the side-leg half (the print bed side)
+    translate([tau - f, -L + f]) circle(r = f);
+    translate([-L + f, tau - f]) circle(r = f);
+    translate([-L, -L]) square(0.01);
+}
+module eb_inner2d(c = bumper_clear) hull() {                     // the case edge, plus clearance
+    translate([-edge_r, -edge_r]) circle(r = edge_r + c);
+    translate([-60, -60]) square([60 + c, 60 - edge_r]);
+    translate([-60, -60]) square([60 - edge_r, 60 + c]);
+}
+module dove2d(c) let(w = dove[0], h = dove[1], zc = -dove[2])     // c = 0: the groove in the case · c = dove[3]: the tongue
+    offset(delta = -c) polygon([[1, zc - w / 2], [0, zc - w / 2], [-h, zc - w / 2 - h], [-h, zc + w / 2 + h], [0, zc + w / 2], [1, zc + w / 2]]);
+module eb_notch(r) for (w = eb_screw_w) translate([-(corner_r - 1), 20, w]) rotate([90, 0, 0]) linear_extrude(40) rotate(90) teardrop2d(2 * r);
+module tenon_plate(tau, L, tt, w0, w1, f = 0.8) intersection() {
+    hull() for (p = fillet_steps(f), e = [0, 1]) let(w = e == 0 ? w0 + p[0] : w1 - p[0]) w_extrude(w - 0.005, w + 0.005) eb_outer2d(tau - p[1], L - p[1]);
+    translate([-L - 1, bumper_clear - 0.01, w0 - 1]) cube([L + tau + 2, tt - bumper_clear + 0.01, w1 - w0 + 2]);
+}
+
+module edge_bumper() {
+    // Full-size TPU edge bumper (local coordinates; the same part on all four long edges). Body: 6 mm thick, 16 mm legs,
+    // between the frames. Ends: the top/bottom leg carries on as a 2.5 mm tenon plate under the frame, notched round the
+    // corner screw. Tongue: a 45° dovetail on the side leg slides along the groove in the side wall.
+    t = bumper_t; L = edge_leg; f = bumper_fillet;
+    w0 = bumper_leg + bumper_clear; w1 = outer.y - w0;
+    difference() {
+        union() {
+            hull() for (p = fillet_steps(f), e = [0, 1]) let(w = e == 0 ? w0 + p[0] : w1 - p[0])
+                w_extrude(w - 0.005, w + 0.005) eb_outer2d(t - p[1], L - p[1]);
+            tenon_plate(t, L, tenon[0], tenon[1], outer.y - tenon[1]);
+        }
+        w_extrude(-1, outer.y + 1) eb_inner2d();
+        eb_notch(frame_boss + tenon[2]);
+    }
+    intersection() {   // tongue, with 45° lead-ins at both ends
+        w_extrude(w0 + f, w1 - f) dove2d(dove[3]);
+        hull() {
+            translate([-0.3, -40, w0 + f]) cube([2.3, 80, 0.01]);
+            translate([-5, -40, w0 + f + 1.6]) cube([7, 80, w1 - w0 - 2 * f - 3.2]);
+            translate([-0.3, -40, w1 - f - 0.01]) cube([2.3, 80, 0.01]);
+        }
+    }
+}
+module tenon_slot() difference() {   // the frame's slot for one tenon (local coordinates), open to the outside and the back
+    w0 = tenon[1] - tenon[2];
+    intersection() {
+        w_extrude(w0, bumper_leg + 1) eb_outer2d(bumper_t + 1, edge_leg + tenon[2]);
+        translate([-edge_leg - 2, bumper_clear - 0.1, w0 - 1]) cube([edge_leg + bumper_t + 4, tenon[0] + tenon[2] - bumper_clear + 0.1, bumper_leg + 3]);
+    }
+    eb_notch(frame_boss);
+}
+
+module frame() {
+    // FRONT frame, in place. The rear frame is the same part turned round (screw_pts are symmetric). TPU 95A, printed face down.
+    // Held by 3 screws on top (the 2 corner and the middle lid screws, M3×12 through the frame and the lid into the boss inserts)
+    // and 3 underneath (M3×8 into inserts in the bottom of the same bosses); heads sunk in counterbores.
+    difference() {
+        frame_env();
+        case_solid(bumper_clear);
+        frame_window();
+        for (i = [0:3]) at_edge(i) tenon_slot();
+        for (p = frame_pts, top = [true, false]) frame_screw(p, top);
+    }
+}
+module frames() { frame(); translate([outer.x, outer.y, 0]) rotate([0, 0, 180]) frame(); }
+module edge_bumpers() for (i = [0:3]) at_edge(i) edge_bumper();
+
+// ── checks for the armour (called from layout_check / panel_check) ──
+// rectangles in (y, z) on the right wall: louver outer faces including the 1 mm rim rounding
+function louver_rects() = [for (y = louver_y) [y - 1, louver_z - 1, y + louver_size[0] + 1, louver_z + louver_size[1] + 1]];
+// smallest tilt (°) at which the unfolded SDR whip clears the rear frame's window edge
+function whip_tilt(a = 0) = let(K = [sdr_whip_offset - rear_depth, floor_t + sma_at[0].y], r = sdr_whip_d / 2,
+        P = [[bumper_t - frame_chamfer, frame_open[3]], [bumper_t, frame_open[3] + frame_chamfer]],
+        ok = min([for (p = P) (p[1] - K[1]) * sin(a) - (p[0] - K[0]) * cos(a)]) >= r)
+    ok || a >= 60 ? a : whip_tilt(a + 0.5);
+module bumper_check() {
+    // louvers: clear of the frames, the edge bumpers, the side screw bosses and the Wi-Fi slot, with webs between them
+    gz = [dove[2] - dove[0] / 2 - dove[1], dove[2] + dove[0] / 2 + dove[1]];          // groove band from the top/bottom face
+    for (i = [0:len(louver_y) - 1]) let(l = louver_rects()[i], n = str("WARNING: louver ", i + 1, " (y ", louver_y[i], ") ")) {
+        if (l[0] < bumper_leg + 1 || l[2] > outer.y - bumper_leg - 1) echo(str(n, "is under a frame"));
+        if (l[1] < edge_leg + 1 || l[3] > Hc - edge_leg - 1) echo(str(n, "is under an edge bumper"));
+        if (l[1] < gz[1] + 1 || l[3] > Hc - gz[1] - 1) echo(str(n, "cuts the edge-bumper groove"));
+        for (p = screw_pts) if (p.x > outer.x - wall - boss_d && l[0] < p.y + boss_d / 2 && l[2] > p.y - boss_d / 2) echo(str(n, "hits the screw boss at y ", p.y));
+        if (l[2] > wifi_at.y) echo(str(n, "reaches the Wi-Fi slot"));
+        if (i > 0 && louver_y[i] - louver_y[i - 1] - louver_size[0] - 2 < 2) echo(str(n, "web to the previous louver < 2 mm"));
+    }
+    // the fan and the edge bumpers / grooves (left wall)
+    fz = [floor_t + fan_at.y - fan / 2, floor_t + fan_at.y + fan / 2];
+    if (fz[0] < edge_leg + 1 || fz[1] > Hc - edge_leg - 1) echo("WARNING: the fan grille is under an edge bumper");
+    if (fan_at.x - fan / 2 < bumper_leg + 1 || fan_at.x + fan / 2 > outer.y - bumper_leg - 1) echo("WARNING: the fan grille is under a frame");
+    // grooves fit the side walls and stay under the bumpers
+    if (dove[1] > wall - 2) echo("WARNING: the edge-bumper groove leaves less than 2 mm of wall");
+    if (gz[1] > edge_leg - 2) echo("WARNING: the edge-bumper groove runs out from under the bumper");
+    // lid artwork and QR sticker clear of the bumpers
+    if (outer.x - 20 > outer.x - edge_leg - 1 || 18 < bumper_leg + 1) echo("WARNING: the QR sticker recess is under a bumper");
+    if (21 < edge_leg + 1) echo("WARNING: the lid logo is under an edge bumper");
+    // screws: counterbores clear of the tenon slots, and thread engagement in the 5.7 mm inserts
+    if (frame_boss < bumper_cbore[0] / 2 + 0.5) echo("WARNING: frame counterbore breaks into a tenon slot");
+    top_eng = 12 - (bumper_t - bumper_cbore[1] + bumper_clear + lid_t + 0.1);
+    bot_eng = 8 - (bumper_t - bumper_cbore[1] + bumper_clear);
+    if (top_eng < 3.5 || top_eng > insert_depth - 0.3) echo(str("WARNING: M3×12 top frame screws engage ", top_eng, " mm"));
+    if (bot_eng < 3.5 || bot_eng > insert_depth - 0.3) echo(str("WARNING: M3×8 bottom frame screws engage ", bot_eng, " mm"));
+    side_eng = 6 - (lid_t - 2.2);   // the 2 hidden side lid screws, M3×6 in the lid counterbores
+    if (side_eng < 3.5 || side_eng > insert_depth - 0.3) echo(str("WARNING: M3×6 side lid screws engage ", side_eng, " mm"));
+    // print beds
+    ff = [outer.x + 2 * bumper_t, Hc + 2 * bumper_t]; ef = [outer.y - 2 * tenon[1], edge_leg + bumper_t];
+    if (max(ff) > 220 || max(ef) > 220) echo("WARNING: a bumper part doesn't fit a 220 × 220 mm bed");
+    wt = whip_tilt();
+    if (wt > 20) echo(str("WARNING: the SDR whip must tilt back ", wt, "° to clear the rear frame"));
+    echo(str("Bumpers: 2 frames ", ff.x, " × ", ff.y, " × ", bumper_t + bumper_leg, " mm (print face down), 4 edge bumpers ", ef.x, " × ", ef.y, " × ", ef.y,
+             " mm; louvers at y ", louver_y, ", z ", louver_z, "-", louver_z + louver_size[1], " (outer face); screws engage ", top_eng, " / ", bot_eng, " / ", side_eng,
+             " mm (M3×12 frame tops / M3×8 frame bottoms / M3×6 side lid screws); the SDR whip clears the rear frame when tilted back ≥ ", wt, "°"));
+}
+module frame_window_check() {
+    o = frame_open;
+    // the band rims (at the case face) must sit inside the window
+    rims = [["front band", [front_band[0] - rim_fillet, floor_t + front_band[2] - front_depth - rim_fillet, front_band[1] + rim_fillet, floor_t + front_band[3] + front_depth + rim_fillet]],
+            ["rear band", [rband_x[0] - rim_fillet, floor_t + rear_band[2] - 2 - rim_fillet, rband_x[1] + rim_fillet, floor_t + rear_band[3] + rear_depth + rim_fillet]]];
+    // connectors and the room they need, as [x, z, half-width, half-height] in box coordinates
+    parts = [["screen", [oled_at.x, floor_t + oled_at.y, oled_window.x / 2, oled_window.y / 2]],
+             ["knob and fingers", [encoder_at.x, floor_t + encoder_at.y, 14, 14]],
+             ["button", [button_at.x, floor_t + button_at.y, 8, 8]], ["LED", [led_at.x, floor_t + led_at.y, 4, 4]],
+             ["USB-A plugs", [usba_at[0].x, floor_t + front_cl, 9, abs(usba_at[0].y - usba_at[1].y) / 2 + 5]],
+             ["GX16 finger room", [rv(gx16_at.x), floor_t + gx16_at.y, gx16_room, gx16_room]],
+             ["Ethernet plug", [rv(rj45_at.x), floor_t + rj45_at.y, 9, 9]], ["USB-C plug", [rv(usbc_at.x), floor_t + usbc_at.y, 7, 5]],
+             ["SDR jack", [rv(sma_at[0].x), floor_t + sma_at[0].y, 5, 5]],
+             ["SDR 2 plug", [rv(sdr2_jack.x), floor_t + sdr2_jack.y, 6, 6]], ["sensor plug", [rv(sensor_sock_at.x), floor_t + sensor_sock_at.y, 7, 7]],
+             ["folded whip", [rv(sma_at[0].x + sdr_whip_len / 2), floor_t + sma_at[0].y, sdr_whip_len / 2 + 5, sdr_whip_d / 2]],
+             ["whip clips", [rv((sdr_clip_x[0] + sdr_clip_x[1]) / 2), floor_t + sma_at[0].y, (sdr_clip_x[1] - sdr_clip_x[0]) / 2 + 18, 6]]];
+    rects = concat(rims, [for (p = parts) [p[0], [p[1][0] - p[1][2], p[1][1] - p[1][3], p[1][0] + p[1][2], p[1][1] + p[1][3]]]]);
+    m = [for (r = rects) min(r[1][0] - o[0], r[1][1] - o[2], o[1] - r[1][2], o[3] - r[1][3])];
+    for (i = [0:len(rects) - 1]) if (m[i] < (i < 2 ? 0.75 : 1)) echo(str("WARNING: the frame window covers the ", rects[i][0], " (", m[i], " mm)"));
+    if (o[0] < bumper_t + corner_r || o[2] < 8 || Hc - o[3] < 8) echo("WARNING: the frame border is too narrow to hold");
+    echo(str("Frame window ", o, ": margins to the band rims ", [m[0], m[1]], " mm, to the connectors ≥ ", min([for (i = [2:len(m) - 1]) m[i]]), " mm"));
 }
 
 module gasket() {
@@ -557,9 +711,10 @@ module gasket() {
 
 module sdr_clip() {
     // Snap ring for the folded SDR whip. Screws sit BESIDE the ring (±13 mm), so nothing cuts through it.
-    // Print in TPU (flexes without cracking), lying on its back. All edges rounded.
+    // Print in TPU (flexes without cracking), lying on its back. All edges rounded. The crown of the ring is cut flat so the
+    // clip stays inside the bumpers (clip_top); the snap lips below it are untouched.
     ring_id = sdr_whip_d + 0.4; ring_w = 2.4; reach = sdr_whip_offset; L = 10;
-    difference() {
+    intersection() { difference() {
         union() {
             translate([-18, -5, 0]) rbox_f([36, 10, 3], 3, ft = 1);
             hull() for (x = [-3.5, 3.5], y = [-2.5, 2.5]) translate([x, y, 0]) cylinder(r = 1.5, h = reach);
@@ -570,6 +725,7 @@ module sdr_clip() {
         translate([-L / 2 - 1, -ring_id * 0.36, reach + ring_id * 0.2]) cube([L + 2, ring_id * 0.72, ring_id]);
         for (dx = [-clip_screw_dx, clip_screw_dx]) translate([dx, 0, -1]) { cylinder(d = m3_clear, h = 5); translate([0, 0, 3.01]) cylinder(d = m3_head_d, h = 3); }
     }
+    translate([-30, -30, -1]) cube([60, 60, reach + clip_top + 1]); }
 }
 
 // ───────────────────────── second-SDR shelf ─────────────────────────
@@ -745,8 +901,10 @@ module layout_check() {
     // stack height and panels
     top = stack_top + foam_t;
     if (top > outer.z - lip_h) echo(str("WARNING: stack too tall by ", top - (outer.z - lip_h), " mm"));
-    proud = max(2.4 + 8 - front_depth, 3.6 - front_depth, sdr_whip_offset + sdr_whip_d / 2 - rear_depth, 11 - rear_depth, lora_ext ? 11 - sma_well[1] : 0);
+    proud = max(2.4 + 8 - front_depth, 3.6 - front_depth, sdr_whip_offset + sdr_whip_d / 2 - rear_depth, 11 - rear_depth, lora_ext ? 11 - sma_well[1] : 0,
+                sdr_whip_offset + min(sdr_whip_d / 2 + 0.2 + 2.4, clip_top) - rear_depth);   // last: the whip clips' crown
     if (proud > bumper_t) echo(str("WARNING: panel parts stand ", proud, " mm proud, more than the ", bumper_t, " mm bumpers"));
+    bumper_check();
     d = norm([(wifi_a_at.x + wifi_fpc.x / 2) - (wifi_b_at.x + wifi_fpc.y / 2), (wifi_a_at.y + wifi_fpc.y / 2) - (wifi_b_at.y + wifi_fpc.x / 2)]);
     echo(str("Layout: stack headroom ", outer.z - lip_h - top, " mm · plug room ", port_plug_room, " mm · rear-connector clearance ",
              rear_y - sled[3], " mm · fan-to-cells ", ups[0] - fanb[2], " mm · Wi-Fi antennas ", round(d), " mm apart · bumpers ",
@@ -771,7 +929,7 @@ module panel_check() {
                   lora_ext ? [["lora well", span(sma_at[1].x, sma_well[0] / 2 + rear_well_t)]] : []);
     for (c = front, b = boss_x) if (c[1][1] > b - boss_d / 2 && c[1][0] < b + boss_d / 2) echo(str("WARNING: front ", c[0], " hits a lid boss"));
     for (c = rear, b = rboss_x) if (c[1][1] > rv(b) - boss_d / 2 && c[1][0] < rv(b) + boss_d / 2) echo(str("WARNING: rear ", c[0], " hits a lid boss"));
-    for (c = concat(front, rear)) if (c[1][0] < bumper_leg + 1 || c[1][1] > outer.x - bumper_leg - 1) echo(str("WARNING: ", c[0], " is under a bumper"));
+    frame_window_check();
     for (u = [0:len(usba_at) - 2]) if (abs(usba_at[u + 1].y - usba_at[u].y) < 18) echo("WARNING: stacked USB-A flanges overlap");
     for (u = usba_at) if (u.y - 7.5 < front_band[2] || u.y + 7.5 > front_band[3]) echo("WARNING: a USB-A flange doesn't fit the band");
 }
@@ -815,7 +973,7 @@ module badger_coat(size) {
 }
 // ───────────────────────── showcase (visual only — not printed) ─────────────────────────
 // Simple stand-ins for the bought parts so renders show the finished Badger.
-// Honey Badger colours: yellow PETG body, black PETG lid, black TPU bumpers (renders only; print in those filaments).
+// Honey Badger colours: yellow PETG body, black PETG lid, black TPU frames and edge bumpers (renders only; print in those filaments).
 body_color = "#F2B705"; lid_color = "#1C1C1C";
 group = "all";   // showcase only: export one material group for the Blender renders (see tools/render_blender.py)
 GROUPS = [["#F2B705", "body"], ["#1C1C1C", "lid"], ["#E8A317", "amber"], ["#E9E4D6", "lettering"], ["#BFC3C7", "metal"],
@@ -962,7 +1120,7 @@ module lid_inside() {
         paint(C_BLACK) translate([gps_at.x + 2.2, gps_at.y + 2.2, -6 - gps_box.z + 6]) mirror([0, 0, 1]) cube([gps_box.x, gps_box.y, gps_box.z - 0.1]);
     }
 }
-module showcase() {
+module badger_dressed() {   // base, lid, artwork and the bought parts, without the bumpers
     paint(C_BODY) base();
     paint(lid_color) translate([0, 0, outer.z]) lid();
     // lid artwork: a printed label by default, or the colour fill of an inlay / engraving
@@ -970,16 +1128,37 @@ module showcase() {
     lh = markings == "none" ? 0.12 : logo_depth - 0.1;
     paint(C_AMBER) translate([0, 0, lz]) linear_extrude(lh) lid_logo();
     paint(C_MANTLE) translate([0, 0, lz]) linear_extrude(lh) lid_text();
-    paint("#0E0E0E") bumpers();
-    for (p = corner_pts) {
-        translate([p.x, p.y, outer.z + lid_t + 0.1 + bumper_cap - bumper_cbore[1] + 0.5]) screw_head();
-        translate([p.x, p.y, -bumper_cap + bumper_cbore[1] - 0.5]) mirror([0, 0, 1]) screw_head();
-    }
-    for (i = [4:len(screw_pts) - 1]) translate([screw_pts[i].x, screw_pts[i].y, outer.z + lid_t - 2.2]) screw_head();
     translate([0, front_depth, 0]) { oled_lit(); knob(); power_button(); status_led(); }
     translate([0, front_depth, 0]) for (u = usba_at) usb_a_port(u.x, u.y);
     translate([0, -rear_depth, 0]) { usb_c_port(); gx16_socket(); rj45_port(); } rear_antennas(); inside_fan(); qr_sticker();
 }
+module frame_screw_heads() for (i = [0:5]) {   // the 2 side lid screws are hidden under the top edge bumpers
+    translate([screw_pts[i].x, screw_pts[i].y, Hc + bumper_t - bumper_cbore[1] + 0.5]) screw_head();
+    translate([screw_pts[i].x, screw_pts[i].y, -bumper_t + bumper_cbore[1] - 0.5]) mirror([0, 0, 1]) screw_head();
+}
+module showcase() {
+    badger_dressed();
+    paint("#0E0E0E") { frames(); edge_bumpers(); }
+    frame_screw_heads();
+}
+module exploded() {
+    // fit order: the edge bumpers slide into their grooves first, then the frames go on over their tenons
+    badger_dressed();
+    paint("#0E0E0E") {
+        for (i = [0:3]) at_edge(i) translate([22, 22, 0]) edge_bumper();
+        translate([0, -48, 0]) frame();
+        translate([outer.x, outer.y + 48, 0]) rotate([0, 0, 180]) frame();
+    }
+}
+// cut-away views of how the parts lock together (each part is cut on its own, so the cut faces keep its colour)
+module armour_cut() {
+    color("Gold") intersection() { base(); children(); }
+    color("#3A3A3A") intersection() { translate([0, 0, outer.z]) lid(); children(); }
+    color("#8A8F96") intersection() { frames(); children(); }
+    color("#222222") intersection() { edge_bumpers(); children(); }
+}
+module frame_detail() armour_cut() translate([-20, -20, 40]) cube([29, 70, 60]);   // section at x = 9: tenon plate in the slot under the frame
+module edge_section() armour_cut() translate([-20, 60, -20]) cube([outer.x + 40, 40, Hc + 40]);   // section at y = 60: profile + tongue in groove
 
 if (part == "base") base();
 else if (part == "lid") translate([0, outer.y, lid_t]) rotate([180, 0, 0]) lid();
@@ -988,7 +1167,11 @@ else if (part == "lid_inlay") translate([0, outer.y, 0]) mirror([0, 1, 0]) lid_i
 else if (part == "gasket") gasket();
 else if (part == "sled") sled();
 else if (part == "damper") damper();
-else if (part == "bumper") translate([0, 0, outer.z + lid_t + 0.1 + bumper_cap]) mirror([0, 0, 1]) bumper();   // upside down, cap on the bed
+else if (part == "frame") translate([0, 0, bumper_t]) rotate([90, 0, 0]) frame();   // face down; print 2 (front and rear are the same)
+else if (part == "edge_bumper") multmatrix([[0, 0, 1, 0], [0, 1, 0, 0], [-1, 0, 0, bumper_t], [0, 0, 0, 1]]) edge_bumper();   // on the side leg; print 4
+else if (part == "exploded") exploded();
+else if (part == "frame_detail") frame_detail();
+else if (part == "edge_section") edge_section();
 else if (part == "panel_test") panel_test();
 else if (part == "front_view") front_view();
 else if (part == "rear_view") rear_view();
@@ -1001,9 +1184,9 @@ else {
     base();
     envelopes();
     translate([0, 0, outer.z + 25]) color("LightGray", 0.5) lid();
-    color("DarkSlateGray", 0.9) bumpers();
+    color("DarkSlateGray", 0.9) { frames(); edge_bumpers(); }
     panel_check();
     layout_check();
     echo(str("Outer size: ", outer.x, " × ", outer.y, " × ", outer.z + lid_t, " mm; with bumpers ",
-             outer.x + 2 * bumper_t, " × ", outer.y + 2 * bumper_t, " × ", outer.z + lid_t + 0.1 + 2 * bumper_cap, " mm"));
+             outer.x + 2 * bumper_t, " × ", outer.y + 2 * bumper_t, " × ", Hc + 2 * bumper_t, " mm"));
 }

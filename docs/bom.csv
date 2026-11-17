@@ -36,20 +36,21 @@ Panel & I/O,DC5521 barrel plug pigtail,1,"5.5 x 2.1 mm male, 18 AWG",generic,Ama
 Panel & I/O,GX16-2 aviation connector pair,1,2-pin panel socket + cable plug (one plug per adapter cable),generic,"Amazon, AliExpress",GX16 2 pin aviation connector,6,sealed 8–30 V solar/DC input
 Panel & I/O,12 V step-down regulator,1,"5 A, input up to 50 V; drops out to pass-through below ~12.5 V",Pololu D36V50F12,"pololu.com, Amazon",Pololu D36V50F12,35,regulates 20–26 V panels to 12 V; the X1202 takes 6–18 V
 Panel & I/O,Input fuse + TVS,1,5 A inline blade fuse holder + SMBJ30A,generic,"Digi-Key, Amazon",SMBJ30A,3,first thing after the GX16
+Panel & I/O,Regulator input capacitor,1,"100 uF 63 V low-ESR electrolytic",generic,"Digi-Key, Amazon",100uF 63V low ESR electrolytic,1,across the regulator input: absorbs the plug-in spike on long panel cables
 Panel & I/O,Reverse-polarity P-MOSFET stage,1,"P-channel MOSFET ≥40 V ≥10 A (e.g. AOD4185, IRF4905) + 15 V zener + 100 kohm",generic,"Digi-Key, Amazon",AOD4185 P-channel MOSFET,3,right after the fuse
 Panel & I/O,INA228 input meter (optional),1,"85 V, I2C 0x40",Adafruit INA228 breakout,"Adafruit, Digi-Key",INA228 breakout,15,"set input_monitor = ""ina228"" and input_shunt_ohms (Adafruit: 0.015)"
 Panel & I/O,Ideal-diode module,2,"LM74700-based, single channel",generic,"Amazon, AliExpress",LM74700 ideal diode module,6,one per source (USB-C and DC in)
 Panel & I/O,Panel-mount RJ45 extension,1,Cat6 with M3 screw ears,generic,"Adafruit, Amazon",panel mount ethernet extension,8,
 Panel & I/O,40 mm 5 V fan,1,quiet,Noctua NF-A4x10 5V,"Amazon, noctua.at",Noctua NF-A4x10 5V,15,add a 40 mm dust filter
-Panel & I/O,Fan switch MOSFET,1,"AO3400-class logic-level N-MOSFET + flyback diode, module or on perfboard",generic,"Amazon, Digi-Key",AO3400 MOSFET module,3,"GPIO 18; a gate pull-down turns the fan off if the Pi hangs, a pull-up keeps it on"
+Panel & I/O,Fan switch MOSFET,1,"AO3400-class logic-level N-MOSFET + 1N5819 flyback diode + 100 ohm gate resistor + 10 kohm gate pull-up to 3.3 V, module or on perfboard",generic,"Amazon, Digi-Key",AO3400 MOSFET module; 1N5819,3,"GPIO 18; the pull-up makes the fan run while the Pi boots, halts or is not driving the pin"
 Panel & I/O,Sensor socket (rear),1,"M8 4-pin A-coded female panel socket, front mount, IP67, with leads",generic,"Amazon, Digi-Key",M8 4 pin female panel mount connector front,6,"rear SENSORS socket: 1 = 3.3 V (polyfused), 2 = GND, 3 = 1-Wire, 4 = float; different from the GX16 power input"
 Panel & I/O,Sensor polyfuse + pull-ups,1,"100 mA PTC resettable fuse, 4.7 kΩ (1-Wire) and 10 kΩ (float) resistors",generic,"Amazon, Digi-Key",PTC resettable fuse 100mA,2,protects the Pi 3.3 V rail from a crushed outdoor cable
 Case,"PETG filament, yellow",1,"~450 g used (base, sled)","Polymaker, Prusament, Overture, eSun","Amazon, maker stores",yellow PETG filament 1.75,20,1 kg spool; Honey Badger body colour; also the lid inlay colour
 Case,"PETG filament, black",1,~160 g used (lid),"Polymaker, Prusament, Overture, eSun","Amazon, maker stores",black PETG filament 1.75,15,0.5–1 kg spool
-Case,"TPU 95A filament, black",1,~150 g used,"Polymaker PolyFlex TPU95, Overture TPU, eSun eTPU-95A",Amazon,black TPU 95A filament,25,"bumpers, dampers, gasket, SDR clips"
-Case,M3 heat-set inserts,22,M3 x 5.7 mm,CNC Kitchen or Ruthex,"Amazon, CNC Kitchen store",M3 heat set insert,0.2,"8 lid, 4 bumper bottom, 4 power tray, 4 SDR clips, 2 SDR shelf"
+Case,"TPU 95A filament, black",1,~240 g used,"Polymaker PolyFlex TPU95, Overture TPU, eSun eTPU-95A",Amazon,black TPU 95A filament,25,"2 frame bumpers, 4 edge bumpers, dampers, gasket, SDR clips"
+Case,M3 heat-set inserts,24,M3 x 5.7 mm,CNC Kitchen or Ruthex,"Amazon, CNC Kitchen store",M3 heat set insert,0.2,"8 lid, 6 frame bottom, 4 power tray, 4 SDR clips, 2 SDR shelf"
 Case,M2.5 heat-set inserts,4,M2.5,CNC Kitchen or Ruthex,Amazon,M2.5 heat set insert,0.25,sled (Pi/UPS holes)
-Case,M3 screw kit,1,"button head: 8x M3x8 (lid edge, bumper bottom), 4x M3x10 (lid corners), 8x M3x6 (SDR clips, tray), 6x M3x10 + nuts (USB-A, RJ45 ears), 4x M3x20 + nuts (fan), 2x M3x12 (SDR shelf); 8 washers",generic,"Amazon, hardware store",M3 button head screw kit,9,
+Case,M3 screw kit,1,"button head: 6x M3x12 (frame tops = lid corner and middle screws), 6x M3x8 (frame bottoms), 10x M3x6 (2 side lid screws, SDR clips, tray), 6x M3x10 + nuts (USB-A, RJ45 ears), 4x M3x20 + nuts (fan), 2x M3x12 (SDR shelf); 12 washers",generic,"Amazon, hardware store",M3 button head screw kit,9,
 Case,M2.5 and M2 screw kit,1,"M2.5 for the USB-C ears and the UPS; 4x M2 + nylon spacers + nuts for the OLED",generic,"Amazon, hardware store",M2 M2.5 screw nylon spacer kit,7,
 Case,Closed-cell foam 3 mm,1,EVA or neoprene,generic,"craft stores, McMaster-Carr",EVA foam sheet 3mm,3,between the lid posts and the NVMe HAT
 Case,Hook-and-loop strap 20 mm,1,,generic,any,velcro strap 20mm,2,around UPS cells

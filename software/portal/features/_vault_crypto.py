@@ -253,6 +253,49 @@ def openssl_ok(openssl: str) -> bool:
         return False
 
 
+# ── duress hard lock (docs/SECURITY.md → "Duress") ──
+# A flag in vault.json ("hard_lock": {"at"}), no secret in it: while it is there the family passphrase no longer
+# opens the vault — only the printed recovery key does, after which the passphrase works again.
+
+def is_hard_locked(meta) -> bool:
+    return isinstance(meta, dict) and bool(meta.get("hard_lock"))
+
+
+def hard_lock_file(path, now: float | None = None) -> bool:
+    """Set the flag in a vault.json from another process (the root wipe engine). Keeps the file's owner and
+    mode. False when there is no (readable) vault."""
+    import tempfile
+    import time
+    try:
+        st = os.stat(path)
+        with open(path, "rb") as fh:
+            d = json.loads(fh.read(1 << 20))
+    except (OSError, ValueError, RecursionError):
+        return False
+    if not isinstance(d, dict) or not isinstance(d.get("wrap"), dict):
+        return False
+    if d.get("hard_lock"):
+        return True
+    d["hard_lock"] = {"at": int(now if now is not None else time.time())}
+    fd, tmp = tempfile.mkstemp(prefix=".vault.json.", dir=os.path.dirname(os.path.abspath(path)))
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(d, indent=1))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, st.st_mode & 0o777)
+        if os.geteuid() == 0:
+            os.chown(tmp, st.st_uid, st.st_gid)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return True
+
+
 # ── offline tool for an exported bundle ──
 
 def _bundle_open(tar_path: str, pw: str, openssl: str):

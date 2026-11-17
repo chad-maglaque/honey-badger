@@ -55,10 +55,14 @@ month).
 
 ## Limits and privacy
 
-- Up to 2000 items (setting). The list lives in one file on the Badger, readable only by the
-  portal. It is **not** encrypted (use the Document vault for sensitive papers) — what a household
-  has stockpiled is still worth keeping quiet, so only family members can see it; the admin PIN
-  alone doesn't open it.
+- Up to 2000 items (setting). The list lives in one file on the Badger and is **sealed**
+  (encrypted; see "Sealed records" in docs/SECURITY.md): a Badger that is taken shows nothing of
+  what you have or where it's kept, once the owner has set an owner passphrase. Only family members
+  can see it; the admin PIN alone doesn't open it.
+- After a restart the Badger is **locked** until the owner unlocks it (Settings → Sealed records).
+  Meanwhile you can still add items and record changes (+/−, use, edit, household): they are saved
+  sealed and applied in order at the unlock. The page shows only what was added since it locked; the
+  totals, rationing, the change log and the CSV export wait for the unlock.
 - Numbers are estimates: calorie labels, how much people really eat and drink in heat or
   stress, and spoilage all vary. Keep a margin.
 - Settings: `[supplies]` in `prepper.toml` (see the `[supplies]` section of `os/prepper.toml.example`).

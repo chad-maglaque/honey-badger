@@ -108,6 +108,15 @@ def _install():
         if event.startswith(prefixes):
             raise PermissionError(event + " is not allowed in the sandbox")
 
+    # Python 3.13 loads frozen standard modules through marshal.loads, which the hook blocks: import the
+    # ones user code commonly needs (directly or via pathlib/zipfile/runpy) before the hook goes in.
+    for _mod in ("ntpath", "posixpath", "pathlib", "importlib.util", "importlib.machinery", "zipimport",
+                 "zipfile", "runpy", "fractions", "decimal", "statistics", "json", "re", "math", "itertools",
+                 "functools", "collections", "datetime", "random"):
+        try:
+            __import__(_mod)
+        except ImportError:
+            pass
     sys.addaudithook(hook)
     try:
         import _imp

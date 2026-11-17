@@ -1054,6 +1054,29 @@ id = "x"
         d.step(161.0)
         self.assertEqual(json.loads(p.read_text())["updated"], 161.0)     # …but at least once a minute
 
+    def test_telemetry_path_follows_the_bridge(self):
+        """Radio telemetry lives in RAM (/run/prepper) — sensord reads where the mesh bridge writes it."""
+        old = os.environ.pop("MESH_TELEMETRY", None)
+        self.addCleanup(lambda: old is None or os.environ.__setitem__("MESH_TELEMETRY", old))
+
+        def path(raw):
+            raw.setdefault("portal", {})["features_data"] = str(self.tmp / "f3")
+            raw.setdefault("sensors", {})["auto_detect"] = False
+            d = sensord.Sensord(raw, i2c_open=self.i2c_open, w1_root=self.w1, sleep=NOSLEEP, mono=self.clock)
+            self.addCleanup(d.close)
+            return d.telemetry_path
+
+        self.assertEqual(sensord.TELEMETRY, Path("/run/prepper/mesh-telemetry.jsonl"))
+        self.assertEqual(path({}), Path("/run/prepper/mesh-telemetry.jsonl"))
+        self.assertEqual(path({"portal": {"run_dir": str(self.tmp / "run")}}), self.tmp / "run" / "mesh-telemetry.jsonl")
+        self.assertEqual(path({"portal": {"run_dir": "/x", "mesh_telemetry": str(self.tmp / "t.jsonl")}}),
+                         self.tmp / "t.jsonl")
+        self.assertEqual(path({"portal": {"mesh_telemetry": "/a.jsonl"}, "sensors": {"telemetry_file": "/b.jsonl"}}),
+                         Path("/b.jsonl"))
+        os.environ["MESH_TELEMETRY"] = str(self.tmp / "env.jsonl")
+        self.assertEqual(path({"portal": {"mesh_telemetry": "/a.jsonl"}}), self.tmp / "env.jsonl")
+        os.environ.pop("MESH_TELEMETRY")
+
     def test_disabled_exits(self):
         cfgp = self.tmp / "p.toml"
         cfgp.write_text("[sensors]\nenabled = false\n")
@@ -1267,7 +1290,9 @@ remote_nodes = ["!abcd1234"]
         board = [json.loads(x) for x in (self.tmp / "board.jsonl").read_text().splitlines()]
         self.assertEqual(board[-1]["name"], "Badger sensors")
         self.assertTrue(board[-1]["text"].startswith("⚠ Basement: water"))
-        fam = [json.loads(x) for x in (self.tmp / "family-board.jsonl").read_text().splitlines()]
+        # the family board is sealed at rest (docs/SECURITY.md → Sealed records): open it as the portal does
+        fam = [server.sealed_store().open_json(json.loads(x)["s"])
+               for x in (self.tmp / "family-board.jsonl").read_text().splitlines()]
         self.assertTrue(fam[-1]["text"].startswith("✓ Freezer back to normal (at "))
         self.assertNotIn("stale", (self.tmp / "board.jsonl").read_text())
         self.assertEqual(json.loads((data / "board-posted.json").read_text())["seq"], 14)

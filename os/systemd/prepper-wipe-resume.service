@@ -1,0 +1,12 @@
+[Unit]
+Description=Finish a panic wipe interrupted by a power cut (or its delayed part after a restart)
+After=local-fs.target prepper-net.service
+# Does nothing unless /var/lib/prepper/wipe-pending.json exists (written while a wipe runs).
+
+[Service]
+Type=oneshot
+ExecStart=/opt/prepper/os/bin/prepperctl wipe-resume
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=multi-user.target

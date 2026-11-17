@@ -71,7 +71,7 @@
       "<h3>" + esc(e.title) + "</h3>" +
       (e.name ? '<p class="small"><b>' + esc(e.name) + "</b></p>" : "") +
       (e.availability ? '<p class="small">🕒 ' + esc(e.availability) + "</p>" : "") +
-      (e.contact ? '<p class="small">📍 ' + esc(e.contact) + "</p>" : "") +
+      (e.contact ? '<p class="small">📍 ' + esc(e.contact) + "</p>" : e.contact_sealed ? '<p class="small muted">📍 Contact sealed — shows when the Badger’s owner unlocks it.</p>' : "") +
       (e.details ? '<p class="small" style="white-space:pre-wrap">' + esc(e.details) + "</p>" : "") +
       '<div class="meta">Updated ' + esc(B.tfmt(e.updated, { date: true, short: true })) + "</div></div>" +
       '<div class="btns">' +
@@ -138,6 +138,7 @@
       var body = { kind: k ? k.value : "offer", category: $("skc").value, title: $("skt").value, name: $("skn").value,
         contact: $("sko").value, availability: $("ska").value, details: $("skd").value };
       if (edit) { body.id = e.id; body.token = tokens()[e.id]; }
+      if (edit && e.contact_sealed && !body.contact) delete body.contact;    // sealed and locked: keep it as it is
       $("skS").textContent = "Saving…";
       B.api(edit ? "/api/skills/edit" : "/api/skills/add", { body: body }).then(function (r) {
         if (!r.ok) { $("skS").textContent = r.error || "Couldn’t save."; return; }

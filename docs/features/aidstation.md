@@ -47,8 +47,11 @@ After five wrong codes, that phone has to wait 10 minutes.
 
 - Records are **deleted automatically** after 30 days (the admin can choose 1–365 days on the page).
 - Records stay on the Badger. They are **not** sent over the radio or shown to anyone else.
-- They are **not encrypted** on the Badger's drive: anyone who takes the Badger apart could read
-  them. Keep the Badger somewhere safe.
+- Names, needs, notes and volunteers' names are **sealed** on the Badger's drive (see "Sealed
+  records" in docs/SECURITY.md): a Badger that is taken shows nothing of them once the owner has set
+  an owner passphrase. After a restart the Badger is locked until the owner unlocks it: the station
+  keeps working — new records are saved (sealed) and shown, today's counts work — but older records
+  show as "🔒 sealed" and the CSV export waits until the owner unlocks.
 - Every CSV export, deletion and volunteer change is noted under **Recent activity** for the admin.
 - A downloaded CSV lives on that phone or laptop. Delete it when you no longer need it.
 - Write only what the station needs. A description is fine when someone doesn't want to give a name.

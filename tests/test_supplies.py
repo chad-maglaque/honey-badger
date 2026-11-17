@@ -557,7 +557,9 @@ people = 3
         feat = [f for f in server.FEATURES if f["id"] == "supplies"][0]
         msg = feat["mod"].check_notify(feat["mod"]._store(feat["ctx"]), feat["ctx"])
         self.assertIn("Batteries D", msg)
-        board = [json.loads(x) for x in (self.tmp / "family-board.jsonl").read_text().splitlines()]
+        # the family board is sealed at rest (docs/SECURITY.md → Sealed records): open it the way the portal does
+        board = [server.sealed_store().open_json(json.loads(x)["s"])
+                 for x in (self.tmp / "family-board.jsonl").read_text().splitlines()]
         self.assertEqual(board[-1]["text"], msg)
         self.assertEqual(board[-1]["name"], "📦 Supplies")
         self.assertEqual(self.req("GET", "/api/board?board=community")[1]["messages"], [])   # never on the public board

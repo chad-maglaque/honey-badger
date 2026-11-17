@@ -1,0 +1,8 @@
+[Unit]
+Description=Honey Badger dead-man switch check (wipes the family data only when armed and overdue)
+# Off unless the owner armed it in two steps (prepperctl deadman-set). Counts only time the Badger
+# has been running without a check-in; a clock jump can't fire it. docs/SECURITY.md → "Dead-man switch".
+
+[Service]
+Type=oneshot
+ExecStart=/opt/prepper/os/bin/prepperctl deadman-check

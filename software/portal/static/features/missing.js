@@ -53,7 +53,7 @@
       if (r._status !== 200) { box.textContent = r.error || "Couldn’t load the posts."; return; }
       var mine = tokens(), admin = B.isAdmin();
       box.className = "section";
-      box.innerHTML = (r.posts.length ? '<div class="list">' + r.posts.map(function (p) { return card(p, mine[p.id], admin, r.mesh); }).join("") + "</div>"
+      box.innerHTML = (r.posts.length ? '<div class="list">' + r.posts.map(function (p) { return card(p, mine[p.id], admin, r.mesh, r); }).join("") + "</div>"
         : '<p class="muted">' + (view.q ? "No post matches “" + esc(view.q) + "”. Try part of the name, or another spelling." : "Nothing posted here.") + "</p>") +
         '<p class="small muted">Posts marked found safe, closed or returned disappear after ' + B.num(r.keep_days) + " days.</p>";
       $("mpAdmin").innerHTML = admin && r.mesh_pending ? '<div class="warnbox">📡 ' + B.num(r.mesh_pending) + " radio announcement request(s) waiting for your approval below.</div>" : "";
@@ -61,7 +61,9 @@
     });
   }
 
-  function card(p, tok, admin, meshOn) {
+  function card(p, tok, admin, meshOn, r) {
+    // where an approved announcement goes follows the security posture: public channel / trusted circle / nowhere
+    var route = (r && r.mesh_route) || "public", note = (r && r.mesh_note) || "";
     var s = STATUS[p.status] || [p.status, ""], person = p.kind === "person";
     var border = p.status === "safe" ? "border:3px solid var(--ok)" : p.status === "missing" ? "border:2px solid var(--danger)" : "";
     var faded = p.status === "closed" || p.status === "returned" || p.hidden;
@@ -88,19 +90,20 @@
         (p.flags ? '<button class="btn ghost" data-mod="clear_flags" data-id="' + esc(p.id) + '">Clear ' + B.num(p.flags) + " report(s)</button>" : "") +
         (meshOn && p.mesh_text ? '<details' + (p.mesh === "requested" ? " open" : "") + '><summary class="small">📡 Radio announcement' + (p.mesh === "requested" ? " — <b>requested</b>" : p.mesh === "sent" ? " — sent " + when(p.mesh_sent_at) : "") + "</summary>" +
           '<textarea maxlength="200" rows="3" data-mtext="' + esc(p.id) + '">' + esc(p.mesh_text) + "</textarea>" +
-          '<p class="small muted">Goes to every Meshtastic radio in range on the community channel. Keep it short; airtime is limited to a few announcements an hour.</p>' +
-          '<div class="btns"><button class="btn" data-mod="mesh_send" data-id="' + esc(p.id) + '">Send on radio</button>' +
+          (route === "public" ? '<p class="small muted">Goes to every Meshtastic radio in range on the community channel. Keep it short; airtime is limited to a few announcements an hour.</p>'
+            : '<p class="small ' + (route === "none" ? "warnbox" : "muted") + '">' + esc(note) + "</p>") +
+          '<div class="btns">' + (route === "none" ? "" : '<button class="btn" data-mod="mesh_send" data-route="' + esc(route) + '" data-id="' + esc(p.id) + '">' + (route === "circle" ? "Share with the circle" : "Send on radio") + "</button>") +
           (p.mesh === "requested" ? '<button class="btn ghost" data-mod="mesh_reject" data-id="' + esc(p.id) + '">Decline</button>' : "") + "</div></details>" : "") +
         "</div>";
     }
     return '<div class="card" style="' + border + (faded ? ";opacity:.65" : "") + '">' + banner +
       '<div class="meta"><span class="pill ' + s[1] + '" style="font-size:.85rem;font-weight:700">' + esc(s[0]) + "</span>" +
       (p.hidden ? ' <span class="pill bad">hidden</span>' : "") + (admin && p.flags ? ' <span class="pill bad">reported ×' + B.num(p.flags) + "</span>" : "") +
-      (p.mesh === "requested" ? ' <span class="pill">📡 announcement requested</span>' : p.mesh === "sent" ? ' <span class="pill">📡 announced on radio</span>' : "") + "</div>" +
+      (p.mesh === "requested" ? ' <span class="pill">📡 announcement requested</span>' : p.mesh === "sent" ? (p.mesh_via === "circle" ? ' <span class="pill">🤝 shared with the trusted circle</span>' : ' <span class="pill">📡 announced on radio</span>') : "") + "</div>" +
       '<h3 style="font-size:1.25rem">' + esc(p.name) + "</h3>" + photo +
       (p.description ? '<p style="white-space:pre-wrap">' + esc(p.description) + "</p>" : "") +
       (p.where || p.when ? '<p class="small"><b>' + (person ? "Last seen" : p.status === "found" ? "Found" : "Lost") + ":</b> " + esc(p.where) + (p.where && p.when ? " · " : "") + esc(p.when) + "</p>" : "") +
-      (p.contact ? '<p class="small"><b>Contact:</b> ' + esc(p.contact) + "</p>" : "") +
+      (p.contact ? '<p class="small"><b>Contact:</b> ' + esc(p.contact) + "</p>" : p.contact_sealed ? '<p class="small muted"><b>Contact:</b> sealed — shows when the Badger’s owner unlocks it.</p>' : "") +
       '<div class="meta">Posted ' + when(p.created) + (p.status_at && p.status_at !== p.created ? " · status changed " + when(p.status_at) : "") + "</div>" +
       '<div class="btns" style="margin-top:8px">' + own + (!tok && !admin ? '<button class="btn ghost small" data-flag="' + esc(p.id) + '">Report a problem</button>' : "") + "</div>" + mod +
       '<p class="small" data-msg="' + esc(p.id) + '" role="status"></p></div>';
@@ -151,7 +154,7 @@
         if (op === "remove" && !confirm("Remove this post for everyone?")) return;
         if (op === "mesh_send") {
           var ta = box.querySelector('[data-mtext="' + id + '"]'); body.text = ta ? ta.value : "";
-          if (!confirm("Send this on the community radio channel now?\n\n" + body.text)) return;
+          if (!confirm((b.getAttribute("data-route") === "circle" ? "Share this with your trusted circle (a short line, no places)?\n\n" : "Send this on the community radio channel now?\n\n") + body.text)) return;
         }
         B.api("/api/missing/moderate", { body: body }).then(after(id));
       };
@@ -190,6 +193,7 @@
       var body = { name: $("mpn").value, description: $("mpd").value, where: $("mpw").value, when: $("mpt").value, contact: $("mpc").value };
       if (!person && st) body.status = st.value;
       if (edit) { body.id = p.id; body.token = tokens()[p.id]; } else { body.kind = kind; body.mesh_request = $("mpm").checked; }
+      if (edit && p.contact_sealed && !body.contact) delete body.contact;    // sealed and locked: keep it as it is
       var file = !edit && $("mpp").files && $("mpp").files[0];
       $("mpS").textContent = "Posting…";
       B.api(edit ? "/api/missing/update" : "/api/missing/add", { body: body }).then(function (r) {

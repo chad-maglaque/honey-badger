@@ -14,6 +14,9 @@ medical notes, family photos and contact lists.
   * Uploads go up as raw bodies (≤ 25 MiB) and are encrypted chunk by chunk as they arrive;
     downloads are checked, then decrypted on the fly. Plaintext never touches the disk.
   * Search words, names and notes travel in POST bodies, never in URLs (nginx logs URLs).
+  * Duress "lock" (docs/SECURITY.md → "Duress"): hard_lock() locks every device and sets a flag in vault.json;
+    from then on only the recovery key opens the vault (typed in the passphrase box, or "Forgot the
+    passphrase?"), after which the family passphrase works again.
 """
 from __future__ import annotations
 
@@ -62,6 +65,9 @@ G_FAILS, G_WINDOW, G_LOCK = 20, 3600.0, 900.0                     # whole vault
 MAX_NAME, MAX_NOTE, MAX_TEXT = 120, 1000, 20000
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,40}$")
 INLINE_TYPES = ("image/jpeg", "image/png")
+HARD_MSG = ("The vault was locked so that only the recovery key opens it. Type the vault's recovery key (52 letters "
+            "and digits) instead of the passphrase, or use “Forgot the passphrase?”; after that the passphrase "
+            "works again.")
 
 
 class Refused(Exception):
@@ -235,8 +241,35 @@ class Vault:
             self.expire()
             return n
 
+    def hard_locked(self) -> bool:
+        m = self.meta()
+        if vc.is_hard_locked(m):
+            if self.sessions:
+                self.lock_all()
+            return True
+        return False
+
+    def hard_lock(self) -> bool:
+        """Duress "lock": every device locked now; only the recovery key opens it from now on."""
+        with self.lock:
+            m = self.meta()
+            if m is not None and not vc.is_hard_locked(m):
+                m["hard_lock"] = {"at": int(self.clock())}
+                self._save_meta(m)
+            self.lock_all()
+            self._index = None
+        return m is not None
+
+    def _clear_hard_lock(self) -> None:
+        with self.lock:
+            m = self.meta()
+            if vc.is_hard_locked(m):
+                m.pop("hard_lock", None)
+                self._save_meta(m)
+
     def cipher(self, member: dict) -> "vc.Cipher":
         """The cipher for an unlocked device (touches its idle timer); Refused 423 when locked."""
+        self.hard_locked()
         self.expire()
         with self.lock:
             s = self.sessions.get(self.sid(member))
@@ -317,6 +350,8 @@ class Vault:
                 self._failed(ip, member)
                 raise Refused(403, "That passphrase isn't right.") from None
         self._succeeded(ip, member)
+        if vc.is_hard_locked(m):
+            raise Refused(423, HARD_MSG, hard_locked=True)
         return vk
 
     def _need_openssl(self) -> None:
@@ -349,8 +384,31 @@ class Vault:
         return vc.format_recovery(rk)
 
     def unlock(self, member: dict, pw, ip: str) -> None:
+        rk = vc.parse_recovery(pw) if isinstance(pw, str) else None
+        if rk is not None and vc.is_hard_locked(self.meta()):
+            vk = self._try_recovery(rk, ip, member)       # the recovery key, typed in the passphrase box
+            self._clear_hard_lock()
+            self._start(member, vk)
+            self._log(member, "unlocked with the recovery key")
+            return
         vk = self._try_pass(pw, ip, member)
         self._start(member, vk)
+
+    def _try_recovery(self, rk: bytes | None, ip: str, member: dict) -> bytes:
+        self._check_wait(ip, member)
+        m = self.meta()
+        if not m:
+            raise Refused(409, "The vault hasn't been set up yet.")
+        try:
+            if rk is None:
+                raise vc.CryptoError("bad format")
+            rec = m.get("recovery") or {}
+            vk = vc.unwrap(rec.get("wrap"), vc.recovery_material(rk, vc.b64d(rec.get("salt", ""))), b"recovery")
+        except vc.CryptoError:
+            self._failed(ip, member)
+            raise Refused(403, "That recovery key isn't right. It is 52 letters and digits, in groups of 4.") from None
+        self._succeeded(ip, member)
+        return vk
 
     def recover(self, member: dict, code, new_pw, ip: str) -> None:
         self._check_new_pass(new_pw)
@@ -368,6 +426,7 @@ class Vault:
             self._failed(ip, member)
             raise Refused(403, "That recovery key isn't right. It is 52 letters and digits, in groups of 4.") from None
         self._succeeded(ip, member)
+        self._clear_hard_lock()
         self._rewrap(vk, new_pw, member, "reset the passphrase with the recovery key")
 
     def _rewrap(self, vk: bytes, new_pw: str, member: dict, what: str) -> None:
@@ -454,10 +513,11 @@ class Vault:
         return {k: e.get(k) for k in ("id", "kind", "name", "cat", "note", "size", "type", "added", "by", "edited")}
 
     def status(self, member: dict, ip: str) -> dict:
+        hard = self.hard_locked()
         self.expire()
         with self.lock:
             s = self.sessions.get(self.sid(member))
-            out = {"setup": self.meta() is not None, "unlocked": bool(s),
+            out = {"setup": self.meta() is not None, "unlocked": bool(s), "hard_locked": hard,
                    "idle_left": int(self.idle - (self.mono() - s["last"])) if s else 0,
                    "idle_minutes": self.idle // 60, "wait": int(self.wait(ip, member) + 0.999),
                    "quota": self.quota, "max_files": self.max_files, "max_file": self.max_file,
@@ -771,6 +831,17 @@ def _vault(ctx) -> Vault:
         if _V is None or _V.dir != d:
             _V = Vault(d, ctx.cfg())
         return _V
+
+
+def hard_lock_dir(folder) -> bool:
+    """Duress "lock" for the vault in `folder` (the launcher calls it with the REAL vault folder before it
+    switches to the decoy): the live instance's sessions are dropped too."""
+    folder = Path(folder)
+    with _V_lock:
+        v = _V if _V is not None and _V.dir == folder else None
+    if v is None:
+        v = Vault(folder)
+    return v.hard_lock()
 
 
 def hotspot_has_password(ctx) -> bool:

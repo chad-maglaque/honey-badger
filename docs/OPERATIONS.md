@@ -1,5 +1,7 @@
 # Operating manual
 
+**Start here:** new to the Badger? [QUICKSTART](QUICKSTART.md) gets it running and secured on one page. Step-by-step setup with the trade-offs of each security setting: [SETUP](SETUP.md). Day-to-day use and emergencies: [USAGE](USAGE.md). This manual is the reference behind them.
+
 ## Building a Badger
 
 ```bash
@@ -61,7 +63,7 @@ sudo ./builder/prepper-build flash /dev/disk4 --tier base --for-sale --hostname 
 - A unit for sale never downloads personal-use items, from anywhere: the internet, another Badger (`--peer`, `clone`), a USB bundle or `upd adopt`. Pins and tiers can't override it, and `plan --for-sale --pin-item <personal item>` refuses.
 - The first content pull, and every update after it, fetch only the rest.
 - **Don't accept the personal-use offer in the launcher yourself.** That is the buyer's decision (see [Handing a sold Badger to its owner](#handing-a-sold-badger-to-its-owner)). `watch` reports whether the unit is still clean to sell, and so does `GET /api/content/personal` (`"sale_ready": true`).
-- Selling a Badger you used yourself? Re-flash it with `--for-sale` first.
+- Selling a Badger you used yourself? Re-flash it with `--for-sale` first — or, if you can't re-flash, run a **handover reset** with "I'm selling it" ticked (see [Before you sell or give away a Badger](#before-you-sell-or-give-away-a-badger)).
 
 ## Handing a sold Badger to its owner
 
@@ -79,6 +81,91 @@ On a Badger built with `--for-sale`:
 From the shell: `sudo python3 /opt/prepper/software/upd/upd.py status` shows the provisioning mode and what is waiting. The API is `GET /api/content/personal` (everyone; read-only) and `POST /api/admin/personal` with `{"action": "accept", "agree": true, "items": [...], "name": "..."}`, `{"action": "later"}` or `{"action": "remove"}` (admin).
 
 This follows each item's licence as recorded in the catalog. It is not legal advice.
+
+## First-boot security checklist
+
+Do these once, on the first day, before the family's data goes on the Badger (each takes a minute; the admin page
+is at Settings → Badger administration — open it with `https://badger.lan` so secrets don't cross the Wi-Fi in the
+clear):
+
+1. **Admin passphrase.** Set an admin PIN/passphrase if the builder didn't (`--pin`), or change the one you were
+   given: `sudo prepperctl set-pin` at the Badger (a passphrase of 10+ characters — a few words — is best).
+2. **Sealed-records passphrase + recovery key.** Settings → Badger administration → *Sealed records* → set the owner
+   passphrase (16+ characters, or four or more words, not the admin PIN). **Print or write down the recovery key**
+   it shows once, keep it away from the Badger, then tick *Yes, it's written down*. Until this is done the records
+   are sealed but "not protected yet" ([SECURITY.md → Sealed records](SECURITY.md#sealed-records-encryption-at-rest)).
+3. **Panel code.** *Set up panel code* on the admin page, then at the knob within 10 minutes (see *Family members →
+   Panel code* below). Write down its recovery code too.
+4. **Posture.** Settings → Badger administration → *Security posture*: Guarded is the default; choose Neighbourly
+   to help neighbours more, Lockdown when danger is close ([posture.md](features/posture.md)).
+5. **Check "What this Badger reveals".** Settings → *What this Badger reveals*: fix anything amber with its one-tap
+   button ([reveal.md](features/reveal.md)).
+
+6. **Duress secrets (recommended).** A made-up household is already ready on every Badger; give it a way in: a
+   duress PIN, a duress passphrase and (at the knob) a duress code — admin page → *If someone forces you to unlock the
+   Badger*. Agree as a family when to use them (see [Duress](#duress-when-someone-forces-you-to-unlock-the-badger)).
+
+Optional, once you've thought about it: the dead-man switch (see [Panic wipe, duress PIN, dead-man
+switch](#panic-wipe-duress-pin-dead-man-switch)).
+
+## Before you sell or give away a Badger
+
+Run a **handover reset**. It does everything the panic wipe does (below) and puts the Badger back to factory settings. The library, maps, AI and software stay, so the next owner doesn't wait days for downloads.
+
+- **Admin page** (Settings → Badger administration → *Hand over or sell this Badger*, over `https://`): type `HANDOVER`, your admin PIN, tick *I'm selling it* if you are, then *Reset for the next owner*.
+- **Front panel:** knob → System → *Hand over / sell* (behind the panel code if one is set) → *Yes* twice → hold the knob for 3 seconds.
+- **Console:** `sudo prepperctl handover-reset` prints a one-time code, then `sudo prepperctl handover-reset --confirm CODE [--sale]` within 2 minutes.
+
+Afterwards the Badger has a new Wi-Fi name like `Home-K7QX` and a new password, both on the front panel (knob → *Join Wi-Fi*). It has **no admin PIN**: the new owner sets one at the Badger (`sudo prepperctl set-pin`, keyboard and screen or SSH). The posture is back to Guarded (the default). Also gone: the duress PIN, the dead-man switch, the panel code, the list of trusted Badgers and peers (`[upd] peers`, `allowed_signers`), the home position in `[time]`, and the signing identity (a new one is made). On a unit built for sale (or with *I'm selling it*), personal-use content is removed and `[device] provisioning` is `"sale"` again, so the next owner gets the setup offer.
+
+The mesh radio gets a **factory reset** request. The bridge has to support it (see SECURITY.md → Panic wipe → *The radio*): to be sure, factory-reset the radio yourself in the Meshtastic app before it leaves your hands.
+
+## Panic wipe, duress PIN, dead-man switch
+
+For the moment the Badger might be taken, or someone forces you to open it. Read [SECURITY.md → Panic wipe](SECURITY.md#panic-wipe) for what it erases, what survives and the limits.
+
+**When to use it:** you are about to lose control of the Badger (raid, looting, a group you don't trust is taking it over), and the family's data — who lives here, when the house is empty, what supplies there are and where they are hidden, the neighbours you can reach on the radio — must not go with it. It takes a few seconds and can't be undone. The library, maps and AI stay: the box looks like a plain offline library.
+
+**Three ways to start it:**
+
+1. **Admin page** (Settings → Badger administration → *Emergency: panic wipe*): type `WIPE`, then *Wipe family data now*. Only over `https://` (or on the Badger itself), so someone who sniffed an admin session on plain Wi-Fi can't fire it.
+2. **Front panel:** knob → System → *Panic wipe* → *Yes* → **hold the knob for 3 seconds**. Behind the panel code if one is set. A short press cancels; so does the screen going to sleep.
+3. **Console:** `sudo prepperctl panic-wipe` (prints a one-time code), then `sudo prepperctl panic-wipe --confirm CODE` within 2 minutes.
+
+**Afterwards:** the Badger is in **Lockdown** (radio muted, nothing beyond the family; change it on the admin page or the panel when the danger is over). The hotspot has a new password, shown only on the front panel (knob → *Join Wi-Fi*); change this with `[wipe] wifi = "off"` or `"keep"`. The radio gets new random keys on its private channels if the mesh bridge is running — the panel tells you; if it says *Unplug the radio*, do that (the radio itself still holds the old keys and the list of radios it heard). Family members must be invited again. `sudo prepperctl wipe-status` shows what was done (kept in memory only, until the next restart).
+
+**Duress secrets:** see *Duress* below — by default a duress secret **locks** instead of wiping.
+
+**Dead-man switch** (off unless you turn it on): wipes by itself after N days (3–365) of the Badger *running* with no check-in. A check-in is any family member opening the Badger app on their device, or an admin login. Turning it on takes two steps (admin page over `https://`: days + admin PIN → a code → type the code back; or `sudo prepperctl deadman-set DAYS`, then `sudo prepperctl deadman-set --confirm CODE`). The admin page shows the hours left; in the last 48 hours the front panel warns on its home screen. Off: admin page or `sudo prepperctl deadman-off`. **Think hard before using it:** if everyone is away, ill or cut off for that long, the family data is gone.
+
+**Why the order matters:** on flash storage (the NVMe and SD cards) deleting a file doesn't reliably erase it. The wipe first destroys the small key files that unlock the sealed records and the vault ("crypto-erase"), which takes well under a second, then cleans up the rest. A power cut half-way is finished at the next start (`prepper-wipe-resume.service`).
+
+### Duress: when someone forces you to unlock the Badger
+
+**People first.** If the person forcing you can check what you say (they know the family, have seen this Badger,
+know what is on it), give the real PIN or passphrase. Use a duress secret only when they can't tell. Agree as a
+family: whoever is forced gives whatever keeps people safest, and nobody blames them afterwards.
+[SECURITY.md → Duress](SECURITY.md#duress-when-someone-forces-you-to-unlock-the-badger) has the details and the limits.
+
+**Set up** (admin page over `https://` → Emergency → *If someone forces you to unlock the Badger*):
+
+1. *What happens behind the made-up household*: **Lock** (default — nothing is erased; only the recovery keys
+   reopen the family's records and the vault) or **Wipe** (the panic wipe; nothing to get back). Admin PIN to save.
+   Lock needs sealed records set up (First-boot checklist, step 2).
+2. *Duress PIN* (admin PIN + the new one), *Duress passphrase* (owner passphrase + the new one), and at the knob
+   *System → Panel lock → Duress code* (after the panel code).
+3. *The made-up household → Show and edit it*: check the names (the family's size is copied; type believable first
+   names), the supplies and the board posts; *Make a new one* for a fresh random one. Ordinary things only.
+
+**Under threat:** type the duress PIN at the admin login, the duress passphrase where the owner passphrase is
+asked, or the duress code at the knob. Everything looks normal; every screen and family phone now shows the
+made-up household. Lock mode changes nothing else — no restart, no Wi-Fi change.
+
+**Afterwards (Lock), when everyone is safe:** admin page over `https://` → *Sealed records* → *Lock now* →
+*Unlock* with the **recovery key** — or at the knob: *System → Recovery key*. The real records are back, and the
+family board says "Recovered after a duress lock." Then open the *Document vault* with **its** recovery key
+(typed where its passphrase goes). Keep both recovery keys away from the Badger: they are the one thing that ends
+the lock.
 
 ## Everyday use
 
@@ -100,7 +187,7 @@ This follows each item's licence as recorded in the catalog. It is not legal adv
   - `!help`: the list.
 - **NOAA alerts over the mesh:** each new warning the SDR decodes is broadcast once to every radio on the channel (`[radio] mesh_alerts`). Tests aren't relayed. With other Badgers nearby they take turns, so usually one copy goes out per channel (see below and [MESH.md](MESH.md)).
 - **Many Badgers on one mesh** ([MESH.md](MESH.md)): Badgers nearby take turns instead of all transmitting the same thing. Each NOAA alert is relayed once per channel for the whole mesh, a `!q` on a shared channel gets one answer, Badgers on the same NOAA transmitter post one forecast between them, and after a town-wide power cut alerts wait a random 30–120 s. Messages go out by priority (alerts, sensor danger, family posts, replies, community posts, automatic notes), with hourly budgets that shrink as more Badgers are heard, and automatic notes wait when the radio reports a busy channel. An alert is skipped only when this Badger *heard* exactly the text it would have sent; anything else (a claim, a bare tag, different words) never cancels it, because two copies are safe and silence is not. The launcher's status shows "Badgers nearby: N · channel busy x %". Settings: `[radio] mesh_courtesy` (on), `mesh_max_util`, `mesh_budget` and others in MESH.md.
-- **Privacy and radio silence** ([MESH.md → Privacy on the mesh](MESH.md#privacy-on-the-mesh)): Badger-to-Badger control packets (beacons, claims, "done") go only on the family channel (and an optional private circle channel), never on the public one; they are sealed with that channel's own secret and padded to random lengths, and beacons come at random times. Nothing the Badger sends says "Badger". Anyone holding the family channel key can still recognise them, and strangers on the public channel can see that an automatic relay exists (set `mesh_alerts_public = false` to avoid that). See [MESH.md → Privacy](MESH.md#privacy-on-the-mesh).  and the radio's own position is not shared on the public channel (`[radio] mesh_public_position = "off"`, or `"coarse"` / `"precise"`). **Radio silence** (receive only): `[radio] mesh_silent = true`, or create `/var/lib/prepper/portal/mesh-silent` (no restart; optional JSON `{"until": <epoch>}`) — the Badger then sends nothing on its own except, if `mesh_silent_allow_family = true`, family posts a member chose to send. Give the radio an unremarkable name, not "Honey Badger".
+- **Privacy and radio silence** ([MESH.md → Privacy on the mesh](MESH.md#privacy-on-the-mesh)): Badger-to-Badger control packets (beacons, claims, "done") go only on the family channel (and an optional private circle channel), never on the public one; they are sealed with that channel's own secret and padded to random lengths, and beacons come at random times. Nothing the Badger sends says "Badger". Anyone holding the family channel key can still recognise them, and strangers on the public channel can see that an automatic relay exists (set `mesh_alerts_public = false` to avoid that). The radio's own position is not shared on the public channel (`[radio] mesh_public_position = "off"`, or `"coarse"` / `"precise"`). **Radio silence** (receive only): `[radio] mesh_silent = true`, or create `/var/lib/prepper/portal/mesh-silent` (no restart; optional JSON `{"until": <epoch>}`) — the Badger then sends nothing on its own except, if `mesh_silent_allow_family = true`, family posts a member chose to send. Give the radio an unremarkable name, not "Honey Badger".
 - **Radios on the map:** radios that share their position (Meshtastic app → Settings › Position) appear on the offline map: open *Maps* and tap *📡 Mesh radios*, or *Radios on the map* on the check-in board. Green means heard within the hour, amber within a day, grey older. Turn it off with `[radio] mesh_map = false`.
 - **Two mesh channels.** In the Meshtastic app, keep the public channel (LongFast) as channel 0 and add a private family channel with its own key as channel 1. Share the family channel only with family radios, by QR code. Then set `[radio] mesh_public_channel = 0` and `mesh_family_channel = 1`; use `-1` for `mesh_public_channel` to keep the community board off the air. Family features stay off until `mesh_family_channel` is set; it can't be `0` (the radio's primary, public channel) or the same as the public one. An older config with only `mesh_channel` bridges that channel as the public one. Messages hop through any nearby Meshtastic radio with the same radio settings. On the family channel the content stays encrypted while it does. Turn off position sharing on the public channel so only family can see where your radios are.
 
@@ -108,7 +195,7 @@ This follows each item's licence as recorded in the catalog. It is not legal adv
 
 - **Invite:** Settings → Badger administration → *Family members* → *Invite a member*. The Badger shows a 10-character code (e.g. `K7QX-M2PD-9Z`) and a link. The code works **once**, on one device, for 24 hours. On their phone they join the Wi-Fi and open the link, or go to Check-in board → Family and type it.
 - **Invite from the Badger itself:** knob → *Invite member (QR)* → *Yes*. The screen shows a QR code they scan on the Badger's Wi-Fi, with the code beside it. No phone or PIN needed: whoever holds the Badger can invite — unless you set a **panel code** (below). The screen has its own small allowance (5 open invites, 5 per 10 minutes), so it can never use up yours.
-- **Panel code (strongly suggested):** the admin page shows *Front panel lock is off* until you set one. Tap *Set up panel code*, then within 10 minutes at the Badger: knob → *System* → *Panel lock* → *Set a code* (4–8 digits: turn to pick a digit, press to add it, then *OK*; then the same again). **Write down the 12-digit recovery code it shows** and keep it with your recovery card. From then on the knob asks for the code before *Invite*, *Approve device*, *Family radio*, *Services*, *Wi-Fi → Turn off*, *Import from USB*, *Restart* and *Shut down*. *Join Wi-Fi* and *Open app* stay open. Forgot the code? On the code screen choose *Forgot?* and enter the recovery code; or at the console run `sudo python3 /opt/prepper/software/panel/panel.py --reset-lock`.
+- **Panel code (strongly suggested):** the admin page shows *Front panel lock is off* until you set one. Tap *Set up panel code*, then within 10 minutes at the Badger: knob → *System* → *Panel lock* → *Set a code* (4–8 digits: turn to pick a digit, press to add it, then *OK*; then the same again). **Write down the 12-digit recovery code it shows** and keep it with your recovery card. From then on the knob asks for the code before *Invite*, *Approve device*, *Family radio*, *Posture*, *Services*, *Wi-Fi → Turn off*, *Import from USB*, *Restart* and *Shut down*. *Join Wi-Fi* and *Open app* stay open. Forgot the code? On the code screen choose *Forgot?* and enter the recovery code; or at the console run `sudo python3 /opt/prepper/software/panel/panel.py --reset-lock`.
 - **Open invites** are listed under the members; *Cancel* (or *Cancel all open invites*) makes unused codes stop working.
 - **Names:** the name you type when inviting is the one they get. Two members can't have names that look the same ("Ana", "ANA", "Аna" with a Cyrillic А…); add an initial.
 - **What membership gives:** the family board and family radios on the offline map. The library, maps, tools and the community board are open to everyone anyway. `!ai` / `!status` are for radios on the family channel (whoever has its key).
@@ -126,7 +213,7 @@ This follows each item's licence as recorded in the catalog. It is not legal adv
   - Until you change them, a removed member who knew them could still join the Wi-Fi as a visitor and read family-channel radio traffic.
 - **Guessing codes doesn't work:** codes are about 49 bits of randomness, and 5 wrong tries from one device lock it out for 10 minutes.
 - **Weather alerts** from NOAA Weather Radio appear as a red banner on every screen and on the front panel. The decoder (`alertd`) starts by itself when an SDR is plugged in. Set `[radio] weather_freq_mhz` to your nearest transmitter and `same_fips` to your county codes.
-- **USB:** plug a stick into the front; its files appear under *USB & Files* for everyone. Eject from the panel (*USB: eject*) before pulling it.
+- **USB:** plug a stick into the front; its files appear under *USB & Files* for family members and the admin (visitors see nothing: a stick holds the family's own files). Eject from the panel (*USB: eject*) before pulling it.
 - **Night vision:** Settings → Appearance → *Night vision (red)*.
 
 ## New features
@@ -304,6 +391,11 @@ Nothing is installed on them, and nothing is stored on them unless the user choo
 | `/etc/prepper/panel-lock.json` | root, 0600 | the optional front-panel code (salted hashes + wrong-try counter); absent = no code |
 | `/var/lib/prepper/portal/panel-lock-arm.json` | prepper | written by *Set up panel code*: a code may be set at the knob for 10 minutes |
 | `/var/lib/prepper/portal/mesh-pair.json` | prepper (written by the mesh bridge) | `!pair CODE` messages heard on the family channel, for linking radios |
+| `/var/lib/prepper/wipe-pending.json` | root | only while a wipe runs (or waits for its delayed part): lets `wipe-resume` finish it after a power cut; no secrets |
+| `/var/lib/prepper/deadman-state.json` | root, 0644 | only while the dead-man switch is armed: running time without a check-in |
+| `/var/lib/prepper/portal/checkin.json` | prepper | only while the dead-man switch is armed: a check-in counter (no times, no names) |
+| `/run/prepper/wipe-receipt.json` | root, 0600, RAM | what the last wipe did; gone at power-off |
+| `/run/prepper/family-inbox.jsonl` | prepper, 0600, RAM | family radio messages the mesh bridge heard, for a few seconds until the launcher seals them onto the family board; a reboot drops lines not yet taken in |
 | `/var/lib/kolibri` | kolibri | Courses data |
 | `/srv/prepper` | — | the content |
 
@@ -330,8 +422,13 @@ Launcher settings (`[portal]`): `settings_file`, `board_file` and `mesh_outbox` 
 | `trust "<key>"` | trust another Badger's bundles and peer data |
 | `trust-maintainer "<key>"` | trust a maintainer's key for software updates |
 | `wifi-on`, `wifi-off` | turn the hotspot on or off |
+| `panic-wipe` / `panic-wipe --confirm CODE` | erase the family's data (keys first), keep the library — see [Panic wipe](#panic-wipe-duress-pin-dead-man-switch) |
+| `handover-reset` / `handover-reset --confirm CODE [--sale]` | panic wipe + factory settings, before selling or giving it away |
+| `set-duress` (`--clear`) | set (or remove) the duress PIN, typed at the prompt |
+| `deadman-set DAYS`, `deadman-set --confirm CODE`, `deadman-off`, `deadman-status` | the dead-man switch |
+| `wipe-status` | what the last wipe did (since the last restart) |
 
-The system uses these itself: `power-restore` (reapplies the power mode at boot), `finish-provisioning` (last step of the first content pull), `auto-apply-enabled` (lets the weekly timer skip when `auto_apply = false`).
+The system uses these itself: `wipe-finish` (the delayed part of a duress wipe), `wipe-resume` (at boot: finishes a wipe a power cut interrupted), `deadman-check` (hourly while the dead-man switch is armed), `power-restore` (reapplies the power mode at boot), `finish-provisioning` (last step of the first content pull), `auto-apply-enabled` (lets the weekly timer skip when `auto_apply = false`).
 
 ## Troubleshooting
 

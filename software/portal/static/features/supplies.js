@@ -62,10 +62,13 @@
       hoursTile("🔋", "Batteries", s.batteries, "hours of use (set hours per unit)", "batteries");
     var c = s.counts;
     var attention = s.items.filter(function (it) { return it.flags.length; });
+    var L = !!s.locked;          // sealed records locked: only what was added since it locked (write-only)
+    if (L) attention = [];
 
     B.h('<h1>🥫 Supplies</h1><p class="muted small">For ' + B.esc(people) + ' · <a href="#" id="shh">change</a>. Days count only items that haven’t expired.</p>' +
-      (!hh.set ? '<p class="warnbox">How many people (and pets) does this cover? <a href="#" id="shh2">Set the household</a> so the days are right.</p>' : "") +
-      '<div class="grid">' + tiles + "</div>" +
+      (L ? '<p class="warnbox">🔒 ' + B.esc(s.message) + (s.pending ? " (" + B.num(s.pending) + " change(s) waiting)" : "") + "</p>" : "") +
+      (!hh.set && !L ? '<p class="warnbox">How many people (and pets) does this cover? <a href="#" id="shh2">Set the household</a> so the days are right.</p>' : "") +
+      (L ? "" : '<div class="grid">' + tiles + "</div>") +
       '<div id="shhbox"></div>' +
       (attention.length ? '<div class="card section"><h2>Needs attention</h2><p class="small">' +
         (c.expired ? '<span class="pill bad">' + c.expired + " expired</span> " : "") + (c.expiring ? '<span class="pill warn">' + c.expiring + " expiring within " + B.num(s.settings.expiring_days) + " days</span> " : "") +
@@ -92,7 +95,7 @@
       '<select id="sfc" style="max-width:200px"><option value="">All categories</option>' + catOpts + "</select></div></div>" +
       '<div id="slist"></div>' +
 
-      '<details class="card section" id="sration"><summary><b>⚖️ Rationing</b> <span class="small muted">how long it lasts on less</span></summary><div id="srbox"></div></details>' +
+      (L ? "" : '<details class="card section" id="sration"><summary><b>⚖️ Rationing</b> <span class="small muted">how long it lasts on less</span></summary><div id="srbox"></div></details>' +
       '<details class="card"><summary><b>📒 Recent changes</b></summary><div class="small">' + (s.log.map(function (l) {
         return "<div>" + B.esc(B.tfmt(l.at * 1000, { date: true, short: true })) + " — <b>" + B.esc(l.who) + "</b> " + B.esc(l.what) +
           (l.name ? " " + B.esc(l.name) : "") + (l.delta !== undefined ? " (" + (l.delta > 0 ? "+" : "") + B.esc(n1(l.delta)) + (l.unit ? " " + B.esc(l.unit) : "") + ")" : "") + "</div>";
@@ -102,11 +105,11 @@
       '<div class="btns"><button class="btn ghost" id="sexp" type="button">Download CSV</button></div>' +
       '<label for="simp">Import a CSV</label><input type="file" id="simp" accept=".csv,text/csv">' +
       '<label style="font-weight:400"><input type="checkbox" id="srep"> Replace the whole list (otherwise matching items are updated and new ones added)</label>' +
-      '<div class="btns"><button class="btn ghost" id="simpb" type="button">Import</button><span id="sim" class="small muted"></span></div></details>');
+      '<div class="btns"><button class="btn ghost" id="simpb" type="button">Import</button><span id="sim" class="small muted"></span></div></details>'));
 
     el("sfc").value = ui.cat;
     list(s, label);
-    ration(s);
+    if (!s.locked) ration(s);
     wire(s, catOpts);
   }
 
@@ -244,6 +247,7 @@
     var t = null;
     el("sfq").oninput = function () { clearTimeout(t); t = setTimeout(function () { ui.q = el("sfq").value; list(s, labels(s)); }, 200); };
     el("sfc").onchange = function () { ui.cat = el("sfc").value; list(s, labels(s)); };
+    if (s.locked) return;                          // (no CSV while sealed records are locked)
     el("sexp").onclick = function () {
       B.blobUrl("/api/supplies/export.csv").then(function (u) {
         var a = document.createElement("a"); a.href = u; a.download = "supplies-" + s.today + ".csv";

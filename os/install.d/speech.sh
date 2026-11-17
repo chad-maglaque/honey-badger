@@ -124,11 +124,15 @@ speech_whisper() {
 }
 
 speech_model() {
+  # SPEECH_DOWNLOADS=off (environment) skips every model/voice download, e.g. for test installs
+  if [ "${SPEECH_DOWNLOADS:-on}" = off ]; then speech_warn "downloads switched off (SPEECH_DOWNLOADS=off)"; return 0; fi
   step "Speech: recognition model $WHISPER_MODEL"
   fetch_verified "$WHISPER_MODEL_URL" "$SPEECH/models/$WHISPER_MODEL" "$WHISPER_MODEL_SHA256"
 }
 
 speech_piper() {
+  # SPEECH_DOWNLOADS=off (environment) skips every model/voice download, e.g. for test installs
+  if [ "${SPEECH_DOWNLOADS:-on}" = off ]; then speech_warn "downloads switched off (SPEECH_DOWNLOADS=off)"; return 0; fi
   step "Speech: piper $PIPER_VERSION and voice $PIPER_VOICE"
   local stampf="$SPEECH/.stamp.piper" t ok=0
   if ! { [ -x "$SPEECH/piper/piper" ] && [ "$(cat "$stampf" 2>/dev/null)" = "$PIPER_VERSION" ]; }; then

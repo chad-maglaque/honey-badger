@@ -123,6 +123,31 @@ sys.stdout.write(t)
 EOF
 }
 PENDING=$STATE/wifi-rotate-pending.json      # a Wi-Fi password change waiting to be confirmed (root, 0600)
+SECBEFORE=$STATE/wifi-security-before        # wifi-secure: the [network] security mode before it (root, 0600)
+set_security() {  # set_security MODE — [network] security via conf_write
+  "$PY" - "$CONF" "$1" <<'EOF' | conf_write
+import json, re, sys
+p, mode = sys.argv[1], sys.argv[2]
+t = open(p).read()
+line = f"security = {json.dumps(mode)}"
+m = re.search(r'(?ms)^\[network\][ \t]*(?:#[^\n]*)?\n(.*?)(?=^\[|\Z)', t)
+if not m:
+    t = t.rstrip("\n") + "\n\n[network]\n" + line + "\n"
+else:
+    body, n = re.subn(r'(?m)^security[ \t]*=.*$', lambda _: line, m.group(1), count=1)
+    if not n:
+        body = line + "\n" + body
+    t = t[:m.start(1)] + body + t[m.end(1):]
+sys.stdout.write(t)
+EOF
+}
+restore_security() {  # the mode saved by wifi-secure, back into prepper.toml (a revert of its password change)
+  [ -e "$SECBEFORE" ] || return 0
+  local m
+  m=$(cat "$SECBEFORE" 2>/dev/null || true)
+  case "$m" in owe|open|owe-transition) set_security "$m" || return 1 ;; esac
+  rm -f "$SECBEFORE"
+}
 wifi_lock() {  # one Wi-Fi password verb at a time: re-run this script holding an flock on $STATE/.wifi.lock
   # (Python's fcntl, not flock(1), so it also works on the test host; the lock is inherited by the
   # re-run script and its inline children, which see PREPPER_WIFI_LOCK and don't lock again.)
@@ -220,11 +245,71 @@ if not n:
 sys.stdout.write(t)' "$CONF" | conf_write
 }
 
+write_duress_pin() {  # write_duress_pin HASH ("" = remove) — [portal] duress_pin via conf_write (hash on stdin)
+  printf '%s\n' "$1" | "$PY" -c '
+import json, re, sys
+p = sys.argv[1]
+h = sys.stdin.readline().strip()
+t = open(p).read()
+line = f"duress_pin = {json.dumps(h)}"
+if not h:
+    t = re.sub(r"(?m)^duress_pin[ \t]*=.*\n?", "", t)
+else:
+    t, n = re.subn(r"(?m)^duress_pin[ \t]*=.*$", lambda m: line, t, count=1)
+    if not n:
+        t, n = re.subn(r"(?m)^\[portal\][ \t]*(?:#[^\n]*)?\n", lambda m: m.group(0) + line + "\n", t, count=1)
+    if not n:
+        t = t.rstrip("\n") + "\n\n[portal]\n" + line + "\n"
+sys.stdout.write(t)' "$CONF" | conf_write
+}
+
+# One-time confirmation tokens for the destructive verbs (panic-wipe, handover-reset): a stray call
+# (a typo, a script, a replayed request) can't fire them. Stored hashed, root-only, in RAM, for TTL
+# seconds; used up by the first attempt, right or wrong.
+issue_token() {  # issue_token NAME TTL — prints the token
+  mkdir -p "$R/run/prepper"
+  "$PY" - "$R/run/prepper/.confirm-$1" "$2" <<'EOF'
+import hashlib, json, os, secrets, sys, tempfile, time
+path, ttl = sys.argv[1], int(sys.argv[2])
+a = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
+tok = "".join(secrets.choice(a) for _ in range(8))
+tok = tok[:4] + "-" + tok[4:]
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tok.")
+with os.fdopen(fd, "w") as fh:
+    json.dump({"h": hashlib.sha256(tok.encode()).hexdigest(), "until": time.time() + ttl}, fh)
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+print(tok)
+EOF
+}
+take_token() {  # take_token NAME TOKEN — exit 0 if TOKEN is the live token (it is used up either way)
+  "$PY" - "$R/run/prepper/.confirm-$1" "$2" <<'EOF'
+import hashlib, hmac, json, os, sys, time
+path, tok = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as fh:
+        d = json.load(fh)
+except (OSError, ValueError):
+    sys.exit(1)
+finally:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+ok = isinstance(d, dict) and isinstance(d.get("h"), str) and isinstance(d.get("until"), (int, float)) \
+    and time.time() <= d["until"] \
+    and hmac.compare_digest(hashlib.sha256(tok.strip().upper().encode()).hexdigest(), d["h"])
+sys.exit(0 if ok else 1)
+EOF
+}
+wipe_py() { "$PY" "$OPT/os/wipe.py" --root "${R:-/}" --conf "$CONF" --ctl "$0" "$@"; }
+
 usage() {
   sed -n '2,3p' "$0"
   echo "verbs: apply-config net-up rebuild-library service power-mode power-restore update-{check,apply,import,export}"
-  echo "       add-peer uplink-wifi uplink-forget usb-eject shutdown reboot wifi-{on,off,rotate,confirm,revert,status,apply,rearm} set-pin upgrade-pin gen-tls gen-key"
+  echo "       add-peer uplink-wifi uplink-forget usb-eject shutdown reboot wifi-{on,off,rotate,secure,confirm,revert,status,apply,rearm} posture-apply set-pin upgrade-pin gen-tls gen-key"
   echo "       ai-model trust [--code] trust-maintainer self-update-hook build-status first-pull finish-provisioning auto-apply-enabled"
+  echo "       panic-wipe handover-reset wipe-finish wipe-resume wipe-status set-duress deadman-{set,off,status,check}"
 }
 cmd=${1:-help}; shift || true
 # Every argument reaches system tools: no control characters (newlines would
@@ -238,7 +323,8 @@ done
 # console (or for root services) only — a compromised portal must not be able
 # to add a signing key and have its own "software update" installed as root.
 case "$cmd" in
-  trust|trust-maintainer|self-update-hook|finish-provisioning|first-pull|build-status|set-pin|gen-key|gen-tls)
+  trust|trust-maintainer|self-update-hook|finish-provisioning|first-pull|build-status|set-pin|gen-key|gen-tls|\
+  wipe-finish|wipe-resume|wipe-status|deadman-check)
     [ "${SUDO_USER:-}" != prepper ] || die "$cmd is not available to the portal" ;;
 esac
 case "$cmd" in
@@ -644,11 +730,56 @@ EOF
     echo "The hotspot switches to the new password in about 10 seconds. Rejoin with it and confirm within $((grace / 60)) minutes, or it switches back."
     ;;
 
+  wifi-secure)
+    # The security posture's Lockdown (and "what this Badger reveals" → Give the Wi-Fi a password): a hotspot
+    # without a password (OWE "enhanced open", or open) gets a WPA2 password through the usual failsafe
+    # change (wifi-rotate: switched on ~10 s later, switches back by itself unless someone rejoins and
+    # confirms within 10 minutes; the front panel shows it). An explicit security = "owe"/"open" becomes
+    # "auto" (= WPA2 with a password); a switch-back puts that mode back too.
+    wifi_lock
+    [ ! -e "$PENDING" ] || die "a password change is waiting to be confirmed: confirm it (wifi-confirm) or undo it (wifi-revert) first"
+    mode=$(toml network.security)
+    psk=$(toml network.passphrase)
+    case "$mode" in
+      owe|open|owe-transition)
+        (umask 077; printf '%s' "$mode" > "$SECBEFORE") || die "could not save the current Wi-Fi mode; nothing changed"
+        set_security auto || { rm -f "$SECBEFORE"; die "could not change [network] security; nothing changed"; } ;;
+      ""|auto|wpa2)
+        if [ -n "$psk" ]; then echo "the hotspot already has a password"; exit 0; fi ;;
+      *) die "unknown [network] security mode: $mode" ;;
+    esac
+    if ! "$0" wifi-rotate; then
+      restore_security || true
+      die "the Wi-Fi password was not set (nothing changed)"
+    fi
+    ;;
+
+  posture-apply)
+    # The security posture changed (features/posture.py): re-render what it drives on the OS side — the
+    # journal is kept in RAM unless the posture is Neighbourly AND [security] persistent_logs = true
+    # (os/render.py reads posture.json) — and restart journald when that changed. Going back to RAM also
+    # drops the journal already on the disk.
+    j="$R/etc/systemd/journald.conf.d/prepper.conf"
+    before=$(cat "$j" 2>/dev/null || true)
+    render >/dev/null || die "render failed; nothing changed"
+    after=$(cat "$j" 2>/dev/null || true)
+    if [ "$before" != "$after" ]; then
+      if grep -q '^Storage=volatile' "$j" 2>/dev/null; then
+        journalctl --relinquish-var >/dev/null 2>&1 || true
+        rm -rf "$R/var/log/journal"
+      fi
+      systemctl restart systemd-journald 2>/dev/null || true
+      echo "logs: $(sed -n 's/^Storage=//p' "$j")"
+    else
+      echo "nothing to change"
+    fi
+    ;;
+
   wifi-confirm)
     # someone got back in with the new password: keep it, cancel the automatic undo
     wifi_lock
     if [ -e "$PENDING" ]; then
-      rm -f "$PENDING"
+      rm -f "$PENDING" "$SECBEFORE"
       systemctl stop prepper-wifi-revert.timer >/dev/null 2>&1 || true
       echo "kept the new Wi-Fi password"
     else
@@ -662,6 +793,7 @@ EOF
     [ -e "$PENDING" ] || { echo "no Wi-Fi password change to undo"; exit 0; }
     old=$(pending_old) || die "cannot read the saved password: keep the new one (wifi-confirm), or set one by hand in prepper.toml"
     set_passphrase "$old"
+    restore_security || echo "prepperctl: could not put back [network] security; check prepper.toml" >&2
     rm -f "$PENDING"
     systemctl stop prepper-wifi-revert.timer >/dev/null 2>&1 || true
     wifi_apply_now
@@ -901,6 +1033,125 @@ EOF
     if [ -e "$STATE/firstboot.done" ]; then rm -rf "$R/boot/firmware/prepper"; fi
     "$0" build-status "done" 100 "Ready"
     ;;
+
+  panic-wipe|handover-reset)
+    # PANIC WIPE: crypto-erase the family's data (keys first, then the data), keep the library, maps,
+    # AI and software, so the box looks like a plain offline library. HANDOVER-RESET (resale): the
+    # same, plus factory defaults (new hotspot name + password, no admin PIN, sale provisioning on a
+    # unit built for sale). The engine is os/wipe.py; docs/SECURITY.md → "Panic wipe".
+    #   prepperctl panic-wipe                     → prints a one-time confirm-token (2 minutes)
+    #   prepperctl panic-wipe --confirm TOKEN [--trigger admin|duress|panel|panel-duress|cli]
+    #   prepperctl handover-reset [--confirm TOKEN] [--sale]
+    # From the portal (sudo as prepper) only --trigger admin / duress, and the wipe runs as its own
+    # systemd unit: the launcher restart at its end must not kill it half-way.
+    tok=""; trig=""; sale=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --confirm) tok=${2:-}; shift; [ $# -gt 0 ] && shift ;;
+        --trigger) trig=${2:-}; shift; [ $# -gt 0 ] && shift ;;
+        --sale) [ "$cmd" = handover-reset ] || die "--sale is for handover-reset"; sale=--sale; shift ;;
+        *) die "usage: $cmd [--confirm TOKEN] [--trigger admin|duress|panel|panel-duress|cli]${sale:+ [--sale]}" ;;
+      esac
+    done
+    if [ -z "$trig" ]; then
+      if [ "${SUDO_USER:-}" = prepper ]; then trig="admin"; else trig="cli"; fi
+    fi
+    case "$cmd:$trig" in
+      panic-wipe:admin|panic-wipe:duress|panic-wipe:panel|panic-wipe:panel-duress|panic-wipe:cli|panic-wipe:deadman) ;;
+      handover-reset:admin|handover-reset:panel|handover-reset:cli) ;;
+      *) die "$cmd: unknown trigger $trig" ;;
+    esac
+    if [ "${SUDO_USER:-}" = prepper ]; then
+      case "$trig" in admin|duress) ;; *) die "$cmd --trigger $trig is not available to the portal" ;; esac
+    fi
+    mode=wipe; [ "$cmd" = handover-reset ] && mode=handover
+    if [ -z "$tok" ]; then
+      t=$(issue_token "$cmd" 120)
+      if [ "$mode" = wipe ]; then
+        echo "PANIC WIPE erases the family's data on this Badger: members, boards, supplies, aid log, skills,"
+        echo "missing people, the document vault, radio and device keys, uplink Wi-Fi passwords, logs."
+        echo "The library, maps, AI and software stay. It can't be undone."
+      else
+        echo "HANDOVER RESET erases everything a panic wipe does AND returns the Badger to factory settings"
+        echo "(new Wi-Fi name and password, no admin PIN). For selling or giving the Badger away. It can't be undone."
+      fi
+      echo "confirm-token: $t"
+      echo "To go ahead within 2 minutes: sudo prepperctl $cmd --confirm $t${sale:+ $sale}"
+      exit 0
+    fi
+    take_token "$cmd" "$tok" || die "that confirmation token is wrong or too old; nothing was erased (run prepperctl $cmd again for a new one)"
+    if [ "${SUDO_USER:-}" = prepper ]; then
+      t=$(issue_token "$cmd" 300)
+      if systemd-run --quiet --collect --unit="prepper-wipe-$(date +%s)-$$" \
+          "$OPT/os/bin/prepperctl" "$cmd" --confirm "$t" --trigger "$trig" ${sale:+"$sale"}; then
+        echo "started"; exit 0
+      fi
+      take_token "$cmd" "$t" || true                 # (couldn't detach: run it here instead)
+    fi
+    wipe_py --mode "$mode" --trigger "$trig" ${sale:+"$sale"}
+    ;;
+
+  wipe-finish)  wipe_py --resume ;;             # the delayed part of a duress wipe (its systemd timer)
+  wipe-resume)  wipe_py --resume --boot ;;      # at boot (prepper-wipe-resume.service): finish an interrupted wipe
+  wipe-status)  # the receipt of the last wipe since boot (RAM only; no secrets)
+    if [ -r "$R/run/prepper/wipe-receipt.json" ]; then cat "$R/run/prepper/wipe-receipt.json"; echo; else echo "no wipe since the Badger started"; fi
+    ;;
+
+  set-duress)
+    # The optional DURESS PIN: a second admin secret that opens a normal-looking admin page (the made-up household) and
+    # quietly runs the duress action ([security] duress_action: lock by default, or wipe) (docs/SECURITY.md). Never the same as the admin PIN.
+    #   sudo prepperctl set-duress              (typed at the prompt, or one line on stdin)
+    #   prepperctl set-duress --hash < HASH     (the portal: it checked the PIN and hashed the secret)
+    #   prepperctl set-duress --clear
+    case "${1:-}" in
+      --clear) write_duress_pin ""; echo "duress PIN removed" ;;
+      --hash)
+        IFS= read -r hash || true
+        [[ "$hash" =~ ^scrypt\$[0-9]+\$[0-9]+\$[0-9]+\$[0-9a-f]{8,64}\$[0-9a-f]{64}$ ]] || die "unexpected duress PIN hash"
+        [ "$hash" != "$(toml portal.admin_pin)" ] || die "the duress PIN must differ from the admin PIN"
+        write_duress_pin "$hash"; echo "duress PIN set"
+        ;;
+      "")
+        [ "${SUDO_USER:-}" != prepper ] || die "the portal sends a hash (--hash)"
+        if [ -t 0 ]; then
+          read -r -s -p "Duress PIN (opens a normal-looking admin page and quietly runs the duress action, default: lock): " pin || true; echo
+          read -r -s -p "Same again: " pin2 || true; echo
+          [ "$pin" = "$pin2" ] || die "the two entries differ; nothing was changed"
+        else
+          IFS= read -r pin || true
+        fi
+        if printf '%s\n%s\n' "$(toml portal.admin_pin)" "$pin" | "$PY" "$OPT/os/wipe.py" verify-pin; then
+          die "that is the admin PIN: the duress PIN must be different; nothing was changed"
+        fi
+        hash=$(printf '%s\n' "$pin" | "$PY" "$OPT/software/portal/server.py" hash-pin) \
+          || die "duress PIN not accepted (see above); nothing was changed"
+        write_duress_pin "$hash"
+        systemctl restart prepper-portal 2>/dev/null || true
+        echo "duress PIN set"
+        ;;
+      *) die "usage: set-duress [--hash|--clear]" ;;
+    esac
+    ;;
+
+  deadman-set)
+    # The optional DEAD-MAN SWITCH (default off): wipe after DAYS of the Badger RUNNING with no check-in
+    # (a family member's device or an admin login). Two steps, so it is never armed by accident:
+    #   deadman-set DAYS            → prints a confirm-code (10 minutes)
+    #   deadman-set --confirm CODE  → armed: [wipe] deadman_days, hourly prepper-deadman.timer
+    if [ "${1:-}" = --confirm ]; then
+      wipe_py deadman-confirm "${2:?code}"
+      systemctl enable --now prepper-deadman.timer >/dev/null 2>&1 || echo "prepperctl: could not start prepper-deadman.timer" >&2
+    else
+      [[ "${1:-}" =~ ^[0-9]{1,3}$ ]] || die "usage: deadman-set DAYS (3–365) | deadman-set --confirm CODE"
+      wipe_py deadman-arm "$1"
+    fi
+    ;;
+  deadman-off)
+    wipe_py deadman-off
+    systemctl disable --now prepper-deadman.timer >/dev/null 2>&1 || true
+    ;;
+  deadman-status) wipe_py deadman-status ;;
+  deadman-check)  wipe_py deadman-check ;;      # prepper-deadman.timer (hourly)
 
   help|-h|--help)
     usage

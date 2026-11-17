@@ -679,6 +679,48 @@ def hosts_file(old: str, host: str, addr: str) -> str:
     return "\n".join(kept + [""] + block) + "\n"
 
 
+# ── the security posture (software/common/posture.py, docs/features/posture.md) ──
+
+def _posture_mod():
+    try:
+        import importlib.util
+        f = Path(__file__).resolve().parent.parent / "software" / "common" / "posture.py"
+        spec = importlib.util.spec_from_file_location("badger_posture", f)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 — an older tree without it: logs stay in RAM (the safe default)
+        return None
+
+
+def posture_now(c: dict, root: Path) -> tuple[str, dict]:
+    """(level, effective values) as posture.json (under --root) and prepper.toml say; ("guarded", {}) without
+    posture.py. The launcher's own settings (portal-settings.json) count as overrides too."""
+    mod = _posture_mod()
+    if mod is None:
+        return "guarded", {}
+    portal = c.get("portal") if isinstance(c.get("portal"), dict) else {}
+    pf = portal.get("posture_file") or "/var/lib/prepper/portal/posture.json"
+    sf = portal.get("settings_file") or "/var/lib/prepper/portal/portal-settings.json"
+    info = mod.read(root / str(pf).lstrip("/"), c)
+    try:
+        import json
+        settings = json.loads((root / str(sf).lstrip("/")).read_text())
+    except (OSError, ValueError):
+        settings = {}
+    return info["level"], mod.values(mod.effective(info["level"], c, settings if isinstance(settings, dict) else {}))
+
+
+def journald(c: dict, root: Path) -> str:
+    """The journal: in RAM only (gone at power-off) unless the posture is Neighbourly AND the owner asked for
+    logs on the disk ([security] persistent_logs = true)."""
+    level, vals = posture_now(c, root)
+    head = "# Rendered by /opt/prepper/os/render.py from the security posture.\n[Journal]\n"
+    if vals.get("logs") == "persistent":
+        return head + "Storage=persistent\nSystemMaxUse=64M\n"
+    return head + "Storage=volatile\nRuntimeMaxUse=48M\n"
+
+
 def render_all(c: dict, root: Path, iface: str, force_24ghz: bool = False) -> None:
     c.setdefault("network", {}); c.setdefault("upd", {})
     check(c, iface)                  # nothing is written unless everything is valid
@@ -713,6 +755,11 @@ def render_all(c: dict, root: Path, iface: str, force_24ghz: bool = False) -> No
     except OSError:
         old_hosts = ""
     write(root, "/etc/hosts", hosts_file(old_hosts, host, addr))
+    write(root, "/etc/systemd/journald.conf.d/prepper.conf", journald(c, root))
+    level, _ = posture_now(c, root)
+    if level == "lockdown" and security(c) != "wpa2":
+        print("render: the security posture is Lockdown but the hotspot has no password — the launcher's Lockdown "
+              "switch starts a password change (prepperctl wifi-secure)", file=sys.stderr)
 
 
 def main() -> int:

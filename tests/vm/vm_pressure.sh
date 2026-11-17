@@ -41,7 +41,9 @@ pass=0; fail=0; infos=0
 ok()   { echo "PASS  $*"; pass=$((pass + 1)); }
 bad()  { echo "FAIL  $*"; fail=$((fail + 1)); }
 info() { echo "INFO  $*"; infos=$((infos + 1)); }
-grep -q ' badger.lan' /etc/hosts || echo "$AP badger.lan" >> /etc/hosts    # the VM itself as a client
+# The VM itself as a client: the installer's marked block in /etc/hosts maps badger.lan (tab-separated);
+# add a line only if nothing does.
+grep -qE '[[:space:]]badger\.lan([[:space:]]|$)' /etc/hosts || echo "$AP badger.lan" >> /etc/hosts
 portal_pid() { systemctl show -p MainPID --value prepper-portal; }
 rss_kb() { awk '/VmRSS/{print $2}' "/proc/$1/status" 2>/dev/null; }
 threads() { awk '/Threads/{print $2}' "/proc/$1/status" 2>/dev/null; }
@@ -528,7 +530,7 @@ sec_phones() {
   cap=$(cat "$OUT"/ph*.cap | awk '$1==302' | wc -l); web=$(cat "$OUT"/ph*.cap | awk '$2==200' | wc -l)
   [ "$cap" = "${#PHONES[@]}" ] && ok "captive probe 302 on every phone at once" || bad "captive probe ok on $cap phones"
   [ "$web" = "${#PHONES[@]}" ] && ok "launcher 200 on every phone at once" || bad "launcher ok on $web phones"
-  local cl; cl=$(curl -s http://127.0.0.1/api/status | python3 -c 'import json,sys;print(json.load(sys.stdin).get("clients"))' 2>/dev/null)
+  local cl; cl=$(curl -s -H "X-Badger-Panel: $(cat /etc/prepper/panel.key)" http://127.0.0.1:8000/api/status | python3 -c 'import json,sys;print(json.load(sys.stdin).get("clients"))' 2>/dev/null)
   [ "${cl:-0}" -ge "${#PHONES[@]}" ] && ok "/api/status counts $cl clients" || bad "/api/status counts '$cl' clients"
   $IW dev "$(. /etc/default/prepper 2>/dev/null; echo "${AP_IFACE:-wlan1}")" station dump | grep -c Station | xargs -I{} echo "INFO  hostapd stations: {}"
 }
@@ -600,7 +602,7 @@ sec_features() {
 sec_abuse() {
   echo "== abuse"
   local since pid res; since=$(date '+%Y-%m-%d %H:%M:%S'); pid=$(portal_pid)
-  local BF; BF=$(find /var/lib/prepper/portal -maxdepth 2 -name 'board*.jsonl' | head -1)
+  local BF=/var/lib/prepper/portal/board.jsonl    # [portal] board_file (may not exist yet on a fresh install)
   local bsize0; bsize0=$(stat -c %s "$BF" 2>/dev/null || echo 0)
   res=$(ip netns exec ph4 python3 /tmp/hbp.py flood board 200 20)
   info "board flood, one phone, 200 posts / 20 parallel: $res"
@@ -627,7 +629,8 @@ sec_abuse() {
   # slow clients
   local t0 lat
   ip netns exec ph7 python3 /tmp/hbp.py slow 300 40 headers badger.lan > "$OUT/slow-h.json" &
-  ip netns exec ph8 python3 /tmp/hbp.py slow 150 70 body badger.lan > "$OUT/slow-b.json" &
+  # 135 s: past the portal's whole-body deadline (BODY_DEADLINE 120 s → 408); nginx lets 20 per IP through (429 for the rest)
+  ip netns exec ph8 python3 /tmp/hbp.py slow 150 135 body badger.lan > "$OUT/slow-b.json" &
   sleep 20
   lat=$(ip netns exec ph9 curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time 15 http://badger.lan/api/status)
   info "during 300 slow-header + 150 slow-body clients: /api/status → $lat; portal threads $(threads "$pid"); nginx conns $(ss -Htn state established '( sport = :80 )' | wc -l)"
@@ -636,7 +639,7 @@ sec_abuse() {
   info "slow-header clients: $(cat "$OUT/slow-h.json") (nginx client_header_timeout should cut them)"
   info "slow-body clients: $(cat "$OUT/slow-b.json") (each holds a portal thread while alive)"
   python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if d["alive_at_end"]==0 else 1)' "$OUT/slow-h.json" && ok "slow header senders are dropped" || bad "slow header senders kept their connections: $(cat "$OUT/slow-h.json")"
-  python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if d["alive_at_end"]==0 else 1)' "$OUT/slow-b.json" && ok "slow body senders are dropped" || bad "slow body trickle (1 byte / 5 s) keeps connections + portal threads for 70 s+: $(cat "$OUT/slow-b.json")"
+  python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if d["alive_at_end"]==0 else 1)' "$OUT/slow-b.json" && ok "slow body senders are dropped" || bad "slow body trickle (1 byte / 5 s) keeps connections + portal threads for 135 s+: $(cat "$OUT/slow-b.json")"
   sleep 3; info "portal threads after slow clients: $(threads "$pid")"
   # parallel wrong PINs from eight phones at once (ph3, which logged in during the feature smoke, stays out)
   for n in "${PHONES[@]:1}"; do ip netns exec "ph$n" python3 /tmp/hbp.py logins 12 "$PIN" > "$OUT/login-$n.json" & done; wait
@@ -899,7 +902,11 @@ sec_clock() {
   code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Admin-Token: $tok" http://127.0.0.1:8000/api/sensors/admin)
   [ "$code" = 200 ] && ok "admin session survives +2 h" || bad "admin session after +2 h: $code"
   r=$(python3 /tmp/hbp.py req GET /api/vault/status "" "X-Member-Token=$MK"); info "vault after +2 h: ${r:0:200}"
-  echo "$r" | grep -q '"unlocked": true' && bad "vault still unlocked after +2 h idle" || ok "vault locked itself after +2 h"
+  # The vault's idle timer runs on the monotonic clock: a wall-clock jump is not idle time, so the vault stays
+  # unlocked with its idle countdown untouched (it still locks after 15 real minutes).
+  il=$(echo "$r" | python3 -c 'import json,sys;l=sys.stdin.read();print(json.loads(l.split(" ",1)[1].rsplit(" ",1)[0] if l.count(" ")>1 else "{}").get("idle_left",""))' 2>/dev/null)
+  echo "$r" | grep -q '"unlocked": true' && [ -n "$il" ] && [ "$il" -ge 800 ] && [ "$il" -le 900 ] \
+    && ok "vault idle timer unaffected by a +2 h clock jump (idle_left $il s)" || bad "vault after a +2 h clock jump: ${r:0:120} (idle_left ${il:-?})"
   [ "$(python3 /tmp/hbp.py req GET /api/members/me "" "X-Member-Token=$MK" | cut -d' ' -f1)" = 200 ] && ok "member key valid after +2 h" || bad "member key invalid after +2 h"
   # 2. forward 13 h: admin session should end
   date -s "@$((S0 + 13 * 3600))" >/dev/null

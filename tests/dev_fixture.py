@@ -24,6 +24,7 @@ for d in ("zim", "maps", "docs/hesperian_books/Where There Is No Doctor", "model
 state.mkdir(parents=True, exist_ok=True)
 portal = state / "portal"           # mirrors /var/lib/prepper/portal/ (the portal's writable files)
 portal.mkdir(exist_ok=True)
+(root / "run").mkdir(exist_ok=True)
 PIN = "123456"                      # the portal refuses PINs shorter than 6 characters
 
 installed = {
@@ -96,6 +97,7 @@ mesh_outbox = "{portal}/mesh-outbox.jsonl"
 family_board_file = "{portal}/family-board.jsonl"
 members_file = "{portal}/members.json"
 mesh_nodes = "{portal}/mesh-nodes.json"
+run_dir = "{root}/run"               # stands in for /run/prepper (RAM on the Badger): radio state, the family inbox
 ctl = "/nonexistent/prepperctl"
 """)
 print(f"PREPPER_CONFIG={root}/prepper.toml python3 {REPO}/software/portal/server.py   # admin PIN {PIN}")

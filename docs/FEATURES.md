@@ -9,6 +9,7 @@ Everything the Honey Badger offers a family, on one page. Join its Wi-Fi, open *
 - **Admin**: whoever has the admin PIN (Settings → Badger administration). Admins change settings and tidy up; the PIN alone does **not** open family-only pages.
 - **The Badger's own screen**: the small screen and knob on the front. They work with no phone at all.
 
+User guides: [QUICKSTART](QUICKSTART.md) (one page to get going) · [SETUP](SETUP.md) (building and setting it up) · [USAGE](USAGE.md) (day-to-day use, emergencies, troubleshooting).
 How it fits together: [TOUR](TOUR.md) · how to run it: [OPERATIONS](OPERATIONS.md) · what protects what: [SECURITY](SECURITY.md).
 
 ## The library and everyday tools
@@ -19,9 +20,9 @@ These were the Badger's first job, and they're still at the top of the home scre
 
 **Ask the Library: offline AI** (visitor). Ask a question in plain words. A small AI model on the Badger answers **only from the Badger's own articles**, and lists its sources. It can be wrong, so check the sources, especially for medical questions. It is slower on battery. Family radios can ask it too with `!ai` (see *Mesh radio* below). Details: [OPERATIONS](OPERATIONS.md#everyday-use).
 
-**Offline maps** (visitor). Maps that work with no signal. Extra layers: *📡 Mesh radios* (radios that share their position; family members also see the family's own radios) and *✈️ Aircraft* (see *Radio & sky*).
+**Offline maps** (visitor). Maps that work with no signal. Extra layers: *📡 Mesh radios* (family members and the admin only: radios that share their position, including the family's own) and *✈️ Aircraft* (see *Radio & sky*).
 
-**Tools** (visitor). Morse code, phrasebook, water-treatment dosing, radio frequency reference, unit converter, sun and moon times, and the Nu:Time™ clock. *USB & Files* shows what's on a stick in the front USB ports. The *Phones, iPads & laptops* page installs the launcher as an app and offers Android apps (Kiwix, Organic Maps, OsmAnd, Trail Sense, Meshtastic).
+**Tools** (visitor). Morse code, phrasebook, water-treatment dosing, radio frequency reference, unit converter, sun and moon times, and the Nu:Time™ clock. *USB & Files* shows what's on a stick in the front USB ports (family members and the admin only: a stick holds the family's own files). The *Phones, iPads & laptops* page installs the launcher as an app and offers Android apps (Kiwix, Organic Maps, OsmAnd, Trail Sense, Meshtastic).
 
 **Weather alerts** (everyone, and the Badger's own screen). The Badger listens to NOAA Weather Radio all the time on its first radio receiver (SDR 1). A warning for your county appears as a red banner on every phone and on the front screen, the status light blinks fast, and new warnings go out once over the mesh radio. Set your transmitter and county codes under `[radio]`; see [OPERATIONS](OPERATIONS.md).
 
@@ -47,7 +48,7 @@ These were the Badger's first job, and they're still at the top of the home scre
 
 **⛑️ Aid station** (status line: visitor · visit log: aid volunteers and admin). A public status line ("🟢 Aid station open · water · first aid") and a quick one-thumb log of who came and what help they got. Volunteers sign in with a one-time code from the admin; they don't have to be family. Records are deleted automatically after 30 days by default, and are never sent over the radio. Details: [features/aidstation.md](features/aidstation.md).
 
-**🌡️ Sensors** (visitor reads, unless the admin limits it to family; admin changes alerts). Temperature, humidity and air pressure, flood switch, water level in a tank, well or creek, a USB Geiger counter, and readings from Meshtastic radios that carry their own sensors. Flood, freezing, heat and radiation alerts show at the top of the page, go on the neighbourhood board and, for urgent ones, over the mesh radio. Sensors are optional extras that plug into the rear SENSORS socket, the I²C bus or a front USB port. Details: [features/sensors.md](features/sensors.md).
+**🌡️ Sensors** (alerts: visitor · readings and charts: family members and the admin, unless the admin makes them public with `[sensors] public = true`; admin changes alerts). Temperature, humidity and air pressure, flood switch, water level in a tank, well or creek, a USB Geiger counter, and readings from Meshtastic radios that carry their own sensors. Flood, freezing, heat and radiation alerts show at the top of the page, go on the neighbourhood board and, for urgent ones, over the mesh radio. Sensors are optional extras that plug into the rear SENSORS socket, the I²C bus or a front USB port. Details: [features/sensors.md](features/sensors.md).
 
 **Mesh radio** (visitor via the community channel, family via the family channel). The Badger's built-in Meshtastic LoRa radio links the check-in boards to handheld Meshtastic radios far beyond Wi-Fi range, with no phone network. Radios can send commands: `!q` (a library lookup), `!ai` (a short AI answer), `!status` (battery, alerts, users) and `!help`. The admin chooses who may use each one. Details: [OPERATIONS](OPERATIONS.md#everyday-use).
 
@@ -66,6 +67,35 @@ The Badger has **two radio receivers**. SDR 1 is the weather radio and always li
 **🎙️ Voice** (visitor; admin can limit it to family). Ask a question out loud on your phone and hear the answer. It uses the same offline AI as *Ask the Library*. Useful when your hands are busy or reading is hard. On plain `http://` your phone's recorder is used; over `https://` it's one tap. English only. Your recording is deleted once it's turned into text. Details: [features/voice.md](features/voice.md).
 
 **🧮 Problem solver** (visitor; admin chooses AI models). Works out real problems — power and solar, water and pipes, structures and ropes, heat and fuel, radio, maths, games and decisions, simple code, survival planning — step by step with calculators and the library, and shows its working. Not for writing letters. Details: [features/solver.md](features/solver.md)
+
+## Security
+
+**🛡️ Security posture** (admin, or the Badger's own screen; family members see it). One switch — Neighbourly,
+**Guarded** (default) or Lockdown — for everything that decides how much the Badger shows the world: radio
+commands and answers to strangers, the radio's position, radio silence, NOAA relays on the public channel,
+what visitors on the Wi-Fi can open, the Wi-Fi password, logs and sharing with a trusted circle. Lockdown also
+mutes the radio itself and gives a password-free Wi-Fi a password (the safe change that switches back unless
+confirmed). Details: [features/posture.md](features/posture.md).
+
+**🤝 Trusted circle** (admin sets it up; family members ask). A private radio channel shared in person between
+a few vetted households. Pull, not push: a circle radio asks about one thing and gets a pointer ("power: can fix
+generators — ask Elm St"), never a list, an amount or a location. Off until the admin opts in per category;
+nothing in Lockdown. Details: [features/circles.md](features/circles.md).
+
+**👁️ What this Badger reveals** (admin, or the Badger's own screen). A live green/amber checklist of everything
+that tells outsiders something — Wi-Fi, radio name and position, posture, what is shared, panel code, keys and
+logs on the drive, visitor pages — each with a one-tap fix. Details: [features/reveal.md](features/reveal.md).
+
+**🔒 Sealed records** (owner passphrase on the admin page, over https). The family's sensitive records — family
+board, supplies and hiding places, member names, the aid log's names, contact details — are encrypted on the drive
+and readable only after the owner unlocks the Badger after a restart; everything keeps working write-only while
+locked. Details: [SECURITY.md → Sealed records](SECURITY.md#sealed-records-encryption-at-rest).
+
+**🧨 Panic wipe, duress PIN, handover reset** (admin over https, the front panel, or the console). Erases the
+family's data in seconds (keys first), keeps the library; an optional duress PIN shows an empty Badger while the
+wipe runs; a handover reset also restores factory settings before you sell or give it away. Details:
+[OPERATIONS.md → Panic wipe](OPERATIONS.md#panic-wipe-duress-pin-dead-man-switch),
+[SECURITY.md → Panic wipe](SECURITY.md#panic-wipe).
 
 ## Turning features on and off
 

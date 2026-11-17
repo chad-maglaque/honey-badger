@@ -73,13 +73,28 @@ renderers = "/opt/prepper/content/renderers.toml"
 settings_file = "/var/lib/prepper/portal/portal-settings.json"
 board_file = "/var/lib/prepper/portal/board.jsonl"
 mesh_outbox = "/var/lib/prepper/portal/mesh-outbox.jsonl"
-mesh_telemetry = "/var/lib/prepper/portal/mesh-telemetry.jsonl"   # telemetry radios send (sensors, batteries), one JSON line each
-mesh_bt_pin_file = "/var/lib/prepper/portal/mesh-bt-pin.json"     # the radio's Bluetooth PIN, if the bridge changed it (0600)
+# What the mesh bridge learns from the radio lives in RAM only (run_dir, a tmpfs) and is read from the radio again
+# after a restart: a seized Badger's disk holds no radio positions, Badgers heard, telemetry, keys or PIN.
+# run_dir = "/run/prepper"
+# mesh_telemetry = "/run/prepper/mesh-telemetry.jsonl"            # telemetry radios send (sensors, batteries) (default shown)
+# mesh_bt_pin_file = "/run/prepper/mesh-bt-pin.json"              # the radio's Bluetooth PIN, if the bridge changed it (0600)
+# mesh_nodes = "/run/prepper/mesh-nodes.json"                     # radio positions for the map, none older than 24 h
+# mesh_channel_link = "/run/prepper/mesh-channel.json"            # the family radio link (holds the key, 0600)
+# mesh_circle_link = "/run/prepper/mesh-circle.json"              # the trusted circle's link (holds its key, 0600)
+# circle_status_file = "/run/prepper/circle-status.json"          # circle questions answered / refused, answers we got
+# circle_ask_file = "/run/prepper/circle-ask.json"                # "ask the circle" requests for the bridge
+# family_inbox = "/run/prepper/family-inbox.jsonl"               # family radio messages waiting for the launcher to seal
+                                                                  # them onto the family board (0600; a reboot drops lines
+                                                                  # not taken in yet — normally within seconds)
+# posture_file = "/var/lib/prepper/portal/posture.json"           # the security posture ({"level","changed_at","by"})
+# mesh_radio_request = "/var/lib/prepper/portal/mesh-radio-req.json"   # circle create/join/rotate/leave, radio rename
 panel_key_hash = "/etc/prepper/panel.key.sha256"                # how the portal recognises the front panel (made by the panel)
 admin_pin = ""                   # set with: sudo prepperctl set-pin
-visitor_mesh = "approve"         # a visitor's "Send over mesh" on the community board waits until a family member
-                                 # or the admin sends it (Check-in board); "off": visitors' posts stay on the board.
-                                 # Family members' and the admin's posts go out straight away.
+# duress_pin = ""                # a second admin secret that quietly starts the panic wipe (docs/SECURITY.md → "Duress
+                                 # PIN"): set with `sudo prepperctl set-duress` or the admin page over https, never by hand
+# visitor_mesh = "approve"       # (posture: approve; Lockdown: off) a visitor's "Send over mesh" on the community board
+                                 # waits until a family member or the admin sends it (Check-in board); "off": visitors'
+                                 # posts stay on the board. Family members' and the admin's posts go out straight away.
 kiwix = "http://127.0.0.1:8081/kiwix"
 llama = "http://127.0.0.1:8090/ai"     # llama-server runs with --api-prefix /ai
 search_langs = ["eng"]
@@ -88,7 +103,7 @@ standalone = false
 # mesh_pair_file = "/var/lib/prepper/portal/mesh-pair.json"        # "!pair CODE" messages the mesh bridge heard (default shown)
 # panel_lock_file = "/etc/prepper/panel-lock.json"                 # the front panel's lock file, read by the launcher (default shown)
 # panel_lock_arm = "/var/lib/prepper/portal/panel-lock-arm.json"   # "arm the panel lock" request from the launcher (default shown)
-# mesh_peers = "/var/lib/prepper/portal/mesh-peers.json"           # Badgers nearby, written by the mesh bridge (default shown)
+# mesh_peers = "/run/prepper/mesh-peers.json"                     # Badgers nearby, written by the mesh bridge (default shown)
 # mesh_silent_file = "/var/lib/prepper/portal/mesh-silent"         # radio-silence flag: the file existing means silence (default shown)
 # max_threads = 128                # requests served at once (16–1024); more wait in a 256-deep queue, then get "busy" (503)
 
@@ -139,8 +154,8 @@ encoder_b = 27
 encoder_button = 22
 led_pin = 23                     # status LED: solid ready · slow blink building · medium low battery · fast alert
 sleep_after_s = 45
-# lock_protect = ["invite", "radio", "services", "wifi_off", "usb_import", "shutdown"]   # default: what the panel code guards
-#                                # (all keys: invite radio services wifi_off usb_import shutdown wifi_join app power
+# lock_protect = ["invite", "radio", "services", "wifi_off", "usb_import", "shutdown", "posture"]   # default: what the
+#                                # panel code guards (all keys: invite radio services wifi_off usb_import shutdown posture wifi_join app power
 #                                #  updates usb_export eject time status). Needs a code set at the panel.
 # lock_file = "/etc/prepper/panel-lock.json"      # where the panel keeps its code's salted hash (and the recovery code's)
 
@@ -149,17 +164,21 @@ mesh = "auto"                    # auto: start bridge if a Meshtastic node is on
 mesh_family_channel = 1          # the family's PRIVATE channel (its own key, set up in the Meshtastic app) ↔ family board.
                                  # Must be set for family features; never 0 (the radio's primary, public channel); -1 = none
 mesh_public_channel = 0          # the public channel (LongFast) ↔ community board; -1 = don't bridge the community board
-mesh_alerts_public = true        # also broadcast NOAA alerts on the public channel, for everyone nearby
+# mesh_alerts_public = true      # (posture: true; Lockdown: family channel only) NOAA alerts on the public channel too
 mesh_alerts = true               # broadcast each new NOAA alert to the mesh once
 mesh_ai = true                   # answer "!ai <question>" with a short AI answer (false: library match instead)
 mesh_ai_cooldown_s = 120         # one !ai question per radio per this many seconds
 # who may use each radio command: "community" (anyone), "family" (sent on the family channel; others get no reply),
 # "off" (family radios are told it's off; others get no reply) or "ignore" (no reply to anyone).
 # A radio outside the family never gets a refusal — only real answers to "community" commands, within the budgets below.
-# The launcher's Settings → Radio commands overrides this.
-mesh_commands = { help = "family", q = "community", ai = "family", status = "family" }
-mesh_stranger_replies_per_hour = 6        # answers to radios outside the family, all together (0–60; 0 = none)
-mesh_stranger_replies_per_radio_hour = 2  # …and to any one of them (0–10). Forged sender IDs can't get past the total
+# The security posture ([security] below) sets these; a line here (or Settings → Radio commands) overrides it,
+# except that in Lockdown nothing may be looser than Lockdown. Posture defaults:
+#   Neighbourly { help = "community", q = "community", ai = "family", status = "family" }, 12 / 3 answers an hour
+#   Guarded     { help = "family", q = "community", ai = "family", status = "family" }, 6 / 2
+#   Lockdown    everything "family" (and radio silence), 0 / 0
+# mesh_commands = { help = "family", q = "community", ai = "family", status = "family" }
+# mesh_stranger_replies_per_hour = 6        # answers to radios outside the family, all together (0–60; 0 = none)
+# mesh_stranger_replies_per_radio_hour = 2  # …and to any one of them (0–10). Forged sender IDs can't get past the total
 mesh_map = true                  # show radios that share their position on the offline map
 mesh_bt_pin = "secure"           # secure: a radio still on the default Bluetooth PIN (123456 / none) gets a random one,
                                  # shown on the front panel (Family radio → Bluetooth PIN); "leave": don't touch it
@@ -170,8 +189,9 @@ mesh_courtesy = true             # false: act alone, as before (every Badger rel
 # key from that channel's own secret and padded to random lengths — never on the public channel.
 mesh_beacons = true              # false: no beacons at all (Badgers then learn of each other only from claims/relays)
 mesh_peer_beacon_min = 45        # average minutes between beacons (10–720), at Poisson-random times (no rhythm)
-mesh_circle_channel = -1         # optional private channel (1–7, its own key) shared with neighbouring Badgers' owners,
-                                 # used only for courtesy control packets; -1 = none
+mesh_circle_channel = -1         # the trusted circle's private channel (1–7, its own key), shared in person with vetted
+                                 # households: pointers on request + courtesy control packets. -1 = none, or the one the
+                                 # bridge picks when the admin creates/joins a circle (Settings → Trusted circle)
 mesh_max_util = 25               # radio reports the channel busier than this %: automatic notes wait, community posts slow down
 mesh_max_util_busy = 40          # busier than this %: only alerts, sensor danger, family posts and replies go out
 mesh_max_air_tx = 8              # our own share of airtime (%) above which automatic notes wait
@@ -180,10 +200,11 @@ mesh_budget_peer_scale = 4       # Badgers are heard: budget / (1 + Badgers near
 mesh_boot_quiet_s = [30, 120]    # after a restart, alerts already live wait a random 30–120 s (no town-wide storm); 0 = off
 mesh_hop_limit_local = 2         # hop limit for replies and automatic notes (alerts and family posts: the radio's default)
 # Privacy (docs/MESH.md → Privacy on the mesh)
-mesh_silent = false              # radio silence: receive only — no relays, replies, beacons, forecasts, posts.
-                                 # Also on while /var/lib/prepper/portal/mesh-silent exists (portal setting mesh_silent_file)
-mesh_silent_allow_family = true  # during radio silence, still send family-board posts a member typed and chose to send
-mesh_public_position = "off"     # the radio's own position on the public channel: "off", "coarse" (within ~6 km, a box
+# mesh_silent = false            # (posture: Lockdown = true) radio silence: receive only — no relays, replies, beacons,
+                                 # forecasts, posts. Also on while /var/lib/prepper/portal/mesh-silent exists
+# mesh_silent_allow_family = true  # during radio silence, still send family-board posts a member typed and chose to send
+# mesh_public_position = "off"   # (posture: Neighbourly "coarse", else "off") the radio's own position on the public
+                                 # channel: "off", "coarse" (within ~6 km, a box
                                  # ~12 km across: 12 bits), "precise", or a number of bits (0–13; finer is clamped to 13 =
                                  # within ~3 km — only "precise" shares the exact spot). The family channel keeps what you
                                  # set in the Meshtastic app. Changed in the app later? Left alone if coarser; set back if
@@ -209,6 +230,56 @@ same_fips = []                   # e.g. ["008031"] to only show alerts for your 
 # sdr_lend_max_min_per_day = 120 # alertd's own cap on SDR 1 loans in any 24 hours (backstop for every borrower)
 
 
+[security]                       # the security posture (docs/features/posture.md): Settings → Security posture, or the
+                                 # front panel → Posture. One switch for every "how much does this Badger show" setting.
+posture = "guarded"              # the default when nothing was chosen yet: neighbourly | guarded | lockdown
+# lockdown_wifi = "password"     # entering Lockdown on a hotspot without a password: "password" (a WPA2 password through
+                                 # the usual failsafe change, shown on the front panel) | "off" (Wi-Fi off) | "keep"
+# lockdown_radio = true          # Lockdown mutes the radio itself (CLIENT_MUTE: no repeating; no node-info, position or
+                                 # telemetry broadcasts) and restores its settings after; false: leave the radio alone
+# persistent_logs = false        # true: keep the system journal on disk — only while the posture is Neighbourly
+# visitor_community = "public"   # (posture: Lockdown "members") skills / missing / aid-station / board pages for visitors
+# visitor_radio_pages = "public" # (posture: Lockdown "members") aircraft and satellite pages for visitors
+# duress_action = "lock"         # what a DURESS secret (duress PIN, duress passphrase, panel duress code) does behind the
+                                 # made-up household it shows (docs/SECURITY.md → "Duress"): "lock" (default; nothing is
+                                 # erased: sealed records + vault open only with their recovery keys, then all is back) |
+                                 # "wipe" (the panic wipe, nothing to recover). The admin page's choice overrides this.
+# The made-up household itself lives in /var/lib/prepper/portal/decoy.json (the launcher's decoy_file setting): made at install
+# (and on first start if missing), editable on the admin page. It holds only made-up, harmless content.
+
+# Sealed records: the household's sensitive records encrypted at rest (docs/SECURITY.md → "Sealed records").
+# Works with no settings; the owner sets the passphrase on the admin page.
+[sealed]
+# dir = "/var/lib/prepper/portal/sealed"   # the device key and data keys (default: next to members.json)
+# idle_minutes = 0               # lock again after this many minutes without anyone using sealed pages (0 = only on a
+                                 # restart, "Lock now" or Lockdown). Default off: an aid station needs all-day access.
+# scrypt_n = 65536               # owner passphrase hardening (power of two, 1024–1048576): ≈ 0.5 s and 64 MiB on a Pi 5
+# openssl = "/usr/bin/openssl"   # the openssl program (default: the vault's openssl setting, else /usr/bin/openssl)
+# posture_file = "/var/lib/prepper/portal/posture.json"   # the posture switch's file; Lockdown locks sealed records at once
+# recent_hours = 48              # while locked, family members see family-board posts written since it locked — but only
+# recent_max = 200               # from the last recent_hours and at most the newest recent_max; older ones after the unlock
+
+# Panic wipe, handover reset, duress PIN, dead-man switch (docs/SECURITY.md → "Panic wipe"). Every key is optional.
+# Not configurable on purpose: a panic wipe leaves the posture at Lockdown, a handover reset at Guarded.
+[wipe]
+wifi = "new-password"            # what a panic wipe does to the hotspot: "new-password" (a new random one, shown ONLY on the
+                                 # front panel: knob → Join Wi-Fi) · "off" (Wi-Fi switched off; panel → Wi-Fi → Turn on
+                                 # brings it back) · "keep" (unchanged). A handover always makes a new name + password.
+radio = "rekey"                  # the mesh radio keeps its own copy of the channel keys: "rekey" (the bridge puts new random
+                                 # keys on every private channel — family and circle) · "factory-reset" (the bridge resets
+                                 # the radio: keys, node list, settings; needs a bridge that supports it) · "leave"
+mesh_wait_s = 8                  # how long the wipe waits for the bridge to confirm (0–30 s)
+mesh_after = "off"               # "off": the mesh bridge is stopped and disabled after the wipe (the box looks like a plain
+                                 # library; no new node lists are collected) · "keep"
+keep_features = ["forecast", "satellites"]   # feature folders a wipe keeps (caches with nothing about the family);
+                                 # every other feature's data is erased, including features added later
+duress_delay_min = 10            # after a DURESS wipe, the noticeable steps (new Wi-Fi password, https certificate,
+                                 # launcher restart) wait this long, so the person forcing you sees nothing change (1–240)
+key_paths = []                   # extra key files/folders to destroy first (under /etc/prepper, /var/lib/prepper, /run/prepper)
+deadman_days = 0                 # dead-man switch: 0 = off. Don't set this by hand: arm it in two steps from the admin page
+                                 # or `sudo prepperctl deadman-set DAYS` then `--confirm CODE` (3–365 days of RUNNING time
+                                 # with no check-in by a family member's device or an admin login → panic wipe)
+
 [features]                       # optional heavier services; each can be toggled from Settings
 kolibri = true
 kavita = false
@@ -216,6 +287,7 @@ jellyfin = false
 # The built-in features (software/portal/features/*.py) are all on by default; set one to false to turn it off:
 # forecast = true      voice = true       aircraft = true    satellites = true   vault = true
 # supplies = true      aidstation = true  skills = true      missing = true      sensors = true
+# posture = true       circles = true     reveal = true
 
 # ═══════════════════════════ Feature settings ═══════════════════════════
 # Every key below is optional: each feature works with no config at all.
@@ -419,6 +491,7 @@ summary_every_h = 0              # 0 = off; else a short readings summary every 
 summary_board = "family"         # channel for the summary ("family" or "community")
 
 # Remote readings: Meshtastic environment telemetry meshbridge writes to mesh-telemetry.jsonl.
+telemetry_file = "/run/prepper/mesh-telemetry.jsonl"   # where the mesh bridge writes it (in RAM since the posture update)
 remote_nodes = []                # node ids to show, e.g. ["!a1b2c3d4"] (or tick them on the Sensors page)
 remote_untrusted = false         # true: also accept readings sent on the public channel (anyone can send those)
 

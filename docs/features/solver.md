@@ -17,7 +17,7 @@ It is **not** a writing assistant: ask it to write a letter or an essay and it w
 
 ## How to use it
 
-1. Open **Problem solver** in *Tools* on the home screen.
+1. Open **Problem solver** in *More* on the home screen.
 2. Describe the problem with the numbers and units you know ("a 100 W panel, 4 hours of winter sun, a 12 V 100 Ah battery…"). Units can be mixed: feet and metres, gallons and litres, °F and °C.
 3. Tap **Solve**. On this small computer a hard problem takes **a few minutes** (sometimes 10–20 with the big reasoning model). You can watch each step: the plan, every calculator it uses and what came back.
 4. You can leave the page, lock your phone or reload: the problem keeps going, and the page finds it again (also under *Your recent problems*). **Cancel** stops it.

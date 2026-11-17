@@ -15,6 +15,17 @@ Mesh: a poster can ask for a short radio announcement ("MISSING: Ana Ruiz, 8, re
 seen Elm St 14:00 — see the community board"); nothing goes on air until the admin approves it, and
 approvals are rate-limited (default 3 per hour) because LoRa airtime is shared and slow. When a
 person who was announced is marked found safe, a FOUND SAFE announcement is queued for approval.
+Where an approved announcement goes follows the security posture (software/common/posture.py):
+  Neighbourly  the public (community) channel, as above;
+  Guarded      the trusted circle only, through the circles feature's sharing path (a pointer — one short
+               line, no places — answered only when a circle radio asks about missing persons), and only if
+               the admin opted the "missing" category in; otherwise nothing is sent and the admin is told why;
+  Lockdown     never.
+A status change or removal withdraws the circle pointer (a FOUND SAFE approval shares a new one).
+
+Sealed records (docs/SECURITY.md): the poster's contact details are sealed at rest. Names, descriptions,
+where/when and photos stay readable, so searching for someone keeps working while the Badger is locked;
+contacts show again once the owner unlocks it. New posts and updates are taken while locked.
 """
 from __future__ import annotations
 
@@ -46,6 +57,7 @@ STATUSES = {"person": ("missing", "safe", "closed"), "item": ("lost", "found", "
 RESOLVED = ("safe", "closed", "returned")
 ANNOUNCE = {"missing": "MISSING", "safe": "FOUND SAFE", "lost": "LOST", "found": "FOUND"}
 FIELDS = {"name": 120, "description": 1000, "where": 200, "when": 80, "contact": 200}
+PRIVATE = ("contact",)                     # sealed at rest
 RANK = {"missing": 0, "safe": 1, "lost": 2, "found": 2, "closed": 3, "returned": 3}
 PHOTO_ID = re.compile(r"^([A-Za-z0-9_-]{12,32})\.jpg$")
 MAX_UPLOAD = 1_250_000                       # route cap; [missing] max_photo_kb is the real limit (default 1200)
@@ -82,6 +94,21 @@ def _store(ctx) -> C.JsonStore:
         if key not in _stores:
             _stores[key] = C.JsonStore(ctx.data_dir() / "posts.json", lambda: {"v": 1, "posts": []})
         return _stores[key]
+
+
+def _priv(ctx) -> C.Private:
+    return C.Private(C.sealer_of(ctx), PRIVATE)
+
+
+def _migrate(ctx) -> None:
+    """Sealed-records setup (and older files): contacts into the sealed map, re-sealed with this run's key."""
+    pv = _priv(ctx)
+
+    def f(d):
+        pv.migrate(d, d["posts"])
+        pv.reseal(d, [x.get("id") for x in d["posts"] if isinstance(x, dict)])
+        return None, True
+    _store(ctx).update(f)
 
 
 def _photos(ctx) -> Path:
@@ -185,10 +212,82 @@ def mesh_text(p: dict) -> str | None:
     return _fit(head + (", " + desc if desc else "") + seen + MESH_TAIL, 200)
 
 
-def _public(p: dict, admin: bool) -> dict:
+# ── where an approved announcement goes: the posture decides ──
+CIRCLE_DAYS = {"missing": 7, "lost": 7, "found": 7, "safe": 2}
+
+
+def _circles(ctx):
+    try:
+        h = ctx.feature("circles")
+    except (AttributeError, TypeError):            # an older portal: no cross-feature access
+        return None
+    return h if h is not None and hasattr(h.mod, "share_pointer") else None
+
+
+def mesh_route(ctx) -> tuple[str, str, str]:
+    """("public" | "circle" | "none", posture level, a note for the admin)."""
+    try:
+        level = (ctx.posture()[0] or {}).get("level")
+    except Exception:  # noqa: BLE001 — an older portal without the posture: as before
+        level = None
+    if level == "lockdown":
+        return "none", level, ("Lockdown: nothing is announced on the radio, not even to your trusted circle. "
+                               "Change the security posture first if this must go out.")
+    if level != "guarded":
+        return "public", level or "neighbourly", ""
+    h = _circles(ctx)
+    if h is None:
+        why = "the trusted-circle feature is switched off"
+    else:
+        ok, why = h.mod.can_share(h.ctx, "missing")
+        if ok:
+            return "circle", level, ("Guarded: shared with your trusted circle only. Circle radios that ask about "
+                                     "missing persons get one short line (no places); nothing is broadcast.")
+    return "none", level, (f"Guarded: announcements go only to your trusted circle, and {why}, so nothing goes out "
+                           "on the radio. To announce it to every radio in range, switch the posture to Neighbourly.")
+
+
+def circle_text(p: dict, custom: str | None, checks) -> str | None:
+    """The pointer for the circle (≤80 characters): the admin's own wording if they changed it, else the
+    announcement without where/when — circles get pointers, never places. None if nothing passes `checks`."""
+    prefix = ANNOUNCE.get(p.get("status"))
+    if not prefix:
+        return None
+    name, desc = p.get("name", ""), p.get("description", "")
+    cands = []
+    if custom and custom != mesh_text(p):
+        cands.append(custom[:-len(MESH_TAIL)] if custom.endswith(MESH_TAIL) else custom)
+    if desc and p.get("status") != "safe":
+        cands.append(f"{prefix}: {name}, {desc}")
+    cands.append(f"{prefix}: {name}")
+    for c in cands:
+        t = _fit(c, 80)
+        if t and checks(t):
+            return t
+    return None
+
+
+def _withdraw_circle(ctx, p: dict) -> None:
+    mesh = p.get("mesh") or {}
+    if mesh.get("via") != "circle" or not mesh.get("circle"):
+        return
+    h = _circles(ctx)
+    if h is not None:
+        try:
+            h.mod.withdraw_pointer(h.ctx, f"missing:{p.get('id')}")
+        except Exception as e:  # noqa: BLE001
+            ctx.log(f"circle pointer not withdrawn: {type(e).__name__}")
+    mesh["circle"] = False
+
+
+def _public(p: dict, admin: bool, pv: C.Private | None = None, priv: dict | None = None) -> dict:
     out = {k: p.get(k) for k in ("id", "kind", "status", *FIELDS, "created", "updated", "status_at")}
+    if pv is not None:
+        sv = pv.view(p, priv or {})
+        out.update(contact=sv["contact"], contact_sealed=bool(sv.get("sealed")))
     out["photo"] = f"/api/missing/photo/{p['photo']}.jpg" if p.get("photo") else None
     out["mesh"] = (p.get("mesh") or {}).get("state", "none")
+    out["mesh_via"] = (p.get("mesh") or {}).get("via", "public") if out["mesh"] == "sent" else None
     if admin:
         out["hidden"] = bool(p.get("hidden"))
         out["flags"] = len(p.get("flags") or [])
@@ -221,7 +320,9 @@ def _purge(ctx, d: dict, keep_days: int, now: float) -> bool:
     if dead:
         gone = {id(p) for p in dead}
         d["posts"] = [p for p in d["posts"] if id(p) not in gone]
-    return bool(dead)
+        _priv(ctx).tidy(d, [p.get("id") for p in d["posts"]])
+    moved = _priv(ctx).migrate(d, d["posts"]) if any(isinstance(p, dict) and "contact" in p for p in d["posts"]) else False
+    return bool(dead) or moved
 
 
 def _clean(data: dict, kind: str, partial: bool = False) -> dict:
@@ -249,8 +350,10 @@ def h_list(req, ctx, args):
     now = _now()
     st = _store(ctx)
     st.update(lambda d: (None, _purge(ctx, d, cfg["keep"], now)))
+    pv = _priv(ctx)
 
     def f(d):
+        priv, _ = pv.reveal(d)
         out = []
         for p in d["posts"]:
             if not isinstance(p, dict) or (p.get("hidden") and not admin):
@@ -263,13 +366,14 @@ def h_list(req, ctx, args):
             if q and not (name_hit or C.match(q, p.get("description"), p.get("where"))):
                 continue
             out.append((0 if name_hit else 1, RANK.get(p.get("status"), 9), -float(p.get("status_at") or p.get("updated") or 0),
-                        _public(p, admin)))
+                        _public(p, admin, pv, priv)))
         out.sort(key=lambda t: t[:3])
         return [t[3] for t in out]
     posts = st.view(f)
     res = {"posts": posts, "keep_days": cfg["keep"], "mesh": cfg["mesh"]}
     if admin:
         res["mesh_pending"] = sum(1 for p in posts if p["mesh"] == "requested")
+        res["mesh_route"], res["posture"], res["mesh_note"] = mesh_route(ctx)
     return res
 
 
@@ -290,6 +394,8 @@ def h_add(req, ctx, args):
     tag = C.ip_tag(ctx.data_dir(), args["ip"])
     raw, hashed = C.new_token()
     now = _now()
+    pv = _priv(ctx)
+    private = {k: fields.pop(k) for k in PRIVATE if k in fields}
 
     def f(d):
         changed = _purge(ctx, d, cfg["keep"], now)
@@ -300,8 +406,9 @@ def h_add(req, ctx, args):
         p = {"id": C.new_id(), "kind": kind, **fields, "photo": None, "created": now, "updated": now, "status_at": now,
              "tok": hashed, "ipt": tag, "flags": [], "hidden": False,
              "mesh": {"state": "requested" if want_mesh and cfg["mesh"] else "none", "requested_at": now if want_mesh else None}}
+        pv.put(d, p, private)
         d["posts"].append(p)
-        return (200, {"ok": True, "id": p["id"], "token": raw, "post": _public(p, False)}), True
+        return (200, {"ok": True, "id": p["id"], "token": raw, "post": _public(p, False, pv, {p["id"]: private})}), True
     return _store(ctx).update(f)
 
 
@@ -327,11 +434,15 @@ def h_update(req, ctx, args):
         except C.FieldError as e:
             return (400, {"error": str(e)}), False
         old = p.get("status")
+        pv = _priv(ctx)
+        pv.migrate(d, [p])
+        pv.put(d, p, {k: fields.pop(k) for k in PRIVATE if k in fields})
         p.update(fields)
         p["updated"] = now
         mesh = p.setdefault("mesh", {"state": "none"})
         if p["status"] != old:
             p["status_at"] = now
+            _withdraw_circle(ctx, p)                   # the circle's pointer said the old status
             # news of someone who was announced as missing goes out too, once the admin approves it
             if cfg["mesh"] and p["status"] == "safe" and mesh.get("sent_status") == "missing":
                 mesh.update(state="requested", requested_at=now)
@@ -339,7 +450,7 @@ def h_update(req, ctx, args):
                 mesh["state"] = "none"
         if want_mesh and cfg["mesh"] and ANNOUNCE.get(p["status"]) and mesh.get("sent_status") != p["status"]:
             mesh.update(state="requested", requested_at=now)
-        return (200, {"ok": True, "post": _public(p, bool(args["admin"]))}), True
+        return (200, {"ok": True, "post": _public(p, bool(args["admin"]), pv, pv.reveal(d)[0])}), True
     return _store(ctx).update(f)
 
 
@@ -357,8 +468,10 @@ def h_remove(req, ctx, args):
             return (404, {"error": "no such post"}), False
         if not _owner_or_admin(p, data.get("token"), args):
             return (403, {"error": "only the person who posted this (or the Badger's owner) can remove it"}), False
+        _withdraw_circle(ctx, p)
         _delete_photo(ctx, p.get("photo"))
         d["posts"] = [x for x in d["posts"] if x is not p]
+        _priv(ctx).drop(d, p.get("id"))
         return (200, {"ok": True}), True
     return _store(ctx).update(f)
 
@@ -502,8 +615,10 @@ def h_moderate(req, ctx, args):
             return (404, {"error": "no such post"}), False
         mesh = p.setdefault("mesh", {"state": "none"})
         if op == "remove":
+            _withdraw_circle(ctx, p)
             _delete_photo(ctx, p.get("photo"))
             d["posts"] = [x for x in d["posts"] if x is not p]
+            _priv(ctx).drop(d, p.get("id"))
         elif op == "clear_flags":
             p["flags"] = []
         elif op in ("hide", "unhide"):
@@ -516,18 +631,35 @@ def h_moderate(req, ctx, args):
                 return (400, {"error": "Nothing to announce for a closed post."}), False
             if p.get("hidden"):
                 return (400, {"error": "Unhide the post before announcing it."}), False
+            route, level, note = mesh_route(ctx)
+            if route == "none":
+                return (409, {"error": note, "posture": level, "sent": None}), False
+            if route == "circle":
+                h = _circles(ctx)
+                line = circle_text(p, text, lambda t: not (h.mod.quantity_like(t) or h.mod.address_like(t)))
+                if not line:
+                    return (409, {"error": "This can't go to the circle: it reads like an address or an amount, and "
+                                           "the circle only gets pointers. Shorten the text and try again.",
+                                  "posture": level}), False
+                ok, got = h.mod.share_pointer(h.ctx, "missing", f"missing:{p.get('id')}", line,
+                                              days=CIRCLE_DAYS.get(p.get("status"), 7))
+                if not ok:
+                    return (409, {"error": f"Not shared with the circle: {got}.", "posture": level}), False
+                mesh.update(state="sent", sent_at=_now(), sent_status=p.get("status"), text=got, via="circle",
+                            circle=True)
+                return (200, {"ok": True, "sent": got, "via": "circle", "note": note, "posture": level}), True
             wait = _mesh_limit.check("mesh", cfg["mesh_hour"])
             if wait:
                 return (429, {"error": "Radio airtime limit reached (" + str(cfg["mesh_hour"]) + " announcements an hour). " + C.wait_msg(wait)}), False
             if not _mesh_send(ctx, msg, f"missing:{p.get('id')}:{p.get('status')}"):
                 return (500, {"error": "Couldn't queue the announcement for the radio."}), False
-            mesh.update(state="sent", sent_at=_now(), sent_status=p.get("status"), text=msg)
+            mesh.update(state="sent", sent_at=_now(), sent_status=p.get("status"), text=msg, via="public")
             if cfg["board_copy"]:
                 try:
                     ctx.board_post("feature:missing", "Missing & found", msg, False, "community", None)
                 except Exception as e:  # noqa: BLE001 — the radio message already went out
                     ctx.log(f"board copy failed: {type(e).__name__}")
-            return (200, {"ok": True, "sent": msg}), True
+            return (200, {"ok": True, "sent": msg, "via": "public"}), True
         return (200, {"ok": True}), True
     return _store(ctx).update(f)
 
@@ -542,6 +674,9 @@ def _mesh_send(ctx, msg: str, key: str) -> bool:
 
 
 def setup(ctx):
+    s = C.sealer_of(ctx)
+    if s is not None:
+        s.register_migrator("missing", lambda: _migrate(ctx))
     _photos(ctx)
     try:
         os.chmod(_photos(ctx), 0o750)

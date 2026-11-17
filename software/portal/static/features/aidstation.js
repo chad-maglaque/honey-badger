@@ -144,7 +144,10 @@
       var body = { person: q("afp").value, count: parseInt(q("afc").value, 10) || 1, help: picked(form, "help"), needs: q("afn").value,
         notes: q("afo").value, followup: q("aff").checked, followup_note: q("afq").value, handled_by: q("afh").value };
       if (edit) body.id = e.id;
-      ls("aidHandler", body.handled_by);
+      if (edit && e.sealed) {          // sealed records locked: the names/needs shown are placeholders — don't overwrite them
+        ["person", "needs", "notes", "followup_note", "handled_by"].forEach(function (k) { if (!body[k] || body[k] === e[k]) delete body[k]; });
+      }
+      if (body.handled_by) ls("aidHandler", body.handled_by);
       q("afs").textContent = "Saving…";
       api("/api/aidstation/entry", body).then(function (r) {
         if (!r.ok) { q("afs").textContent = r.error || "Couldn’t save."; return; }
@@ -269,7 +272,7 @@
         (d.codes.length ? '<p class="small muted">' + d.codes.length + " unused code(s) waiting.</p>" : "") +
         '<div class="btns section"><button class="btn danger" id="aiAll">End of shift: sign out everyone</button></div></div>' +
         '<div class="card section"><h2>Privacy & retention</h2>' +
-        '<p class="small">Records hold names and health needs. They stay on the Badger only, are visible only to aid volunteers and the admin, and are <b>deleted automatically</b> after the number of days below. They are not encrypted on the Badger’s drive: anyone who takes the Badger apart could read them. Export only when you must, and delete exports when done.</p>' +
+        '<p class="small">Records hold names and health needs. They stay on the Badger only, are visible only to aid volunteers and the admin, and are <b>deleted automatically</b> after the number of days below. Names, needs and notes are sealed on the Badger’s drive: a taken Badger shows nothing of them (while it is locked after a restart, only records added since then can be read here). Export only when you must, and delete exports when done.</p>' +
         '<form id="aidRet" class="btns"><label for="aiD" style="margin:0">Delete records after</label><input type="number" id="aiD" min="1" max="365" value="' + B.num(d.retention_days) + '" style="max-width:6em"> days <button class="btn ghost">Save</button></form>' +
         '<p class="small muted">Default ' + B.num(d.retention_default) + ' days (prepper.toml). <span id="aiRs"></span></p>' +
         '<div class="btns"><button class="btn danger" id="aiWipe">Delete all records now</button></div></div>' +

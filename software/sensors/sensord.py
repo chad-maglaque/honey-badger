@@ -19,7 +19,7 @@ Polls the sensors in [sensors] (plus any it can find safely by itself), stores t
   * active alerts: current.json (the launcher banner and the sensors page read it).
 
 Remote readings: Meshtastic environment telemetry that meshbridge appends to
-mesh-telemetry.jsonl. Untrusted radio data — validated, range-checked, rate-limited, and only
+mesh-telemetry.jsonl (in RAM: /run/prepper, or [portal] run_dir / mesh_telemetry). Untrusted radio data — validated, range-checked, rate-limited, and only
 kept for nodes the admin picked.
 
 Run: python3 sensord.py [--once] (config from $PREPPER_CONFIG or /etc/prepper/prepper.toml).
@@ -44,7 +44,8 @@ import sensorlib as sl  # noqa: E402
 
 DATA = Path("/var/lib/prepper/portal/features/sensors")
 OUTBOX = Path("/var/lib/prepper/portal/mesh-outbox.jsonl")
-TELEMETRY = Path("/var/lib/prepper/portal/mesh-telemetry.jsonl")
+RUN = Path("/run/prepper")                     # the mesh bridge keeps radio state in RAM ([portal] run_dir)
+TELEMETRY = RUN / "mesh-telemetry.jsonl"
 W1_ROOT = Path("/sys/bus/w1/devices")
 
 TYPES = {   # type → (primary metric, default poll seconds)
@@ -193,7 +194,11 @@ class Sensord:
         self.data = Path(data_dir or Path(portal.get("features_data") or DATA.parent) / "sensors")
         self.data.mkdir(parents=True, exist_ok=True)
         self.outbox = Path(outbox or sc.get("mesh_outbox") or portal.get("mesh_outbox") or OUTBOX)
-        self.telemetry_path = Path(telemetry or sc.get("telemetry_file") or TELEMETRY)
+        # the same file the mesh bridge writes: [sensors] telemetry_file, else [portal] mesh_telemetry (or
+        # $MESH_TELEMETRY), else <[portal] run_dir>/mesh-telemetry.jsonl (/run/prepper: RAM)
+        self.telemetry_path = Path(telemetry or sc.get("telemetry_file") or os.environ.get("MESH_TELEMETRY")
+                                   or portal.get("mesh_telemetry")
+                                   or Path(portal.get("run_dir") or RUN) / TELEMETRY.name)
         self.i2c_open, self.serial_open, self.gpio_runner = i2c_open, serial_open, gpio_runner
         self.w1_root, self.sleep, self.mono = Path(w1_root), sleep, mono
         self.bus = _int(sc.get("i2c_bus", (self.raw.get("power") or {}).get("i2c_bus", 1)), 1, 0, 20)

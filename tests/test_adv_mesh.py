@@ -457,6 +457,7 @@ mesh_rotate_result = "{t}/mesh-rotate-result.json"
 mesh_channel_link = "{t}/mesh-channel.json"
 mesh_telemetry = "{t}/mesh-telemetry.jsonl"
 mesh_bt_pin_file = "{t}/mesh-bt-pin.json"
+run_dir = "{t}"
 """)
         os.environ["PREPPER_CONFIG"] = str(t / "prepper.toml")
         (t / "mesh-outbox.jsonl").write_text("".join(json.dumps(p) + "\n" for p in outbox))

@@ -55,7 +55,9 @@ done
 C="$N curl -s --max-time 10 --resolve badger.lan:80:$AP --resolve badger.lan:443:$AP"
 [ "$($C -o /dev/null -w '%{http_code}' http://badger.lan/)" = 200 ] && ok "launcher over Wi-Fi" || bad "launcher over Wi-Fi"
 [ "$($C -k -o /dev/null -w '%{http_code}' https://badger.lan/)" = 200 ] && ok "launcher over HTTPS" || bad "launcher over HTTPS"
-$C http://badger.lan/api/status | grep -q '"clients": *1' && ok "/api/status counts the phone" || bad "/api/status client count"
+# Occupancy is private (visitor.status_view): a phone sees "clients": null; the front panel (panel key) sees the count.
+$C http://badger.lan/api/status | grep -q '"clients": *null' && ok "/api/status hides the client count from a visitor" || bad "/api/status shows a visitor the client count"
+curl -s -H "X-Badger-Panel: $(cat /etc/prepper/panel.key)" http://127.0.0.1:8000/api/status | grep -q '"clients": *1' && ok "/api/status counts the phone (front panel)" || bad "/api/status client count (front panel)"
 $C http://badger.lan/ca.crt | grep -q "BEGIN CERTIFICATE" && ok "CA certificate served" || bad "CA certificate"
 
 echo "== portal security over Wi-Fi"

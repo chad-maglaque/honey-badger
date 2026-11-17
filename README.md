@@ -10,6 +10,14 @@ It also helps a family and its neighbours get through an emergency together:
 - **Neighbourhood:** missing people and lost & found with photos, a skills and resources directory, an aid-station log with a public status line, and optional sensors that warn of floods, freezing, heat or radiation.
 - **Radio & sky:** the NOAA forecast written out as text, aircraft overhead, and cloud pictures from Meteor-M weather satellites, received by a second built-in radio.
 - **Voice:** ask a question out loud and hear the answer.
+- **Security:** if the Badger is seized, stolen or someone forces you to open it, it must not be turned against you:
+  - [sealed records](docs/SECURITY.md#sealed-records-encryption-at-rest): family data encrypted on the drive, unlocked by the owner's passphrase;
+  - [panic wipe, duress PIN, handover reset](docs/OPERATIONS.md#panic-wipe-duress-pin-dead-man-switch): erase the family's data in seconds, keep the library;
+  - [security posture](docs/features/posture.md): one switch (Neighbourly / Guarded / Lockdown) for how much it shows the world;
+  - [trusted circles](docs/features/circles.md): a few vetted households share pointers ("who can help"), never lists or locations;
+  - ["What this Badger reveals"](docs/features/reveal.md): a green/amber checklist with one-tap fixes.
+
+**Start here:** [Quick start](docs/QUICKSTART.md) (one page: power, Wi-Fi, the first-boot security checklist) · [Setting up](docs/SETUP.md) (for whoever builds and looks after the Badger) · [Using the Badger](docs/USAGE.md) (for everyone: each feature, emergencies, troubleshooting). · What's new: [CHANGELOG](CHANGELOG.md) (this release: v0.4, see [VERSION](VERSION)).
 
 Everything it does, and who can use each part: [docs/FEATURES.md](docs/FEATURES.md).
 Build one: parts in [docs/BOM.md](docs/BOM.md), printing in [docs/PRINTING.md](docs/PRINTING.md), assembly in [docs/HARDWARE.md](docs/HARDWARE.md).
@@ -19,7 +27,7 @@ It is a superset of [Prepper Disk Premium](https://www.prepperdisk.com/pages/pre
 | | Prepper Disk Premium | Honey Badger |
 |---|---|---|
 | Board / storage | Pi 4B 2 GB · 512 GB SD | Pi 5 8 GB · 512 GB – 4 TB **NVMe** · RTC battery |
-| Content | 16 modules | 138 catalog items; 290 GB / 480 GB / 1.35 TB tiers ([CONTENTS](docs/CONTENTS.md)) |
+| Content | 16 modules | 138 catalog items; 280 GB / 474 GB / 1,370 GB tiers ([CONTENTS](docs/CONTENTS.md)) |
 | Power | external adapter | built-in 50 Wh UPS, USB-C PD + 8–30 V solar/DC in, auto Endurance mode, clean shutdown |
 | Wi-Fi | 20 devices | Wi-Fi 6 USB adapter, 5 GHz, WPA2/WPA3 or open, captive portal; built-in antennas |
 | Updates | web console, full downloads | rsync/git deltas, signed peer and USB-bundle sync, zimdiff patches, scheduled, resumable, verified |
@@ -60,8 +68,8 @@ The builder streams the OS straight onto the Badger's drive and verifies it on t
 | `builder/prepper-build` | laptop tool: plan, stream-flash, inject, relay, watch, clone |
 | `case/` | rugged parametric enclosure (`honey_badger_case.scad`, 204 × 168 × 82.5 mm): PETG base/lid/shock sled and SDR 2 shelf, TPU bumpers, dampers, gasket and SDR whip clips; ready-to-print `stl/` and preview `renders/` |
 | `docs/brand/` | logo mark (SVG, 512 px PNG) and wordmark lockup; colors: honey #E8A317, coat #1B1A17, mantle #E9E4D6 |
-| `docs/` | [FEATURES](docs/FEATURES.md) (what it does) · [TOUR](docs/TOUR.md) (how it works) · [BOM](docs/BOM.md) (shopping list) · [DESIGN](docs/DESIGN.md) · [HARDWARE](docs/HARDWARE.md) · [OPERATIONS](docs/OPERATIONS.md) · [CONTENTS](docs/CONTENTS.md) · [KE-SHI](docs/KE-SHI.md) |
-| `docs/features/` | one user guide per feature: forecast, voice, aircraft, satellites, aid station, skills, missing, vault, supplies, sensors |
+| `docs/` | [QUICKSTART](docs/QUICKSTART.md) · [SETUP](docs/SETUP.md) · [USAGE](docs/USAGE.md) (the user guides) · [FEATURES](docs/FEATURES.md) (what it does) · [TOUR](docs/TOUR.md) (how it works) · [BOM](docs/BOM.md) (shopping list) · [DESIGN](docs/DESIGN.md) · [HARDWARE](docs/HARDWARE.md) · [OPERATIONS](docs/OPERATIONS.md) · [CONTENTS](docs/CONTENTS.md) · [KE-SHI](docs/KE-SHI.md) |
+| `docs/features/` | one user guide per feature: forecast, voice, aircraft, satellites, aid station, skills, missing, vault, supplies, sensors, solver, posture, circles, reveal |
 | `tests/` | updater end-to-end tests against a fake mirror; launcher and feature tests; dev fixture for the launcher |
 
 ## Development

@@ -20,6 +20,12 @@ Family members for the Honey Badger: one-time invite codes, a key per device, re
   * Names are cleaned (no control, invisible or direction-changing characters) and must
     not look like another member's name.
 
+Sealed records (docs/SECURITY.md): with a sealer (the portal always passes one) the sensitive fields —
+names, device labels, last-seen times, names on open invites — are kept in one sealed token in the file
+(SealedMap); what auth needs (hashed keys, ids, radios for the mesh bridge) stays usable while the Badger
+is locked. While locked, names read as "a family member", nobody NEW can join (names can't be checked
+for look-alikes), and a device's last-seen time is kept in memory only.
+
 Standard library only; one JSON file, written atomically (with a .bak of the previous
 version), guarded by a lock. A file that can't be read is never treated as "no members":
 writes are refused until it is fixed (from members.json.bak, a copy of the last good list),
@@ -39,6 +45,18 @@ import threading
 import time
 import unicodedata
 from pathlib import Path
+
+try:
+    import sealed
+except ImportError:                                  # run from elsewhere: software/common next to portal/
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
+    import sealed
+
+LOCKED_NAME = sealed.LOCKED_NAME
+LOCKED_DEVICE = "a device"
+LOCKED_MSG = ("Sealed records are locked, so names can't be checked. The Badger's owner can unlock them "
+              "(Settings → Sealed records) and then add a new family member.")
 
 ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"        # no 0/O, 1/I/L, U: easy to read aloud and type
 INVITE_TTL = 24 * 3600
@@ -142,8 +160,10 @@ def _strs(v) -> list[str]:
 
 
 class Members:
-    def __init__(self, path: Path, clock=time.time, mono=None):
+    def __init__(self, path: Path, clock=time.time, mono=None, sealer=None):
         self.path, self.clock, self._mono = Path(path), clock, mono
+        self.sealer = sealer                            # sealed.Sealer, or None: everything stays plain
+        self._seen_mem: dict[str, float] = {}           # device id → last seen (kept here while locked)
         self.lock = threading.Lock()
         self._fails: dict[str, list[float]] = {}        # ip → [count, first_fail, locked_until]
         self._seen_write: dict[str, float] = {}
@@ -174,14 +194,118 @@ class Members:
         except OSError as e:
             raise StoreError(f"the family member list can't be read ({e.strerror or e})") from None
         try:
-            return self._parse(raw)
+            d = self._parse(raw)
         except (ValueError, RecursionError, AttributeError):
             raise StoreError("the family member list is damaged (members.json); an admin can restore the "
                              "last good copy from Settings → Family members") from None
+        return self._hydrate(d)
+
+    # ── sealed fields ──
+    def locked(self) -> bool:
+        """True while the sealed names can't be read (the owner hasn't unlocked the Badger since it started)."""
+        return self.sealer is not None and not self.sealer.is_unlocked()
+
+    def _hydrate(self, d: dict) -> dict:
+        """Put the sealed names/labels/last-seen back into the parsed dict (placeholders while locked).
+        d["_known"] remembers what came from the sealed token, so _save writes only what changed."""
+        if self.sealer is None:
+            return d
+        vals, _ = sealed.SealedMap(d, self.sealer).read()
+        known: dict = {}
+        for mid, m in d["members"].items():
+            v = vals.get(mid) or {}
+            k = known[mid] = {"dev": {}}
+            if isinstance(v.get("name"), str):
+                m["name"] = k["name"] = v["name"]
+            elif not isinstance(m.get("name"), str):       # (a plain name from an older file stays: sealed on save)
+                m["name"], m["_locked"] = LOCKED_NAME, True
+            vd = v.get("dev") if isinstance(v.get("dev"), dict) else {}
+            for dev in _devices(m):
+                did = str(dev.get("id", ""))
+                x = vd.get(did) if isinstance(vd.get(did), dict) else {}
+                kx = k["dev"][did] = {}
+                if isinstance(x.get("label"), str):
+                    dev["label"] = kx["label"] = x["label"]
+                elif not isinstance(dev.get("label"), str):
+                    dev["label"], dev["_locked"] = LOCKED_DEVICE, True
+                seen = [t for t in (x.get("seen"), self._seen_mem.get(did), dev.get("last_seen"))
+                        if isinstance(t, (int, float)) and not isinstance(t, bool)]
+                if isinstance(x.get("seen"), (int, float)):
+                    kx["seen"] = x["seen"]
+                dev["last_seen"] = max(seen) if seen else None
+        for inv in d["invites"].values():
+            if not isinstance(inv, dict):
+                continue
+            x = vals.get(f"inv:{inv.get('id')}") or {}
+            if isinstance(x.get("name"), str):
+                inv["name"] = x["name"]
+                known[f"inv:{inv.get('id')}"] = {"name": x["name"]}
+            elif not isinstance(inv.get("name"), str):
+                inv["name"], inv["_locked"] = "", True
+        d["_known"] = known
+        return d
+
+    def _dehydrate(self, d: dict) -> dict:
+        """What goes in the file: d without the sealed fields in the clear (they go into the token)."""
+        out = json.loads(json.dumps({k: v for k, v in d.items() if k != "_known"}))
+        if self.sealer is None:
+            return out
+        known, parts = d.get("_known") or {}, {}
+        unlocked = self.sealer.is_unlocked()
+        for mid, m in out["members"].items():
+            k, part = known.get(mid) or {}, {}
+            name, lk = m.pop("name", None), m.pop("_locked", False)
+            if isinstance(name, str) and not (lk and name == LOCKED_NAME) and name != k.get("name"):
+                part["name"] = name
+            kd, devp, have = k.get("dev") or {}, {}, set()
+            for dev in _devices(m):
+                did = str(dev.get("id", ""))
+                have.add(did)
+                kx, x = kd.get(did) or {}, {}
+                label, dl = dev.pop("label", None), dev.pop("_locked", False)
+                seen = dev.pop("last_seen", None)
+                if isinstance(label, str) and not (dl and label == LOCKED_DEVICE) and label != kx.get("label"):
+                    x["label"] = label
+                if isinstance(seen, (int, float)) and not isinstance(seen, bool):
+                    self._seen_mem[did] = seen
+                    if unlocked and seen != kx.get("seen"):
+                        x["seen"] = seen                     # presence times: written only while unlocked
+                if x:
+                    devp[did] = x
+            if unlocked:
+                for did in kd:
+                    if did not in have:
+                        devp[did] = None                     # a removed device: its label goes too
+            if devp:
+                part["dev"] = devp
+            if part:
+                parts[mid] = part
+        live = set(out["members"])
+        for inv in out["invites"].values():
+            if not isinstance(inv, dict):
+                continue
+            key = f"inv:{inv.get('id')}"
+            live.add(key)
+            nm, lk = inv.pop("name", None), inv.pop("_locked", False)
+            if isinstance(nm, str) and nm and not lk and nm != (known.get(key) or {}).get("name"):
+                parts[key] = {"name": nm}
+        if len(self._seen_mem) > 4000:
+            self._seen_mem.clear()
+        sealed.SealedMap(out, self.sealer).update_many(parts, live=live if unlocked else None)
+        # the in-memory copy follows (a caller may save the same dict twice)
+        for key in ("sealed", "sealed_pending"):
+            if key in out:
+                d[key] = out[key]
+            else:
+                d.pop(key, None)
+        for mid, part in parts.items():
+            known[mid] = sealed._merge(known.get(mid) or {}, part)
+        d["_known"] = known
+        return out
 
     def _save(self, d: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        data = json.dumps(d, indent=1).encode()
+        data = json.dumps(self._dehydrate(d), indent=1).encode()
         self._write_file(self.path, data)
         try:                                       # a second copy of the latest good list, for restore_backup
             self._write_file(self.backup, data)
@@ -292,6 +416,8 @@ class Members:
                 if not m or m.get("removed"):
                     raise ValueError("no such member")
                 nm = ""
+            elif self.locked():
+                raise ValueError(LOCKED_MSG)
             elif len(self._active(d)) >= MAX_MEMBERS:
                 raise ValueError(f"at most {MAX_MEMBERS} members")
             elif nm and self._name_taken(d, nm):
@@ -392,6 +518,8 @@ class Members:
                 if len(_devices(m)) >= MAX_DEVICES:
                     return "bad", {}, f"At most {MAX_DEVICES} devices per member."
             else:
+                if inv.get("_locked") or self.locked():
+                    return "bad", {}, LOCKED_MSG
                 if len(self._active(d)) >= MAX_MEMBERS:
                     return "full", {}, f"The family already has {MAX_MEMBERS} members. Ask the admin."
                 # The name the admin put on the invite wins: the person joining can't pick another.
@@ -582,6 +710,8 @@ class Members:
         nm = clean_name(name)
         if not nm:
             raise ValueError("name required")
+        if self.locked():
+            raise ValueError(LOCKED_MSG)
 
         def f(m, d):
             if self._name_taken(d, nm, except_mid=mid):
@@ -717,19 +847,28 @@ class Members:
         return self._edit(mid, lambda m, d: m.__setitem__("radios", [r for r in _strs(m.get("radios")) if r != node]))
 
 
-def radio_registry(path: Path) -> dict[str, dict]:
+def radio_registry(path: Path, sealer=None) -> dict[str, dict]:
     """For meshbridge: radio ID → {"member", "name", "removed"} (read-only, no lock needed).
-    An unreadable file gives {}: then no radio is known, which only means no names on posts."""
+    An unreadable file gives {}: then no radio is known, which only means no names on posts.
+    Sealed names are read with `sealer` (default: this process's sealed-records instance, if any);
+    while locked they read as "a family member"."""
     try:
         d = json.loads(Path(path).read_bytes())
     except (OSError, ValueError, RecursionError):
         return {}
+    if sealer is None:
+        try:
+            sealer = sealed.current()
+        except sealed.SealError:
+            sealer = None
+    vals = sealed.SealedMap(d, sealer).read()[0] if isinstance(d, dict) and sealer is not None else {}
     out: dict[str, dict] = {}
     mems = d.get("members") if isinstance(d, dict) else None
     for mid, m in (mems.items() if isinstance(mems, dict) else []):
         if not isinstance(m, dict):
             continue
-        name = clean_name(m.get("name", ""))
+        sv = vals.get(mid) if isinstance(vals.get(mid), dict) else {}
+        name = clean_name(m.get("name") if isinstance(m.get("name"), str) else sv.get("name", "")) or LOCKED_NAME
         for r in _strs(m.get("radios")):
             out[r.lower()] = {"member": mid, "name": name, "removed": False}
         for r in _strs(m.get("removed_radios")):

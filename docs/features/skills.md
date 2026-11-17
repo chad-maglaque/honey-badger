@@ -27,6 +27,10 @@ directory doesn't fill with offers that are no longer true.
 Share only what you're comfortable with. A first name and "ask at the blue house on Oak St" is
 usually enough. Don't post phone numbers or exact addresses unless you're sure.
 
+"Where / how to find you" is **sealed** on the Badger's drive (docs/SECURITY.md → "Sealed
+records"): while the Badger is locked after a restart it shows as "sealed" until the owner unlocks
+it; what is offered or needed stays searchable. Edits and new entries work while locked.
+
 The Badger does not store who posted what by name or address; it keeps a scrambled code of the
 posting device's network address only to enforce the limits below.
 

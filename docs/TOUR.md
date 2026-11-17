@@ -18,7 +18,7 @@ The Badger also has a small screen, a knob and a power button of its own. With t
 | **Knob** (low-profile, in a recessed pocket with the power button and status light) | **Turn** to move through menus. **Press** to choose. **Hold 3 s** on the home screen to shut down (it asks first, and "No" is the default) |
 | **Power button** | When off: **press** to start. When on: **press** for a clean shutdown. Holding it for about 10 s forces power off; only do that if it's frozen |
 | **Status light** (red or amber) | **Solid**: ready · **slow blink**: downloading or updating · **medium blink**: on battery below 30 % · **fast blink**: weather alert |
-| **USB 1, USB 2** (stacked in their own recessed pocket, USB 1 on top) | Plug in a USB stick and its files show up for everyone under *USB & Files*. Also used to import or export update bundles. Eject from the knob menu before pulling it out |
+| **USB 1, USB 2** (stacked in their own recessed pocket, USB 1 on top) | Plug in a USB stick and its files show up for family members and the admin under *USB & Files*. Also used to import or export update bundles. Eject from the knob menu before pulling it out |
 
 ### Knob menu
 
@@ -30,7 +30,10 @@ Home (turn to flip pages · press for menu · hold 3 s to shut down)
 ├─ Approve device (n)   a device the admin added to someone's name, waiting for a yes         🔒
 │                       (only shown when there is one)
 ├─ Family radio         Channel link (QR) — scan with the Meshtastic app (holds the family key)
+│                       Circle link (QR) — the trusted circle's key, to show in person
 │                       Bluetooth PIN — of the Badger's radio, if the Badger changed it     🔒
+├─ Posture: Guarded     the current security posture; pick Neighbourly · Guarded · Lockdown ·
+│                       Lockdown, Wi-Fi off; What it reveals (see features/posture.md)     🔒
 ├─ Status               battery %, time left, storage, temperature, users, pending updates, GPS fix (scroll with the knob)
 ├─ Sensors              alerts first ("!! Water 310 cm"), then readings — shown when sensors are connected
 ├─ Radio                weather radio listening / PAUSED, SDR 2 (aircraft / recording a satellite pass / missing),
@@ -42,7 +45,9 @@ Home (turn to flip pages · press for menu · hold 3 s to shut down)
 ├─ Time format          Local · UTC · Nu:Time™ (used everywhere on the screen)
 ├─ USB: eject
 ├─ Wi-Fi                Turn on · Turn off 🔒
-└─ System               Restart 🔒 · Shut down 🔒 · Panel lock (set · change · turn off · lock now)
+└─ System               Restart 🔒 · Shut down 🔒 · Panel lock (set · change · duress code · turn off · lock now)
+                        Recovery key (types the sealed-records recovery key with the knob)
+                        Panic wipe 🔒 · Hand over / sell 🔒 (yes, then hold the knob 3 s)
 ```
 
 🔒 = asks for the **panel code** first, if you set one (it is off until you do). The code is 4–8
@@ -53,6 +58,8 @@ screen goes dark. Wrong codes make it wait longer and longer (up to an hour).
 - **Setting a code:** in the app, Settings → Badger administration → *Set up panel code*; then,
   within 10 minutes, at the Badger: System → Panel lock → *Set a code*. Write down the 12-digit
   **recovery code** it shows and keep it with your recovery card.
+- *Panic wipe* and *Hand over / sell* always ask for the code when one is set. The security
+  posture, panic wipe and duress code are explained in [USAGE → Emergencies](USAGE.md#emergencies).
 - **Forgot the code?** On the code screen choose *Forgot?* and enter the recovery code. Or hold the
   knob down while the Badger starts: it opens the recovery screen directly. No recovery code
   either? At the console: `sudo python3 /opt/prepper/software/panel/panel.py --reset-lock`.
@@ -141,6 +148,7 @@ At the top: quick buttons for **💬 Ask the library**, **⛑️ First aid & med
 | | ✈️ Aircraft | planes overhead, from their own radio broadcasts; also a layer on the map |
 | | 🛰️ Weather satellites | pass times and pictures from Meteor-M weather satellites |
 | **More** | 🎙️ Voice | ask out loud, hear the answer |
+| | 🧮 Problem solver | works out power, water, building, heat, radio and survival problems step by step |
 
 A group only appears when at least one of its features is switched on, so your Badger may show fewer tiles. Admin settings for each page are in a box at the bottom of that page, once you've unlocked admin mode under Settings. What each feature does and who can use it: [FEATURES](FEATURES.md).
 

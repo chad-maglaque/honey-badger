@@ -399,6 +399,14 @@ class Photos(Base):
 
 
 class Mesh(Base):
+    """Public-channel announcements: the Neighbourly posture (Guarded/Lockdown: tests/test_missing_posture.py)."""
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "posture.json").write_text(json.dumps({"level": "neighbourly"}))
+        server._cache.pop("posture", None)
+        self.addCleanup(lambda: ((self.tmp / "posture.json").unlink(missing_ok=True), server._cache.pop("posture", None)))
+
     def test_request_then_admin_approves(self):
         a = self.add(mesh_request=True)[1]
         self.assertEqual(a["post"]["mesh"], "requested")

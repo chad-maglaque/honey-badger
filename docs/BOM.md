@@ -80,7 +80,7 @@ Most of the Badger comes from four places.
 | Short internal USB cables, 10–20 cm, right-angle plugs where needed (Pi→Wi-Fi adapter, Pi→hub, hub→SDR 1, hub→SDR 2, hub→RAK USB-C, hub→GPS) | 1 set | Amazon | "short right angle USB cable" | 15 |
 | 90° USB-A and RJ45 adapters (only 25 mm of plug room beyond the Pi's ports; point them **up** — SDR 2 sits 3 mm below) | 1 set | Amazon | "90 degree USB A adapter" | 8 |
 
-### Front and rear panels (≈ $153)
+### Front and rear panels (≈ $154)
 
 | Part | Qty | Buy | Search for | ~$ |
 |---|:-:|---|---|---:|
@@ -99,23 +99,46 @@ Most of the Badger comes from four places.
 | GX16-2 aviation connector pair (plus one spare plug per adapter cable) | 1 | Amazon | "GX16 2 pin aviation connector" | 6 |
 | 12 V 5 A step-down regulator, up to 50 V input — Pololu D36V50F12 | 1 | pololu.com, Amazon | "Pololu D36V50F12" | 35 |
 | 5 A inline blade fuse holder + SMBJ30A TVS diode | 1 | Digi-Key, Amazon | "SMBJ30A" / "inline blade fuse holder" | 3 |
+| 100 µF 63 V low-ESR electrolytic capacitor, across the regulator input (absorbs the voltage spike when a panel is plugged in on a long cable; Pololu recommends a bulk capacitor with long input leads) | 1 | Digi-Key, Amazon | "100uF 63V low ESR electrolytic" | 1 |
 | Reverse-polarity stage: P-channel MOSFET ≥ 40 V, ≥ 10 A (AOD4185, IRF4905) + 15 V zener + 100 kΩ | 1 | Digi-Key, Amazon | "AOD4185 P-channel MOSFET" | 3 |
 | INA228 current/voltage sensor, 85 V (optional input meter) | 1 | Adafruit, Digi-Key | "INA228 breakout" | 15 |
 | Ideal-diode module, LM74700-based (single channel: one per source) | 2 | Amazon, AliExpress | "LM74700 ideal diode module" | 12 |
 | Panel-mount RJ45 extension, M3 ears | 1 | Adafruit, Amazon | "panel mount ethernet extension" | 8 |
 | Noctua NF-A4x10 5V fan + 40 mm dust filter | 1 | Amazon | "Noctua NF-A4x10 5V" | 15 |
-| AO3400-class logic-level MOSFET (module or on perfboard) + flyback diode, for the case fan | 1 | Amazon, Digi-Key | "AO3400 MOSFET module" | 3 |
+| Case-fan switch: AO3400-class logic-level N-MOSFET + **1N5819** Schottky flyback diode + **100 Ω** gate resistor + **10 kΩ** gate pull-up to 3.3 V (module or on perfboard; the pull-up makes the fan run while the Pi boots, halts or isn't driving GPIO 18) | 1 | Amazon, Digi-Key | "AO3400 MOSFET module", "1N5819" | 3 |
 
-### Case (≈ $86, unchanged: the SDR shelf uses filament and fasteners already listed)
+### Small electronic parts at a glance
+
+Every small component above, with its value and where it goes (no extra cost: they're the rows above).
+
+| Part | Value / rating | Where | Why |
+|---|---|---|---|
+| Blade fuse | 5 A | solar/DC input, first thing after the GX16 | short circuit in the input wiring |
+| TVS diode | SMBJ30A (30 V stand-off) | across the input, after the fuse | clamps voltage spikes |
+| Bulk capacitor | 100 µF, 63 V, low-ESR electrolytic | across the regulator input | absorbs the plug-in spike on long panel cables |
+| P-channel MOSFET | AOD4185 or IRF4905, ≥ 40 V, ≥ 10 A | input, after the TVS | reverse-polarity protection (a backwards cable does nothing) |
+| Zener + resistor | 15 V zener, 100 kΩ | MOSFET gate | protects the gate and turns the MOSFET on |
+| Step-down regulator | Pololu D36V50F12, 12 V 5 A, ≤ 50 V in | power tray | brings 8–30 V (up to ~26 V open-circuit panels) to 12 V for the UPS (6–18 V) |
+| Ideal diodes | 2 × LM74700 modules | regulator output and USB-C trigger output | both sources feed the UPS without back-feeding |
+| N-MOSFET | AO3400-class, logic level | fan ground side | GPIO 18 switches the fan |
+| Flyback diode | 1N5819 Schottky | across the fan | protects the MOSFET from the fan's turn-off spike |
+| Gate resistor | 100 Ω | GPIO 18 → MOSFET gate | limits gate current, damps ringing |
+| Gate pull-up | 10 kΩ to 3.3 V | MOSFET gate | fan runs if the Pi isn't driving the pin (fail-safe cooling) |
+| LED resistor | 330 Ω | status LED | ~4 mA from 3.3 V |
+| Polyfuse | 100 mA PTC | 3.3 V to the SENSORS socket | protects the Pi if an outdoor cable is crushed |
+| Pull-up | 4.7 kΩ to 3.3 V | 1-Wire (GPIO 4) | DS18B20 temperature probe |
+| Pull-up | 10 kΩ to 3.3 V | float switch (GPIO 24) | flood switch input |
+
+### Case (≈ $86, unchanged: the SDR shelf and the frame/edge bumpers use filament and fasteners already listed)
 
 | Part | Qty | Buy | Search for | ~$ |
 |---|:-:|---|---|---:|
 | PETG filament, **yellow**, 1 kg (base, sled and SDR shelf, ~465 g; also the lid inlay colour) | 1 | Amazon, maker stores | "yellow PETG filament 1.75" | 20 |
 | PETG filament, **black** (lid, ~160 g; a 0.5–1 kg spool) | 1 | Amazon, maker stores | "black PETG filament 1.75" | 15 |
-| TPU 95A filament, **black**, 1 kg (bumpers, dampers, gasket, SDR clips, ~150 g) | 1 | Amazon | "black TPU 95A filament" | 25 |
-| M3 heat-set inserts (8 lid, 4 bumper bottom, 4 power tray, 4 SDR clips, 2 SDR shelf) | 22 | Amazon | "M3 heat set insert" | 4 |
+| TPU 95A filament, **black**, 1 kg (2 frame bumpers, 4 edge bumpers, dampers, gasket, SDR clips, ~240 g) | 1 | Amazon | "black TPU 95A filament" | 25 |
+| M3 heat-set inserts (8 lid, 6 frame bottom, 4 power tray, 4 SDR clips, 2 SDR shelf) | 24 | Amazon | "M3 heat set insert" | 4 |
 | M2.5 heat-set inserts (sled, Pi/UPS holes) | 4 | Amazon | "M2.5 heat set insert" | 1 |
-| M3 button-head screw kit: 8 × M3×8 (lid edge, bumper bottom), 4 × M3×10 (lid corners), 8 × M3×6 (SDR clips, tray), 6 × M3×10 + nuts (USB-A, RJ45 ears), 4 × M3×20 + nuts (fan), 2 × M3×12 (SDR shelf), 8 washers | 1 | Amazon, hardware store | "M3 button head screw kit" | 9 |
+| M3 button-head screw kit: 6 × M3×12 (frame tops = lid corner and middle screws), 6 × M3×8 (frame bottoms), 10 × M3×6 (2 side lid screws, SDR clips, tray), 6 × M3×10 + nuts (USB-A, RJ45 ears), 4 × M3×20 + nuts (fan), 2 × M3×12 (SDR shelf), 12 washers | 1 | Amazon, hardware store | "M3 button head screw kit" | 9 |
 | M2.5 and M2 kit: M2.5 for the USB-C ears and the UPS; 4 × M2 + nylon spacers + nuts for the OLED | 1 | Amazon, hardware store | "M2 M2.5 screw nylon spacer kit" | 7 |
 | 3 mm closed-cell EVA/neoprene foam | 1 | craft store, McMaster | "EVA foam sheet 3mm" | 3 |
 | 20 mm hook-and-loop strap | 1 | anywhere | "velcro strap 20mm" | 2 |

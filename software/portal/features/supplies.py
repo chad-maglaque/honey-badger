@@ -15,6 +15,11 @@ Supplies & rationing tracker: what the household has on hand, how long it lasts,
 
 Family members only (an admin without membership gets nothing: what a household has stockpiled
 is exactly what it shouldn't broadcast). One JSON file, written atomically, guarded by a lock.
+
+Sealed records (docs/SECURITY.md): the whole file is one sealed token ({"v": 2, "sealed": …}), so a seized
+Badger shows nothing of the list, the hiding places, the household or the log. While the Badger is locked
+the page still takes changes (write-only): each is sealed into supplies.pending.jsonl and applied, in
+order, once the owner unlocks. Until then the page shows only what was added since it locked.
 """
 from __future__ import annotations
 
@@ -59,8 +64,24 @@ CAT_ALIASES = {"med": "medical", "medicine": "medical", "meds": "medical", "firs
                "sanitation": "hygiene"}
 
 
+LOCKED_MSG = ("Supplies are sealed and the Badger is locked (it restarted, or the owner locked it). You can "
+              "still add items and record changes: they are saved sealed and show up in full once the owner "
+              "unlocks the Badger (Settings → Sealed records).")
+
+
 class Bad(ValueError):
     pass
+
+
+def _locked_types():
+    try:
+        import sealed
+        return (sealed.Locked,)
+    except ImportError:
+        return ()
+
+
+LOCKED = _locked_types()
 
 
 # ── validation ──
@@ -222,10 +243,20 @@ def ration_days(total: float, per_person: float, people: float, extra_per_day: f
 # ── storage ──
 
 class Store:
-    def __init__(self, path: Path, cfg: dict | None = None, clock=time.time):
+    def __init__(self, path: Path, cfg: dict | None = None, clock=time.time, sealer=None, names=None):
         self.path, self.clock = Path(path), clock
         self.cfg = cfg if cfg is not None else {}
         self.lock = threading.RLock()
+        self.sealer = sealer                     # sealed.Sealer, or None (plain file: unit tests, older setups)
+        self.names = names                       # () → {member id: name}: who made a change while locked
+        self._plain_on_disk = False
+        self.journal = None
+        if sealer is not None:
+            import sealed
+            self.journal = sealed.SealedJournal(self.path.with_name(self.path.stem + ".pending.jsonl"), sealer)
+
+    def locked(self) -> bool:
+        return self.sealer is not None and not self.sealer.is_unlocked()
 
     def setting(self, key, default, lo, hi):
         v = self.cfg.get(key, default)
@@ -241,13 +272,57 @@ class Store:
         out["set"] = False
         return out
 
-    def load(self) -> dict:
+    def _read_raw(self) -> dict:
+        """The file's content; sealed.Locked while the Badger is locked."""
         try:
             d = json.loads(self.path.read_text())
         except (OSError, ValueError):
             d = {}
         if not isinstance(d, dict):
             d = {}
+        self._plain_on_disk = bool(d) and "sealed" not in d
+        if "sealed" in d and self.sealer is not None:
+            import sealed
+            try:
+                d = self.sealer.open_json(d["sealed"])
+            except sealed.SealError:
+                d = {}                          # its key was erased (panic wipe): start over
+            if not isinstance(d, dict):
+                d = {}
+        elif "sealed" in d:
+            d = {}
+        return d
+
+    def load(self, apply_pending: bool = True) -> dict:
+        d = self.normalize(self._read_raw())
+        if apply_pending and self.journal is not None and self.journal.pending():
+            ops = self.journal.take()
+            if ops:
+                names = self._names()
+                for op in ops:
+                    apply_op(self, d, op, names)
+                self.save(d, None)
+                self.journal.clear()
+        return d
+
+    def _names(self) -> dict:
+        try:
+            return self.names() if self.names else {}
+        except Exception:  # noqa: BLE001 — a name is nice to have
+            return {}
+
+    def locked_view(self) -> dict:
+        """While locked: an empty list with what was added/changed since the Badger locked applied."""
+        d = self.normalize({})
+        for op in (self.journal.recent() if self.journal is not None else []):
+            apply_op(self, d, op, {}, log=False)
+        return d
+
+    def record(self, op: dict) -> None:
+        """A change made while locked: sealed into the journal, applied after unlock."""
+        self.journal.append({**op, "at": int(self.clock())})
+
+    def normalize(self, d: dict) -> dict:
         d["items"] = {k: v for k, v in (d.get("items") or {}).items() if isinstance(v, dict) and ID_RE.match(str(k))} \
             if isinstance(d.get("items"), dict) else {}
         hh = d.get("household") if isinstance(d.get("household"), dict) else {}
@@ -260,7 +335,20 @@ class Store:
 
     def save(self, d: dict, atomic_write) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(self.path, json.dumps(d, separators=(",", ":")))
+        if self.sealer is not None:
+            import sealed
+            text = json.dumps({"v": 2, "sealed": self.sealer.seal_json(d)}, separators=(",", ":"))
+            if self._plain_on_disk or atomic_write is None:
+                sealed.replace_scrubbing(self.path, text, 0o600)     # the old plaintext is zeroed too
+                self._plain_on_disk = False
+                return
+        else:
+            text = json.dumps(d, separators=(",", ":"))
+        if atomic_write is None:
+            from sealed import write_private
+            write_private(self.path, text.encode(), 0o600)
+            return
+        atomic_write(self.path, text)
         try:
             self.path.chmod(0o600)
         except OSError:
@@ -283,6 +371,60 @@ class Store:
         d["log"] = d["log"][-MAX_LOG:]
 
 
+# ── changes recorded while locked ──
+
+def apply_op(st: Store, d: dict, op: dict, names: dict, log: bool = True) -> None:
+    """One journalled change (see Store.record), applied to the unlocked list in the order it was made.
+    Changes to items deleted meanwhile are skipped; nothing here can raise on odd input."""
+    if not isinstance(op, dict):
+        return
+    who = names.get(op.get("mid")) or str(op.get("who") or "")[:32] or "someone"
+    kind, iid = op.get("op"), op.get("id")
+    if not (isinstance(iid, str) and ID_RE.match(iid)) and kind != "household":
+        return
+    try:
+        if kind == "add" and isinstance(op.get("item"), dict) and iid not in d["items"]:
+            if len(d["items"]) >= int(st.setting("max_items", 2000, 1, 20000)):
+                return
+            d["items"][iid] = clean_item(op["item"])
+            if log:
+                st.log(d, who, "added", d["items"][iid])
+        elif kind == "edit" and iid in d["items"] and isinstance(op.get("fields"), dict):
+            d["items"][iid] = clean_item(op["fields"], d["items"][iid])
+            if log:
+                st.log(d, who, "edited", d["items"][iid])
+        elif kind == "delete" and iid in d["items"]:
+            item = d["items"].pop(iid)
+            if log:
+                st.log(d, who, "deleted", item)
+        elif kind == "adjust" and iid in d["items"]:
+            it = d["items"][iid]
+            if "set" in op:
+                new = num(op["set"], what="quantity")
+                what = "counted"
+            else:
+                v = op.get("delta")
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or abs(v) > MAX_QTY:
+                    return
+                new = round(min(MAX_QTY, max(0.0, it.get("qty", 0) + float(v))), 3)
+                what = "used" if op.get("use") is True else ("added" if new > it.get("qty", 0) else "took")
+            delta = round(new - it.get("qty", 0), 3)
+            it["qty"] = new
+            if log:
+                st.log(d, who, what, it, delta)
+        elif kind == "household" and isinstance(op.get("fields"), dict):
+            hh = dict(d["household"])
+            for k, (_dflt, lo, hi) in HOUSEHOLD_KEYS.items():
+                if k in op["fields"]:
+                    hh[k] = num(op["fields"][k], lo, hi, what=k)
+            hh["set"] = True
+            d["household"] = hh
+            if log:
+                st.log(d, who, "updated household needs")
+    except Bad:
+        return
+
+
 # ── notices for the family board ──
 
 def _fmt_qty(it: dict) -> str:
@@ -298,8 +440,14 @@ def check_notify(store: Store, ctx, atomic_write=None) -> str | None:
     cfg = store.cfg
     atomic_write = atomic_write or ctx.atomic_write
     now = store.clock()
+    if store.locked():
+        return None                                       # sealed and locked: nothing to check until unlocked
     with store.lock:
-        d = store.load()
+        if store.sealer is not None:
+            with store.sealer.background():               # (doesn't count as use for the idle timer)
+                d = store.load()
+        else:
+            d = store.load()
         s = store.summary(d)
         n = d["notify"]
         active, names = {}, {}
@@ -446,11 +594,25 @@ _S_lock = threading.Lock()
 
 def _store(ctx) -> Store:
     p = ctx.data_dir() / "supplies.json"
+    sealer = ctx.sealed() if callable(getattr(ctx, "sealed", None)) else None
     with _S_lock:
         st = _S.get(str(p))
-        if st is None:
-            st = _S[str(p)] = Store(p, ctx.cfg())
+        if st is None or st.sealer is not sealer:
+            st = _S[str(p)] = Store(p, ctx.cfg(), sealer=sealer, names=lambda: _member_names(ctx))
         return st
+
+
+def _member_names(ctx) -> dict:
+    return {m["id"]: m["name"] for m in ctx.members().list()["members"]}
+
+
+LOCKED_REFUSE = (423, {"ok": False, "locked": True, "error": "Supplies are sealed and the Badger is locked. The "
+                       "owner can unlock it (Settings → Sealed records); then try again."})
+
+
+def _locked_state(st: Store) -> dict:
+    return {**_state(st, st.locked_view()), "locked": True, "message": LOCKED_MSG,
+            "pending": st.journal.pending() if st.journal is not None else 0}
 
 
 def _who(args) -> str:
@@ -471,13 +633,32 @@ def _state(st: Store, d: dict) -> dict:
 def get_all(req, ctx, args):
     st = _store(ctx)
     with st.lock:
-        return _state(st, st.load())
+        try:
+            return _state(st, st.load())
+        except LOCKED:
+            return _locked_state(st)
 
 
-def _write(ctx, args, fn):
+def _write(ctx, args, fn, locked_op=None):
+    """fn(st, d) changes the unlocked list. While the Badger is locked, locked_op() builds the change to
+    journal instead (sealed; applied after unlock); without one the request is refused (423)."""
     st = _store(ctx)
     with st.lock:
-        d = st.load()
+        try:
+            d = st.load()
+        except LOCKED:
+            if locked_op is None:
+                return LOCKED_REFUSE
+            try:
+                op = locked_op()
+            except Bad as e:
+                return 400, {"ok": False, "error": str(e)}
+            if isinstance(op, tuple):
+                return op
+            st.record({**op, "mid": args["member"]["id"], "who": _who(args)})
+            return {"ok": True, "locked": True, "id": op.get("id"),
+                    "message": "Saved, sealed. It will show in full once the owner unlocks the Badger.",
+                    "state": _locked_state(st)}
         try:
             res = fn(st, d)
         except Bad as e:
@@ -486,6 +667,13 @@ def _write(ctx, args, fn):
             return res
         st.save(d, ctx.atomic_write)
         return {"ok": True, **(res or {}), "state": _state(st, d)}
+
+
+def _item_fields(data: dict) -> dict:
+    """The fields a request sets, validated (for a change journalled while locked)."""
+    clean_item(data, {"name": "x"})
+    keys = ("name", "category", "qty", "unit", "location", "expiry", "min", "kcal", "litres", "hours", "note")
+    return {k: data[k] for k in keys if k in data and data[k] is not None}
 
 
 def _iid(v):
@@ -514,7 +702,15 @@ def post_item(req, ctx, args):
             d["items"][iid] = item
             st.log(d, _who(args), "added", item)
         return {"id": iid}
-    return _write(ctx, args, fn)
+
+    def locked_op():
+        if data.get("id"):
+            fields = _item_fields(data)
+            if "name" in fields and not text(fields["name"], 60):
+                raise Bad("Give the item a name.")
+            return {"op": "edit", "id": _iid(data.get("id")), "fields": fields}
+        return {"op": "add", "id": secrets.token_urlsafe(9), "item": clean_item(data)}
+    return _write(ctx, args, fn, locked_op)
 
 
 def post_delete(req, ctx, args):
@@ -526,7 +722,7 @@ def post_delete(req, ctx, args):
         if item is None:
             return 404, {"ok": False, "error": "That item was already deleted."}
         st.log(d, _who(args), "deleted", item)
-    return _write(ctx, args, fn)
+    return _write(ctx, args, fn, lambda: {"op": "delete", "id": _iid(data.get("id"))})
 
 
 def post_adjust(req, ctx, args):
@@ -554,7 +750,19 @@ def post_adjust(req, ctx, args):
         it["qty"] = new
         st.log(d, _who(args), what, it, delta)
         return {"qty": new}
-    return _write(ctx, args, fn)
+
+    def locked_op():
+        op = {"op": "adjust", "id": _iid(data.get("id"))}
+        if "set" in data:
+            op["set"] = num(data["set"], what="quantity")
+            return op
+        v = data.get("delta")
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or abs(v) > MAX_QTY:
+            raise Bad("amount: not a number")
+        op["delta"] = -abs(v) if data.get("use") is True else round(float(v), 3)
+        op["use"] = data.get("use") is True
+        return op
+    return _write(ctx, args, fn, locked_op)
 
 
 def post_household(req, ctx, args):
@@ -568,13 +776,23 @@ def post_household(req, ctx, args):
         hh["set"] = True
         d["household"] = hh
         st.log(d, _who(args), "updated household needs")
-    return _write(ctx, args, fn)
+
+    def locked_op():
+        fields = {}
+        for k, (_dflt, lo, hi) in HOUSEHOLD_KEYS.items():
+            if k in data and data[k] is not None and data[k] != "":
+                fields[k] = num(data[k], lo, hi, what=k.replace("_", " "))
+        return {"op": "household", "fields": fields}
+    return _write(ctx, args, fn, locked_op)
 
 
 def get_csv(req, ctx, args):
     st = _store(ctx)
     with st.lock:
-        body = to_csv(st.load()).encode("utf-8")
+        try:
+            body = to_csv(st.load()).encode("utf-8")
+        except LOCKED:
+            return LOCKED_REFUSE
     day = st.today().isoformat()
     ctx.send_bytes(req, b"\xef\xbb\xbf" + body, "text/csv; charset=utf-8",
                    {"Content-Disposition": f'attachment; filename="supplies-{day}.csv"'})
@@ -601,11 +819,24 @@ def post_import(req, ctx, args):
 def get_log(req, ctx, args):
     st = _store(ctx)
     with st.lock:
-        return {"log": list(reversed(st.load()["log"]))}
+        try:
+            return {"log": list(reversed(st.load()["log"]))}
+        except LOCKED:
+            return LOCKED_REFUSE
+
+
+def _reseal(ctx) -> None:
+    """Sealed-records setup: the list (and any changes journalled while locked) re-sealed with this run's key."""
+    st = _store(ctx)
+    with st.lock:
+        if st.path.exists() or (st.journal is not None and st.journal.pending()):
+            st.save(st.load(), None)
 
 
 def setup(ctx):
     st = _store(ctx)
+    if st.sealer is not None:
+        st.sealer.register_migrator("supplies", lambda: _reseal(ctx))
     every = float(st.setting("check_minutes", 30, 1, 1440)) * 60
 
     def loop():

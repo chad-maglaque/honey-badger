@@ -10,6 +10,8 @@ and no state (rate limits, caches) is shared between features.
   Field       validation of client fields (type, length, control/bidi characters)
   fold/match  case- and accent-insensitive partial search ("jose" finds "José")
   tokens      random edit tokens; only a SHA-256 is stored
+  Private     sealed per-entry fields (contact details, aid-log names and needs): sealed records,
+              docs/SECURITY.md — written even while the Badger is locked, readable once unlocked
 """
 from __future__ import annotations
 
@@ -278,3 +280,82 @@ def csv_cell(v) -> str:
     """Spreadsheet-safe cell: a leading = + - @ (or tab/CR) would run as a formula in Excel/LibreOffice."""
     s = "" if v is None else str(v)
     return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
+
+
+# ── sealed fields (sealed records, docs/SECURITY.md) ──
+
+def _sealed_mod():
+    try:
+        import sealed
+    except ImportError:                       # software/common next to portal/ (normally on sys.path already)
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
+        import sealed
+    return sealed
+
+
+def sealer_of(ctx):
+    """The portal's sealed-records instance (ctx.sealed()), or None (then fields are kept plain)."""
+    f = getattr(ctx, "sealed", None)
+    return f() if callable(f) else None
+
+
+class Private:
+    """Sensitive fields of the entries in one JsonStore document, kept out of the entries: all of them in
+    one sealed token d["sealed"] ({entry id: {field: value}}), plus sealed partial updates made while the
+    Badger is locked (d["sealed_pending"]). Each entry keeps a clear list of which fields it has
+    (e["sealed_fields"]), so a page can say "sealed" instead of pretending they are empty.
+    With sealer=None the map is a plain dict (no sealing): older setups and unit tests."""
+
+    def __init__(self, sealer, fields):
+        self.s, self.fields = sealer, tuple(fields)
+        self.mod = _sealed_mod()
+
+    def _map(self, d: dict):
+        return self.mod.SealedMap(d, self.s)
+
+    def put(self, d: dict, e: dict, values: dict) -> None:
+        """Set some private fields of entry e ("" or None clears one). Works while locked."""
+        part = {k: (v if v not in ("", None) else None) for k, v in values.items() if k in self.fields}
+        if not part:
+            return
+        self._map(d).update(str(e.get("id")), part)
+        have = set(e.get("sealed_fields") or []) | {k for k, v in part.items() if v is not None}
+        e["sealed_fields"] = sorted(have - {k for k, v in part.items() if v is None})
+        for k in part:
+            e.pop(k, None)
+
+    def reveal(self, d: dict) -> tuple[dict, bool]:
+        """({entry id: {field: value}}, complete) — while locked only what was written since it locked."""
+        return self._map(d).read()
+
+    def drop(self, d: dict, eid: str) -> None:
+        self._map(d).remove(str(eid))
+
+    def migrate(self, d: dict, entries) -> bool:
+        """Move fields still kept plainly in entries (older files) into the sealed map."""
+        changed = False
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            plain = {k: e[k] for k in self.fields if k in e}
+            if plain:
+                self.put(d, e, {k: (v if isinstance(v, (str, dict)) else None) for k, v in plain.items()})
+                changed = True
+        return changed
+
+    def tidy(self, d: dict, live_ids) -> bool:
+        """Unlocked: fold pending updates and forget deleted entries' fields."""
+        return self._map(d).fold(set(live_ids))
+
+    def reseal(self, d: dict, live_ids) -> None:
+        self._map(d).reseal(set(live_ids))
+
+    def view(self, e: dict, priv: dict, blank="") -> dict:
+        """e's private fields for a page: their value, or `blank` + sealed=True when they can't be read now."""
+        mine = priv.get(str(e.get("id"))) or {}
+        out = {k: mine.get(k, e[k] if isinstance(e.get(k), str) else blank) for k in self.fields}   # (older plain files)
+        missing = [k for k in (e.get("sealed_fields") or []) if k in self.fields and k not in mine]
+        if missing:
+            out["sealed"] = True
+        return out

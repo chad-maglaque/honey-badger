@@ -36,19 +36,32 @@ Taking a photo of someone else's child? Make sure the family agrees.
 
 The Badger can send a short message to every Meshtastic radio in range on the community channel, e.g.
 
-> MISSING: Ana Ruiz, 8 years old, red jacket, last seen Elm St 14:00 — see Badger board
+> MISSING: Ana Ruiz, 8 years old, red jacket, last seen Elm St 14:00 — see the community board
 
 - Nothing goes on air unless the **admin approves it**. The poster asks; the admin sees the
   request (with the text, which they can shorten) and taps **Send on radio** or **Decline**.
 - At most **3 announcements per hour** in total, because radio airtime is shared and slow.
 - If a person who was announced as missing is later marked found safe, a
-  "FOUND SAFE: Ana Ruiz — see Badger board" announcement is queued for the admin automatically.
+  "FOUND SAFE: Ana Ruiz — see the community board" announcement is queued for the admin automatically.
 - Each announcement is also posted on the community check-in board.
+
+**Where it goes depends on the security posture** ([posture.md](posture.md)):
+
+| Posture | An approved announcement… |
+|---|---|
+| Neighbourly | goes out on the public (community) channel, as above. |
+| Guarded (default) | goes **only to your trusted circle** ([circles.md](circles.md)), and only if you opted in to sharing *Missing persons* there: a short line without places ("MISSING: Ana Ruiz, 8 years old, red jacket"), answered only when a circle radio asks about missing persons. Nothing is broadcast. Not in a circle, or not opted in? Nothing is sent, and the admin box says why (the request keeps waiting). |
+| Lockdown | is never sent. |
+
+Marking the person found safe (or removing the post) withdraws the circle line at once; approving the FOUND SAFE
+follow-up shares a new one.
 
 ## Privacy
 
 **Everything here, including photos and contact details, can be seen by anyone on the Badger's
-Wi-Fi.** Share a way to reach you that you're comfortable with (e.g. "Maria at the school gym" or
+Wi-Fi.** On the Badger's drive the contact details are **sealed** (docs/SECURITY.md → "Sealed
+records"); while the Badger is locked after a restart they show as "sealed" until the owner unlocks
+it, but names, descriptions and photos stay visible so people can still search. Share a way to reach you that you're comfortable with (e.g. "Maria at the school gym" or
 "the check-in board"). Radio announcements can be heard by anyone with a Meshtastic radio in range.
 
 ## For the admin

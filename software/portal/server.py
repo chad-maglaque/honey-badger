@@ -41,7 +41,9 @@ a CORS preflight, which this server never grants for POST, nor read the reply.
 """
 from __future__ import annotations
 
+import calendar
 import errno
+import fcntl
 import hashlib
 import hmac
 import importlib.util
@@ -54,8 +56,10 @@ import re
 import secrets
 import shutil
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
@@ -76,6 +80,10 @@ sys.path.insert(0, str(HERE))
 import members as members_mod  # noqa: E402  (family members: invites, device keys, radios)
 sys.path.insert(0, str(HERE.parent / "common"))
 import visitor  # noqa: E402  (what visitors may learn: rounded position, no power/occupancy)
+import posture as posture_mod  # noqa: E402  (the security posture: Neighbourly / Guarded / Lockdown)
+import sealed  # noqa: E402  (sealed records: encryption at rest, docs/SECURITY.md)
+import sealed_api  # noqa: E402  (its owner-facing API: setup, unlock, lock)
+import decoy as decoy_mod  # noqa: E402  (the made-up household a duress session sees)
 sys.path.insert(0, str(HERE.parent / "sdr"))
 try:
     import sdrcommon  # noqa: E402  (the radio scheduler's status: weather radio paused, SDR 2)
@@ -181,6 +189,14 @@ class PortalConfig:
         self.settings_file = rel(p.get("settings_file", "/var/lib/prepper/portal/portal-settings.json"))
         self.features_data = rel(p.get("features_data", "/var/lib/prepper/portal/features"))   # one folder per feature
         self.admin_pin = p.get("admin_pin", "")          # pbkdf2$salt$hash
+        # The optional duress PIN (prepperctl set-duress): a normal-looking admin login that silently
+        # starts a panic wipe. docs/SECURITY.md → "Duress PIN".
+        self.duress_pin = p.get("duress_pin", "") if isinstance(p.get("duress_pin", ""), str) else ""
+        # The dead-man switch's counter (root-written; it exists only while the switch is armed) and the
+        # launcher's check-in counter next to the boards.
+        self.deadman_state = rel(p.get("deadman_state", "/var/lib/prepper/deadman-state.json"))
+        self.wipe_pending = rel(p.get("wipe_pending", "/var/lib/prepper/wipe-pending.json"))
+        self.wipe_receipt = rel(p.get("wipe_receipt", "/run/prepper/wipe-receipt.json"))
         self.kiwix = p.get("kiwix", "http://127.0.0.1:8081/kiwix")
         self.kiwix_public = p.get("kiwix_public", "/kiwix")
         # llama-server runs with --api-prefix /ai, which prefixes every route
@@ -208,13 +224,25 @@ class PortalConfig:
         self.mesh_pending = rel(p.get("mesh_pending") or str(self.board_file.parent / "mesh-pending.json"))
         self.visitor_mesh = p.get("visitor_mesh", "approve") if p.get("visitor_mesh") in ("approve", "off") else "approve"
         self.mesh_outbox = rel(p.get("mesh_outbox", "/var/lib/prepper/portal/mesh-outbox.jsonl"))
-        self.mesh_nodes = rel(p.get("mesh_nodes", "/var/lib/prepper/portal/mesh-nodes.json"))
+        # What the mesh bridge learns from the radio lives in RAM only (/run/prepper, tmpfs): positions, Badgers
+        # heard, telemetry, the channel links and the Bluetooth PIN — re-read from the radio after a restart.
+        self.run_dir = rel(p.get("run_dir", "/run/prepper"))
+        self.mesh_nodes = rel(p.get("mesh_nodes") or str(self.run_dir / "mesh-nodes.json"))
         # Badgers heard on the mesh + what the mesh courtesy is doing (written by meshbridge, docs/MESH.md)
-        self.mesh_peers = rel(os.environ.get("MESH_PEERS") or p.get("mesh_peers", "/var/lib/prepper/portal/mesh-peers.json"))
+        self.mesh_peers = rel(os.environ.get("MESH_PEERS") or p.get("mesh_peers") or str(self.run_dir / "mesh-peers.json"))
+        # The security posture (software/common/posture.py): the contract other programs read
+        self.posture_file = rel(p.get("posture_file") or str(self.mesh_outbox.with_name("posture.json")))
+        # The trusted circle (features/circles.py ↔ meshbridge): requests to the radio, the circle link (RAM, 0600),
+        # what the bridge answered/refused (RAM), our own questions to the circle (RAM)
+        self.mesh_radio_request = rel(p.get("mesh_radio_request") or str(self.mesh_outbox.with_name("mesh-radio-req.json")))
+        self.mesh_radio_result = rel(p.get("mesh_radio_result") or str(self.mesh_outbox.with_name("mesh-radio-res.json")))
+        self.mesh_circle_link = rel(p.get("mesh_circle_link") or str(self.run_dir / "mesh-circle.json"))
+        self.circle_status_file = rel(p.get("circle_status_file") or str(self.run_dir / "circle-status.json"))
+        self.circle_ask_file = rel(p.get("circle_ask_file") or str(self.run_dir / "circle-ask.json"))
         self.members_file = rel(p.get("members_file", "/var/lib/prepper/portal/members.json"))
         self.mesh_rotate_request = rel(p.get("mesh_rotate_request", "/var/lib/prepper/portal/mesh-rotate.json"))
         self.mesh_rotate_result = rel(p.get("mesh_rotate_result", "/var/lib/prepper/portal/mesh-rotate-result.json"))
-        self.mesh_channel_link = rel(p.get("mesh_channel_link", "/var/lib/prepper/portal/mesh-channel.json"))
+        self.mesh_channel_link = rel(p.get("mesh_channel_link") or str(self.run_dir / "mesh-channel.json"))
         # "!pair CODE" messages heard on the family channel (written by meshbridge): radio pairing proof
         self.mesh_pair_file = rel(p.get("mesh_pair_file", "/var/lib/prepper/portal/mesh-pair.json"))
         # the front panel's lock (root-only; the portal only checks whether it exists)
@@ -222,13 +250,16 @@ class PortalConfig:
         # the admin page "arms" the panel for 10 minutes: only then can a code be set at the knob
         self.panel_lock_arm = rel(p.get("panel_lock_arm", "/var/lib/prepper/portal/panel-lock-arm.json"))
         self.family_board_file = rel(p.get("family_board_file", "/var/lib/prepper/portal/family-board.jsonl"))
+        # Family radio messages the mesh bridge heard, waiting in RAM (0600) for this launcher to seal them onto
+        # the family board with its current key (so members can read them while the Badger is locked)
+        self.family_inbox = rel(p.get("family_inbox") or str(self.run_dir / "family-inbox.jsonl"))
         # One JSON line per telemetry packet heard on the mesh (written by meshbridge, read by features).
         self.mesh_telemetry = rel(os.environ.get("MESH_TELEMETRY")
-                                  or p.get("mesh_telemetry", "/var/lib/prepper/portal/mesh-telemetry.jsonl"))
+                                  or p.get("mesh_telemetry") or str(self.run_dir / "mesh-telemetry.jsonl"))
         # The front panel proves it is the panel with a key only root can read (/etc/prepper/panel.key,
         # made by the panel at start); the portal holds just its SHA-256 (root:prepper 0640). See
         # Handler.local_console and docs/SECURITY.md.
-        self.mesh_bt_pin_file = rel(p.get("mesh_bt_pin_file", "/var/lib/prepper/portal/mesh-bt-pin.json"))
+        self.mesh_bt_pin_file = rel(p.get("mesh_bt_pin_file") or str(self.run_dir / "mesh-bt-pin.json"))
         self.panel_key_hash = rel(p.get("panel_key_hash", "/etc/prepper/panel.key.sha256"))
         self.alerts_file = Path(p.get("alerts_file", "/run/prepper/alerts.json"))
         t = raw.get("time", {})
@@ -461,18 +492,320 @@ def check_pin(pin: str) -> bool:
         return _pin_matches(pin)
 
 
+# ── duress, the made-up household, panic wipe (docs/SECURITY.md → "Duress", "Panic wipe") ──
+# A duress secret (the duress PIN, the duress passphrase, the panel duress code) gets exactly the real secret's
+# reply. Behind it the duress action runs ([security] duress_action / the admin page): "lock" (default: the
+# sealed records and the vault get a hard lock — only the recovery keys reopen them; nothing destroyed, no
+# restart, no Wi-Fi or posture change) or "wipe" (the panic wipe, noticeable steps delayed). Either way, from
+# the next request on EVERY session — admin, family phones, the panel — sees the made-up household
+# (software/common/decoy.py): the launcher reads a working copy in its private /tmp instead of the real files.
+# It lasts until the owner types the real recovery key (lock), or until the wipe's restart (wipe: by then the
+# wipe has put the same made-up household in place of the family's data). Why everyone and not only the coerced
+# session: an attacker holding a family phone would otherwise see the real family on it.
+DURESS_TOKENS: set[str] = set()       # admin sessions opened with a duress secret (memory only)
+DECOY: dict = {}                      # set while the made-up household is shown (see enter_decoy)
+REAL: dict = {}                       # the real paths and sealer, kept while the decoy is shown
+DECOY_FIELDS = ("members_file", "board_file", "family_board_file", "family_inbox", "mesh_outbox", "mesh_nodes",
+                "mesh_peers", "mesh_pending", "mesh_telemetry", "mesh_channel_link", "mesh_bt_pin_file", "mesh_pair_file",
+                "mesh_rotate_request", "mesh_rotate_result", "settings_file", "mesh_circle_link", "circle_status_file",
+                "circle_ask_file", "mesh_radio_request", "mesh_radio_result", "posture_file")
+# Feature folders with nothing about the family in them: a duress session reads the real ones (weather, passes,
+# sensor readings, voice settings) so the Badger looks as it always does.
+DECOY_PASSTHROUGH = ("forecast", "satellites", "sensors", "voice", "aircraft")
+_dummy_hash: list[str] = []
+_decoy_lock = threading.Lock()
+_decoy_profile_ok: list[bool] = []
+_checkin = {"at": -1e18}
+
+
+def _dummy_pin_hash() -> str:
+    if not _dummy_hash:
+        _dummy_hash.append(hash_pin(secrets.token_urlsafe(18)))
+    return _dummy_hash[0]
+
+
+def _duress_matches(pin: str) -> bool:
+    """Always one full scrypt — against the duress hash, or a dummy of the same cost when none is set — so
+    a login takes as long whichever secret was typed and doesn't tell whether a duress PIN exists."""
+    stored = CFG.duress_pin if isinstance(getattr(CFG, "duress_pin", ""), str) else ""
+    got = verify_pin(pin, stored or _dummy_pin_hash())
+    return bool(stored) and got
+
+
+def real_path(field: str) -> Path:
+    """A [portal] path as it really is (not the decoy's working copy)."""
+    v = REAL.get(field)
+    return v if isinstance(v, Path) else getattr(CFG, field)
+
+
+def decoy_profile_file() -> Path:
+    p = (CFG.raw.get("portal") or {}).get("decoy_file") if isinstance(CFG.raw.get("portal"), dict) else None
+    if isinstance(p, str) and p and Path(p).is_absolute():
+        return Path(p)
+    return real_path("members_file").parent / "decoy.json"
+
+
+def decoy_profile() -> dict:
+    """The device's made-up household (made on first use; harmless by design, so a plain file)."""
+    return decoy_mod.ensure(decoy_profile_file())
+
+
+def duress_action() -> str:
+    return decoy_mod.duress_action(CFG.raw, real_path("settings_file"))
+
+
+def real_sealer() -> sealed.Sealer:
+    return DECOY.get("real_sealer") or sealed_store()
+
+
+def decoy_active() -> bool:
+    return bool(DECOY)
+
+
+def _decoy_paths(d: Path) -> dict:
+    return {"members": d / CFG.members_file.name, "family_board": d / CFG.family_board_file.name,
+            "board": d / CFG.board_file.name, "posture": d / CFG.posture_file.name,
+            "supplies": d / "features" / "supplies" / "supplies.json"}
+
+
+def enter_decoy(held: bool = False, anchor: float | None = None, mode: str = "lock") -> sealed.Sealer:
+    """Show the made-up household to everyone from now on. The decoy's sealer exists at once (its status goes
+    into the reply that triggered this); the working copy is written in the background and requests wait for
+    it (decoy_wait) — so the reply takes as long as a real one. held: the decoy shows as locked (as the real
+    records were), until a passphrase is typed in it. Returns the decoy's sealer."""
+    with _decoy_lock:
+        if DECOY:
+            return DECOY["sealer"]
+        real_s = sealed_store()
+        d = Path(tempfile.mkdtemp(prefix="portal-"))
+        o = sealed_api.options(CFG)
+        o.pop("folder", None)
+        o["posture_file"] = d / CFG.posture_file.name
+        o["idle_minutes"] = 0
+        ds = sealed.DecoySealer(d / "sealed", real=real_s, held=held, **o)
+        ds.register_migrator("members", _reseal_members)
+        ds.register_migrator("family-board", lambda: seal_family_board(reseal=True))
+        ready = threading.Event()
+        DECOY.update(dir=str(d), since=time.time(), sealer=ds, real_sealer=real_s, ready=ready, mode=mode)
+        for f in DECOY_FIELDS + ("features_data",):
+            cur = getattr(CFG, f, None)
+            if isinstance(cur, Path):
+                REAL[f] = cur
+        # (read now: a duress wipe running alongside removes the real file within seconds)
+        skel = decoy_mod.member_skeleton(REAL.get("members_file", CFG.members_file))
+    threading.Thread(target=_prepare_decoy, args=(d, ds, held, anchor, skel), daemon=True, name="decoy").start()
+    return ds
+
+
+def _prepare_decoy(d: Path, ds, held: bool, anchor, skel: list) -> None:
+    try:
+        prof = decoy_profile()
+        decoy_mod.materialize(prof, _decoy_paths(d), skel, anchor, community_src=REAL.get("board_file"))
+        st = read_json(REAL["settings_file"], {}) if "settings_file" in REAL else {}
+        if isinstance(st, dict) and st:              # the Badger's ordinary settings look the same (not the choice)
+            st.pop("duress_action", None)
+            private_write(d / REAL["settings_file"].name, json.dumps(st, indent=2))
+    except Exception as e:  # noqa: BLE001 — an empty-looking decoy beats none at all
+        print(f"[portal] decoy not fully prepared: {type(e).__name__}", file=sys.stderr)
+    try:
+        for f in DECOY_FIELDS:
+            cur = REAL.get(f)
+            if isinstance(cur, Path):
+                setattr(CFG, f, d / cur.name)
+        CFG.features_data = d / "features"
+        CFG.features_data.mkdir(exist_ok=True)
+        CFG.decoy_active = True
+        sealed.set_default(ds)
+        global _members
+        _members = None
+        with _lock:
+            _cache.clear()
+        if held:                                     # sealed like the real ones, so "locked" looks the same
+            with ds.unheld():
+                for name in ("members", "family-board"):
+                    try:
+                        ds.migrators[name]()
+                    except Exception:  # noqa: BLE001
+                        pass
+                f = _feature_handle("supplies")
+                if f is not None and hasattr(f.mod, "_reseal"):
+                    try:
+                        f.mod._reseal(f.ctx)
+                    except Exception:  # noqa: BLE001
+                        pass
+            ds.lock_all("locked")
+            ds.locked_reason = None                  # "Locked since the Badger started", as after a restart
+    finally:
+        DECOY["ready"].set()
+
+
+def decoy_wait(timeout: float = 30.0) -> None:
+    ev = DECOY.get("ready")
+    if ev is not None and not ev.is_set():
+        ev.wait(timeout)
+
+
+def decoy_tick() -> None:
+    """Every request: the made-up household ready; a duress hard lock set by another program (the front panel's
+    duress code goes through the root wipe engine) or still in place after a restart → the decoy, now."""
+    if not _decoy_profile_ok:
+        _decoy_profile_ok.append(True)
+        try:
+            decoy_profile()
+        except Exception as e:  # noqa: BLE001
+            print(f"[portal] decoy profile not made: {type(e).__name__}", file=sys.stderr)
+    if DECOY:
+        decoy_wait()
+        return
+    s = sealed_store()
+    if s.hard_locked():
+        was_open = s._priv is not None
+        s.lock_all("locked")
+        hard_lock_vault()
+        enter_decoy(held=not was_open, anchor=s.hard_locked_at())
+        decoy_wait()
+
+
+def hard_lock_vault() -> None:
+    f = _feature_handle("vault")
+    if f is None or not hasattr(f.mod, "hard_lock_dir"):
+        return
+    try:
+        f.mod.hard_lock_dir(real_path("features_data") / "vault")
+    except Exception as e:  # noqa: BLE001
+        print(f"[portal] vault not hard-locked: {type(e).__name__}", file=sys.stderr)
+
+
+def duress_triggered(held: bool = False) -> sealed.Sealer:
+    """A duress secret was used: the duress action, and the made-up household for everyone from now on."""
+    if DECOY:
+        return DECOY["sealer"]
+    if duress_action() == "wipe":
+        return duress_wipe(held)
+    s = sealed_store()
+    try:
+        if not s.hard_lock():                        # not set up: nothing a recovery key could reopen
+            s.lock_all("locked")
+    except Exception as e:  # noqa: BLE001 — the decoy must show whatever happens
+        print(f"[portal] sealed records not hard-locked: {type(e).__name__}", file=sys.stderr)
+    hard_lock_vault()
+    return enter_decoy(held=held, anchor=time.time(), mode="lock")
+
+
+def exit_decoy(keep: str = "") -> None:
+    """The real recovery key was typed: real paths back, the decoy's copy gone, duress sessions ended (but `keep`,
+    the session that typed the recovery key), and a note on the (real) family board."""
+    with _decoy_lock:
+        if not DECOY:
+            return
+        decoy_wait()
+        for f, v in REAL.items():
+            if f != "real_sealer" and isinstance(v, Path):
+                setattr(CFG, f, v)
+        real_s = DECOY.get("real_sealer")
+        d = DECOY.get("dir")
+        DECOY.clear()
+        REAL.clear()
+        CFG.decoy_active = False
+        if real_s is not None:
+            sealed.set_default(real_s)
+        global _members
+        _members = None
+        with _lock:
+            _cache.clear()
+        with _auth_lock:
+            for t in DURESS_TOKENS:
+                if t != keep:
+                    TOKENS.pop(t, None)
+            DURESS_TOKENS.clear()
+    if d:
+        shutil.rmtree(d, ignore_errors=True)
+    family_notice("Recovered after a duress lock.", "recovered")
+
+
+def wipe_already_running() -> bool:
+    try:
+        return CFG.wipe_pending.exists() or CFG.wipe_receipt.exists()
+    except OSError:
+        return False
+
+
+def start_wipe(verb: str = "panic-wipe", trigger: str = "admin", extra: tuple = ()) -> tuple[int, str]:
+    """prepperctl's two steps: a one-time token, then the confirmed run (it detaches into its own unit)."""
+    rc, out = ctl(verb)
+    m = re.search(r"confirm-token: ([A-Z0-9]{4}-[A-Z0-9]{4})", out or "")
+    if rc != 0 or not m:
+        return rc or 1, out
+    return ctl(verb, "--confirm", m.group(1), "--trigger", trigger, *extra)
+
+
+def erase_sealed_in_memory() -> None:
+    """Crypto-erase in THIS process first: the launcher holds the sealed-records keys in memory (and the
+    wipe's own sealed.destroy_keys(root) can only scrub the files). Zeroise + scrub-delete right away."""
+    try:
+        sealed.destroy_keys()
+    except Exception as e:  # noqa: BLE001 — the wipe itself destroys the key files anyway
+        print(f"[portal] sealed keys not erased in memory: {type(e).__name__}", file=sys.stderr)
+
+
+def duress_wipe(held: bool = False) -> sealed.Sealer:
+    """duress_action = "wipe": the made-up household now (before the reply), the wipe in the background."""
+    first = not DECOY                    # once per launcher run: the first duress use starts it
+    if first:
+        erase_sealed_in_memory()
+    ds = enter_decoy(held=held, mode="wipe")
+    if not first or wipe_already_running():
+        return ds
+
+    def run():
+        try:
+            rc, out = start_wipe("panic-wipe", "duress")
+            if rc != 0:
+                print(f"[portal] wipe not started (exit {rc})", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001
+            print(f"[portal] wipe not started: {type(e).__name__}", file=sys.stderr)
+    threading.Thread(target=run, daemon=True).start()
+    return ds
+
+
+def note_checkin() -> None:
+    """The dead-man switch wipes after N days of running without a check-in. Only while it is armed (its
+    state file exists), at most every 10 minutes, and only a counter — no times, no names."""
+    if DECOY:
+        return
+    now = time.monotonic()
+    if now - _checkin["at"] < 600:
+        return
+    try:
+        if not CFG.deadman_state.exists():
+            return
+    except OSError:
+        return
+    _checkin["at"] = now
+    path = CFG.board_file.parent / "checkin.json"
+    try:
+        cur = read_json(path, {}) or {}
+        seq = cur.get("seq") if isinstance(cur, dict) and isinstance(cur.get("seq"), int) else 0
+        private_write(path, json.dumps({"seq": (seq + 1) % 1_000_000_000}))
+    except OSError as e:
+        print(f"[portal] dead-man check-in not saved: {e.strerror or e}", file=sys.stderr)
+
+
 def attempt_login(ip: str, pin: str, local: bool = False) -> tuple[str, float]:
-    """("ok"|"bad"|"locked", seconds to wait). The lockout check, the PIN check
+    """("ok"|"duress"|"bad"|"locked", seconds to wait). The lockout check, the PIN check
     and the failure count happen as one step: checked separately, a burst of
     parallel requests all passed the lockout check before the first failure
-    was counted, and got far more than 3 guesses in."""
+    was counted, and got far more than 3 guesses in. Both secrets are always
+    checked (same time for admin PIN, duress PIN and a wrong one)."""
     with _pin_lock:
         wait = login_wait(ip, local)
         if wait > 0:
             return "locked", wait
-        if _pin_matches(pin):
+        admin = _pin_matches(pin)
+        duress = _duress_matches(pin)
+        if admin or duress:
             login_ok(ip)
-            return "ok", 0.0
+            return ("ok" if admin else "duress"), 0.0
         login_failed(ip)
         return "bad", 0.0
 
@@ -625,6 +958,67 @@ def load_renderers() -> dict:
 
 def settings() -> dict:
     return read_json(CFG.settings_file, {}) or {}
+
+
+_settings_lock = threading.Lock()
+
+
+def update_settings(fn) -> dict:
+    """Read-modify-write portal-settings.json (fn(dict) → dict), atomically. For feature plugins (posture
+    overrides, "what this Badger reveals" fixes)."""
+    with _settings_lock:
+        cur = settings()
+        new = fn(dict(cur) if isinstance(cur, dict) else {})
+        if not isinstance(new, dict):
+            raise ValueError("settings must stay a dict")
+        CFG.settings_file.parent.mkdir(parents=True, exist_ok=True)
+        upd.atomic_write(CFG.settings_file, json.dumps(new, indent=2))
+    _cache.pop("posture", None)
+    return new
+
+
+def posture_state(fresh: bool = False) -> tuple[dict, dict]:
+    """(posture info, effective settings) — software/common/posture.py, read at most once a second. A damaged
+    posture file reads as Lockdown (fail closed)."""
+    if fresh:
+        _cache.pop("posture", None)
+
+    def run():
+        info = posture_mod.read(CFG.posture_file, CFG.raw)
+        return info, posture_mod.effective(info["level"], CFG.raw, settings())
+    return cached("posture", 1.0, run)
+
+
+def posture_value(knob: str):
+    return posture_state()[1][knob]["value"]
+
+
+def visitor_mesh_mode() -> str:
+    """"approve" (a visitor's radio request waits for a family member) or "off" — [portal] visitor_mesh, else
+    the posture (Lockdown: off)."""
+    return posture_value("visitor_mesh")
+
+
+VISITOR_GATED = {"aircraft": "visitor_radio_pages", "satellites": "visitor_radio_pages"}
+LOCKDOWN_MSG = "This page is for family members only right now."
+
+
+def visitor_refusal(feat: dict, route: dict, headers) -> str | None:
+    """Why a VISITOR (no family key, not the admin, not the panel) may not use this feature route under the
+    current posture, or None. Neighbourhood pages (group "community") follow visitor_community, the aircraft
+    and satellite pages visitor_radio_pages, sensors visitor_sensors ("none": not even alerts). Aid-station
+    volunteers (their own aid key) are never refused here: the aid station decides for them."""
+    if route.get("access", "admin") != "public":
+        return None                                  # the feature's own access check applies
+    fid = feat["id"]
+    if fid == "sensors":
+        return LOCKDOWN_MSG if posture_value("visitor_sensors") == "none" else None
+    knob = VISITOR_GATED.get(fid) or ("visitor_community" if feat["info"].get("group") == "community" else None)
+    if knob is None or posture_value(knob) != "members":
+        return None
+    if fid == "aidstation" and headers.get("X-Aid-Token"):
+        return None
+    return LOCKDOWN_MSG
 
 
 def ctl(*args: str, input: str | None = None) -> tuple[int, str]:  # noqa: A002 — mirrors subprocess.run
@@ -815,12 +1209,21 @@ def nu_time_now(qs: dict | None = None, coarse: bool = False) -> dict:
     return rec
 
 
+def software_version() -> str:
+    """The release in the repo's VERSION file (installed with the software), e.g. "0.4.0"."""
+    try:
+        v = (HERE.parent.parent / "VERSION").read_text().strip()
+        return v if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", v) else "unknown"
+    except OSError:
+        return "unknown"
+
+
 def status() -> dict:
     du = shutil.disk_usage(CFG.upd.data_root) if CFG.upd.data_root.exists() else None
     report = read_json(CFG.upd.report_dir / "last-check.json", {}) or {}
     load = os.getloadavg() if hasattr(os, "getloadavg") else (0, 0, 0)
     return {
-        "edition": CFG.edition,
+        "edition": CFG.edition, "version": software_version(),
         "hostname": CFG.hostname, "ssid": CFG.ssid,
         "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "uptime_s": uptime_s(), "load": [round(x, 2) for x in load], "cpu_temp_c": cpu_temp(),
@@ -840,7 +1243,17 @@ def status() -> dict:
         "nutime": (lambda r: {"display": r["display"], "reference": r["reference"]})(
             nutime.nu_time(None, CFG.time_mode if CFG.time_mode in ("utc", "civil") else "utc",
                            tz=CFG.time_tz, with_sun=False)),
+        "posture": posture_summary(),               # (family, admin and the panel only: visitor.status_view)
     }
+
+
+def posture_summary() -> dict | None:
+    try:
+        info = posture_state()[0]
+    except Exception:  # noqa: BLE001 — never lose /api/status over it
+        return None
+    return {"level": info["level"], "label": info["label"], "changed_at": info.get("changed_at"),
+            "damaged": bool(info.get("damaged"))}
 
 
 def sdr_status() -> dict | None:
@@ -865,9 +1278,89 @@ def coarse_position(gps: dict | None) -> dict | None:
     return visitor.coarse_position(gps)
 
 
+MESH_STATE_NAMES = ("mesh-channel.json", "mesh-nodes.json", "mesh-peers.json", "mesh-bt-pin.json", "mesh-circle.json")
+_mesh_guard: dict[str, tuple] = {}
+_mesh_guard_lock = threading.Lock()
+
+
+def _on_ram(path: Path) -> bool:
+    s = str(path)
+    return any(s == d or s.startswith(d.rstrip("/") + "/") for d in ("/run", "/dev/shm", str(CFG.run_dir)))
+
+
+def mesh_state_paths() -> list[Path]:
+    """Radio-state files that are NOT in RAM: a [portal] path pointing at persistent storage, and the old
+    default locations in the portal's folder (left from before the bridge kept them in /run)."""
+    out = []
+    for p in (CFG.mesh_channel_link, CFG.mesh_nodes, CFG.mesh_peers, CFG.mesh_bt_pin_file, CFG.mesh_circle_link,
+              *(CFG.mesh_outbox.parent / n for n in MESH_STATE_NAMES)):
+        if not _on_ram(p) and p not in out:
+            out.append(p)
+    return out
+
+
+def guard_mesh_state() -> int:
+    """Never keep radio state in the clear on the disk: any of mesh_state_paths() holding plain JSON (written
+    by an older bridge, a hand-made config, a copy) is sealed in place — {"sealed": token}, plus empty
+    "nodes"/"peers" lists — with the device's public key (sealed records). Cheap when nothing changed (one
+    stat per file); called on every request and by the readers. Returns how many files were sealed."""
+    n = 0
+    for path in mesh_state_paths():
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        sig = (st.st_ino, st.st_mtime_ns, st.st_size)
+        key = str(path)
+        if _mesh_guard.get(key) == sig:
+            continue
+        with _mesh_guard_lock:
+            try:
+                if st.st_size > 4_000_000:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+                try:
+                    d = json.loads(text) if text.strip() else None
+                except (ValueError, RecursionError):
+                    d = None
+                if isinstance(d, dict) and sealed.is_token(d.get("sealed")):
+                    _mesh_guard[key] = sig
+                    continue
+                if not text.strip():
+                    _mesh_guard[key] = sig
+                    continue
+                out = {"sealed": sealed_store().seal_text(text)}
+                for k in ("nodes", "peers"):
+                    if isinstance(d, dict) and k in d:
+                        out[k] = []
+                mode = st.st_mode & 0o777
+                private_write(path, json.dumps(out))
+                os.chmod(path, mode & 0o660 or 0o600)
+                st = path.stat()
+                _mesh_guard[key] = (st.st_ino, st.st_mtime_ns, st.st_size)
+                n += 1
+                print(f"[portal] sealed {path.name} (radio state on persistent storage)", file=sys.stderr)
+            except Exception as e:  # noqa: BLE001 — never break a request over it; tried again next time
+                print(f"[portal] could not seal {path.name}: {type(e).__name__}", file=sys.stderr)
+    return n
+
+
+def mesh_state(path: Path, default):
+    """A radio-state file the bridge writes (RAM), or its sealed form on persistent storage (opened if the
+    Badger is unlocked, or it was sealed during this run); `default` when it can't be read."""
+    guard_mesh_state()
+    d = read_json(path, None)
+    if isinstance(d, dict) and sealed.is_token(d.get("sealed")):
+        try:
+            d = json.loads(sealed_store().open_text(d["sealed"], recent_ok=True))
+        except (sealed.Locked, sealed.SealError, ValueError, RecursionError):
+            return default
+    return d if d is not None else default
+
+
 def mesh_nodes() -> dict:
     """Positions shared by radios on the mesh (written by meshbridge), validated for the map."""
-    raw = read_json(CFG.mesh_nodes, {}) or {}
+    raw = mesh_state(CFG.mesh_nodes, {}) or {}
     now, out = time.time(), []
     for n in (raw.get("nodes") if isinstance(raw, dict) else None) or []:
         if not isinstance(n, dict):
@@ -878,6 +1371,8 @@ def mesh_nodes() -> dict:
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             continue
         heard = n.get("heard") if isinstance(n.get("heard"), (int, float)) else None
+        if heard is not None and now - heard > 86400:
+            continue                                     # positions older than a day: not shown (nor kept)
         bat = n.get("battery") if isinstance(n.get("battery"), (int, float)) else None
         out.append({"id": str(n.get("id", ""))[:16], "name": str(n.get("name", ""))[:40],
                     "short": str(n.get("short", ""))[:4], "lat": lat, "lon": lon,
@@ -889,7 +1384,7 @@ def mesh_nodes() -> dict:
 def mesh_courtesy_status() -> dict | None:
     """"Badgers nearby: 3 · channel busy 18 %" for the status bar, from meshbridge's mesh-peers.json.
     Read-only and tolerant: None when the bridge isn't running (no file, or older than 15 minutes)."""
-    raw = read_json(CFG.mesh_peers, None)
+    raw = mesh_state(CFG.mesh_peers, None)
     if not isinstance(raw, dict):
         return None
 
@@ -944,8 +1439,28 @@ _SURROGATES = re.compile(r"[\ud800-\udfff]")
 def members_db() -> members_mod.Members:
     global _members
     if _members is None or _members.path != CFG.members_file:
-        _members = members_mod.Members(CFG.members_file)
+        _members = members_mod.Members(CFG.members_file, sealer=sealed_store())
     return _members
+
+
+def sealed_store() -> sealed.Sealer:
+    """This portal's sealed-records instance ([sealed] in prepper.toml; state in <portal data>/sealed). During a
+    duress: the made-up household's own sealer (see enter_decoy)."""
+    if DECOY.get("sealer") is not None:
+        return DECOY["sealer"]
+    o = sealed_api.options(CFG)
+    s = sealed.use(o.pop("folder"), **o)
+    if "family-board" not in s.migrators:
+        s.register_migrator("members", _reseal_members)
+        s.register_migrator("family-board", lambda: seal_family_board(reseal=True))
+    return s
+
+
+def _reseal_members() -> None:
+    db = members_db()
+    if db.path.exists():
+        with db.lock:
+            db._save(db._load())
 
 
 def family_notice(text: str, key: str) -> None:
@@ -992,7 +1507,7 @@ def mesh_secret(secure: bool) -> dict:
     """The family radio link (= the channel key) and the radio's Bluetooth PIN, for a family member's own
     device. Over plain HTTP on the hotspot it is withheld (anyone who knows the Wi-Fi password could read
     it); the Badger's own screen always shows it."""
-    link = read_json(CFG.mesh_channel_link, {}) or {}
+    link = mesh_state(CFG.mesh_channel_link, {}) or {}
     url = link.get("url") if isinstance(link, dict) and isinstance(link.get("url"), str) else None
     at = link.get("at") if isinstance(link, dict) and isinstance(link.get("at"), (int, float)) else None
     if url and not secure:
@@ -1000,7 +1515,7 @@ def mesh_secret(secure: bool) -> dict:
                 "message": "The family radio link holds the channel key, so it isn't sent over this unencrypted "
                            "connection. Read it on the Badger's own screen (press the knob → Family radio), or "
                            "open this page with https:// to see it here."}
-    pin = read_json(CFG.mesh_bt_pin_file, {}) or {}
+    pin = mesh_state(CFG.mesh_bt_pin_file, {}) or {}
     pin = pin.get("pin") if isinstance(pin, dict) and isinstance(pin.get("pin"), str) else None
     return {"ok": bool(url), "url": url, "at": at, "bt_pin": pin,
             "error": None if url else "The radio bridge hasn't reported the channel link yet."}
@@ -1062,19 +1577,227 @@ def trim_jsonl(path: Path, max_bytes: int) -> None:
         print(f"[portal] could not trim {path.name}: {e}", file=sys.stderr)
 
 
-def board_read(limit: int = 200, board: str = "community", for_member: bool = False) -> list[dict]:
+def _family_open(rec: dict, fam: dict) -> dict | None:
+    """One family-board line: {"s": sealed token} → the post (None while locked, unless it was written since
+    the Badger locked), or an older plain line as it is (counted, so it gets sealed)."""
+    tok = rec.get("s") if len(rec) == 1 else None
+    if not sealed.is_token(tok):
+        fam["plain"] += 1
+        return rec
+    try:
+        obj = sealed_store().open_json(tok, recent_ok=True)
+    except sealed.Locked:
+        fam["hidden"] += 1
+        return None
+    except sealed.SealError:
+        fam["unreadable"] += 1
+        return None
+    if not isinstance(obj, dict):
+        return None
+    if obj.get("name") == sealed.LOCKED_NAME and isinstance(obj.get("member"), str) and not fam["locked"]:
+        if fam.get("names") is None:                   # posted while locked: the name is known now
+            try:
+                fam["names"] = {m["id"]: m["name"] for m in members_db().list()["members"]}
+            except members_mod.StoreError:
+                fam["names"] = {}
+        obj["name"] = fam["names"].get(obj["member"], obj["name"])
+    return obj
+
+
+def seal_family_board(reseal: bool = False) -> int:
+    """Seal the family board's plain lines (older posts; lines the mesh bridge appends) — or, for the
+    sealed-records setup, re-seal every line with this run's key. The file is only replaced if nothing was
+    appended meanwhile (else we try again later). Returns how many lines were (re)sealed."""
+    path, s = CFG.family_board_file, sealed_store()
+    with _board_lock:
+        try:
+            before = path.stat().st_size
+            raw = path.read_bytes()
+        except OSError:
+            return 0
+        if raw and not raw.endswith(b"\n"):
+            return 0                                    # a line is being written right now
+        out, n = [], 0
+        for ln in raw.split(b"\n"):
+            if not ln.strip():
+                continue
+            try:
+                rec = json.loads(ln)
+            except (ValueError, RecursionError):
+                continue                                # junk is dropped
+            if not isinstance(rec, dict):
+                continue
+            tok = rec.get("s") if len(rec) == 1 else None
+            if sealed.is_token(tok):
+                obj = s.try_json(tok, None) if reseal else None
+                if isinstance(obj, dict):
+                    out.append(sealed.seal_jsonl_line(obj, s))
+                    n += 1
+                else:
+                    out.append(ln.decode("utf-8", "replace"))
+                continue
+            out.append(sealed.seal_jsonl_line(rec, s))
+            n += 1
+        try:
+            if not n or path.stat().st_size != before:
+                return 0
+            sealed.replace_scrubbing(path, "\n".join(out) + "\n", PRIVATE_MODE)
+        except OSError as e:
+            print(f"[portal] could not seal the family board: {type(e).__name__}", file=sys.stderr)
+            return 0
+    return n
+
+
+# ── family radio messages while locked (docs/SECURITY.md → "Sealed records", docs/MESH.md) ──
+# The mesh bridge can only seal with a key of its own, which a locked launcher can't open. So when the family
+# board is on persistent storage, the bridge appends the family lines it hears to a RAM spool
+# (CFG.family_inbox, /run/prepper/family-inbox.jsonl, 0600), and this launcher seals them with its CURRENT data
+# key — they count as "written since it locked", so family members can read them while it is locked. Both
+# sides hold flock(LOCK_EX) on the spool: the bridge for each append, we while copying and truncating, so no
+# line is lost or doubled by a concurrent append. A reboot empties /run: lines not yet taken in are lost
+# (taken in on each family-board read and every FAMILY_INBOX_EVERY seconds, so normally within seconds).
+FAMILY_INBOX_EVERY = 5.0
+FAMILY_INBOX_MAX_BYTES = 2_000_000          # read at most this much at once (the bridge stops at 1 MB)
+_INBOX_FIELDS = {"at": 32, "name": 32, "text": 2000, "radio": 16, "member": 16}
+_inbox_lock = threading.Lock()
+
+
+def _inbox_record(ln: bytes) -> dict | None:
+    """One spool line → a family-board post: only the bridge's fields, clipped; always an unverified radio post."""
+    try:
+        rec = json.loads(ln)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(rec, dict) or not isinstance(rec.get("text"), str) or not rec["text"].strip():
+        return None
+    out = {k: _SURROGATES.sub("", rec[k])[:n] for k, n in _INBOX_FIELDS.items() if isinstance(rec.get(k), str)}
+    if not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", out.get("at", "")):
+        out["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    out.setdefault("name", "radio")
+    out.update(via="mesh-in", verified=False)          # a radio ID proves nothing on the air
+    return out
+
+
+def ingest_family_inbox() -> int:
+    """Take the family radio lines the bridge spooled in RAM onto the family board, each sealed with this run's
+    current key. The spool is truncated only after the board write succeeded (a crash in between can show a
+    line twice, never lose one). Cheap when there is nothing (one lstat). Returns how many lines were taken."""
+    path = CFG.family_inbox
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return 0
+    if not stat.S_ISREG(st.st_mode) or st.st_size == 0:
+        return 0
+    with _inbox_lock:
+        try:
+            fd = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            return 0
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            chunks, size = [], 0
+            while size < FAMILY_INBOX_MAX_BYTES:
+                b = os.pread(fd, 1 << 16, size)
+                if not b:
+                    break
+                chunks.append(b)
+                size += len(b)
+            data = b"".join(chunks)
+            cut = data.rfind(b"\n") + 1
+            if cut <= 0:
+                return 0                               # (the bridge writes whole lines under the lock)
+            recs = [r for r in (_inbox_record(ln) for ln in data[:cut].split(b"\n") if ln.strip()) if r]
+            if recs:
+                s = sealed_store()
+                lines = "".join(sealed.seal_jsonl_line(r, s) + "\n" for r in recs)
+                with _board_lock:
+                    path_b = CFG.family_board_file
+                    path_b.parent.mkdir(parents=True, exist_ok=True)
+                    with open_private_append(path_b) as fh:
+                        fh.write(lines)
+                        fh.flush()
+                        os.fsync(fh.fileno())
+                    trim_jsonl(path_b, BOARD_MAX_BYTES)
+            rest = data[cut:] + os.pread(fd, FAMILY_INBOX_MAX_BYTES, size)   # (only past our read cap)
+            os.ftruncate(fd, 0)
+            if rest.strip():
+                os.pwrite(fd, rest, 0)
+            return len(recs)
+        except (OSError, sealed.SealError) as e:       # the spool stays as it is: tried again later
+            print(f"[portal] family radio messages not taken in yet: {type(e).__name__}", file=sys.stderr)
+            return 0
+        finally:
+            os.close(fd)                               # (releases the lock)
+
+
+def _family_inbox_loop() -> None:
+    while True:
+        time.sleep(FAMILY_INBOX_EVERY)
+        try:
+            with sealed_store().background():
+                ingest_family_inbox()
+        except Exception as e:  # noqa: BLE001 — never let the timer die
+            print(f"[portal] family inbox: {type(e).__name__}", file=sys.stderr)
+
+
+def start_family_inbox_timer() -> None:
+    threading.Thread(target=_family_inbox_loop, daemon=True, name="family-inbox").start()
+
+
+def family_recent_bounds() -> tuple[float, int]:
+    """While locked, family posts sealed since the lock are readable only if they are from the last
+    [sealed] recent_hours (48) and among the newest recent_max (200); older ones wait for the unlock."""
+    c = (CFG.raw.get("sealed") if isinstance(getattr(CFG, "raw", None), dict) else None) or {}
+    h, m = c.get("recent_hours", 48), c.get("recent_max", 200)
+    if isinstance(h, bool) or not isinstance(h, (int, float)) or not 0 < h <= 24 * 366:
+        h = 48
+    if isinstance(m, bool) or not isinstance(m, int) or not 0 < m <= 10000:
+        m = 200
+    return float(h), m
+
+
+def _post_epoch(at) -> float | None:
+    try:
+        return float(calendar.timegm(time.strptime(at, "%Y-%m-%dT%H:%M:%SZ")))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _recent_only(posts: list[dict], fam: dict) -> list[dict]:
+    hours, most = family_recent_bounds()
+    now = time.time()
+    keep = [r for r in posts if (t := _post_epoch(r.get("at"))) is not None and now - t <= hours * 3600]
+    keep = keep[-most:]
+    fam["hidden"] += len(posts) - len(keep)
+    return keep
+
+
+def board_read(limit: int = 200, board: str = "community", for_member: bool = False,
+               info: dict | None = None) -> list[dict]:
     """The last `limit` posts. Who-is-a-member marks are only shown to members, and posts that came
-    in over the mesh are never "verified": a radio ID proves nothing on the air."""
+    in over the mesh are never "verified": a radio ID proves nothing on the air.
+    The family board is sealed: while locked only posts written since the Badger locked are shown (radio
+    messages the bridge spooled count, see ingest_family_inbox), and of those only the last [sealed]
+    recent_hours / recent_max; `info` (a dict) gets {"locked", "hidden", …} for the page."""
+    if board == "family":
+        ingest_family_inbox()                          # radio messages waiting in RAM: sealed onto the board now
+    fam = {"plain": 0, "hidden": 0, "unreadable": 0, "names": None,
+           "locked": board == "family" and not sealed_store().is_unlocked()}
     try:
         lines = tail_lines(board_file(board), limit)
     except OSError:
-        return []
+        lines = []
     out, removed, decided = [], None, None
     for line in lines:
         try:
             rec = json.loads(line)
         except (ValueError, RecursionError):
             continue
+        if board == "family" and isinstance(rec, dict):
+            rec = _family_open(rec, fam)
+            if rec is None:
+                continue
         if not isinstance(rec, dict):
             continue
         if rec.get("via") == "mesh-in":
@@ -1100,6 +1823,15 @@ def board_read(limit: int = 200, board: str = "community", for_member: bool = Fa
             if rec["mesh"] == "sent":
                 rec["via"] = "mesh-out"
         out.append(rec)
+    if board == "family":
+        if fam["locked"]:
+            out = _recent_only(out, fam)               # while locked: the last 48 h / 200 posts at most
+        if fam["plain"]:
+            seal_family_board()
+        if info is not None:
+            info.update(locked=fam["locked"], hidden=fam["hidden"], unreadable=fam["unreadable"])
+            if fam["locked"]:
+                info["recent_hours"], info["recent_max"] = family_recent_bounds()
     return out
 
 
@@ -1235,7 +1967,7 @@ def board_post(ip: str, name: str, text: str, mesh: bool, board: str = "communit
     ask = mesh and not (member or approved)            # a visitor: ask a family member to send it
     if ask:
         mesh = False
-        if CFG.visitor_mesh == "off":
+        if visitor_mesh_mode() == "off":
             ask = None
     rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "name": name, "text": text,
            "via": "mesh-out" if mesh else "local"}
@@ -1259,16 +1991,18 @@ def board_post(ip: str, name: str, text: str, mesh: bool, board: str = "communit
                                                      member=bool(member) and not sys_post))
                 if not queued:
                     rec["via"] = "local"
+            line = sealed.seal_jsonl_line(rec, sealed_store()) if board == "family" else json.dumps(rec)
             with open_private_append(path) as fh:
-                fh.write(json.dumps(rec) + "\n")
+                fh.write(line + "\n")
                 fh.flush()                             # a full disk shows here, not as a silent "posted"
             trim_jsonl(path, BOARD_MAX_BYTES)
-    except OSError as e:
+    except (OSError, sealed.SealError) as e:          # SealError: the family board couldn't be sealed
         with _board_lock:
             _last_post.pop(ip, None)                   # nothing was posted: don't make them wait
         if is_storage_full(e):
             return False, STORAGE_FULL_MSG
-        print(f"[portal] board post not saved: {type(e).__name__}: {e.strerror or e}", file=sys.stderr)
+        print(f"[portal] board post not saved: {type(e).__name__}: {getattr(e, 'strerror', None) or e}",
+              file=sys.stderr)
         return False, "The message could not be saved on the Badger. Try again in a moment."
     if not queued:
         return True, "posted here — but the radio queue is full, so it was not sent over the mesh"
@@ -1645,7 +2379,8 @@ def _feature_mesh_send(text: str, board: str = "community", kind: str | None = N
 
 
 def _feature_data_dir(fid: str) -> Path:
-    d = CFG.features_data / re.sub(r"[^a-z0-9_-]", "", fid.lower())
+    base = REAL["features_data"] if DECOY and fid in DECOY_PASSTHROUGH and "features_data" in REAL else CFG.features_data
+    d = base / re.sub(r"[^a-z0-9_-]", "", fid.lower())
     d.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(d, 0o750)
@@ -1665,14 +2400,27 @@ def feature_ctx(fid: str) -> types.SimpleNamespace:
         send_bytes=_feature_send_bytes, send_file=_feature_send_file, ctl=ctl, kiwix_search=kiwix_search,
         ask_stream=ask_stream,   # ask_stream(q, write(event, data), brief=False): the library-grounded AI answer
         log=lambda msg: print(f"[{fid}] {msg}", file=sys.stderr),
+        # the security posture and friends (features/posture.py, circles.py, reveal.py)
+        posture=posture_state, settings=settings, update_settings=update_settings, config=lambda: CFG,
+        panel_lock_on=lambda: panel_lock_on(), services_up=lambda: services_up(), features=lambda: features_list(),
+        sealed=sealed_store,     # sealed records (software/common/sealed.py): seal while locked, open when unlocked
+        feature=_feature_handle,  # another loaded feature: .mod, .ctx (None when it is switched off)
     )
+
+
+def _feature_handle(fid: str) -> types.SimpleNamespace | None:
+    """Another loaded feature plugin (e.g. missing → circles' sharing path): its module and its own ctx."""
+    for f in FEATURES:
+        if f["id"] == fid:
+            return types.SimpleNamespace(mod=f["mod"], ctx=f["ctx"])
+    return None
 
 
 def load_features(folder: Path | None = None) -> None:
     FEATURES.clear()
     enabled = CFG.raw.get("features", {}) or {}
     for f in sorted((folder or HERE / "features").glob("*.py")):
-        if f.name.startswith("_"):
+        if f.name.startswith(("_", ".")):          # "_" helpers; "." dot-files such as macOS ._foo.py
             continue
         fid = f.stem
         try:
@@ -1701,10 +2449,12 @@ def match_feature(method: str, path: str):
     return None
 
 
-def features_list() -> list[dict]:
+def features_list(visitor_view: bool = False) -> list[dict]:
     out = []
     for feat in FEATURES:
         i = feat["info"]
+        if visitor_view and i.get("route") and visitor_refusal(feat, {"access": "public"}, {}):
+            continue                                     # the posture hides it from visitors: no tile
         out.append({"id": feat["id"], "title": str(i.get("title", feat["id"])), "icon": str(i.get("icon", "•")),
                     "group": str(i.get("group", "tools")), "route": i.get("route"), "script": i.get("script"),
                     "access": i.get("access", "public"), "description": str(i.get("description", ""))})
@@ -1933,6 +2683,14 @@ class Handler(SimpleHTTPRequestHandler):
         is drained before the connection closes — closing on unread bytes makes the kernel
         send a reset, and nginx then shows the phone a 502 instead of our answer."""
         self._responded = False
+        try:
+            guard_mesh_state()                         # radio state on persistent storage → sealed (cheap stats)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            decoy_tick()                               # a duress: the made-up household for everyone (cheap stat)
+        except Exception as e:  # noqa: BLE001
+            print(f"[portal] decoy check failed: {type(e).__name__}", file=sys.stderr)
         raw_rfile, self._body = self.rfile, None
         if body:
             self._body = self.rfile = _BodyReader(raw_rfile, getattr(self, "connection", None), self._declared_length())
@@ -2103,6 +2861,12 @@ class Handler(SimpleHTTPRequestHandler):
         admin = self.is_admin()
         ok = {"public": True, "member": bool(me), "admin": admin, "member_or_admin": bool(me) or admin,
               "local": self.local_console()}.get(access) if isinstance(access, str) else bool(access(self, ctx))
+        why = visitor_refusal(feat, route, self.headers) if ok and not (me or admin or self.local_console()) else None
+        if why:                                          # the security posture keeps visitors out of this page
+            if route.get("raw"):
+                self.close_connection = True
+                self.drain_body()
+            return self.send_json({"error": why, "posture": True}, 403)
         if not ok:
             if route.get("raw"):
                 # The (unread) upload body would otherwise be parsed as the next request on this
@@ -2180,6 +2944,8 @@ class Handler(SimpleHTTPRequestHandler):
         if not hasattr(self, "_member_cache"):
             tok = self.member_key()
             self._member_cache = members_db().auth_status(tok) if tok else ("none", None)
+            if self._member_cache[0] == "ok":
+                note_checkin()                   # (dead-man switch, only while armed)
         return self._member_cache
 
     def member(self) -> dict | None:
@@ -2339,13 +3105,17 @@ class Handler(SimpleHTTPRequestHandler):
             if board == "family" and not me:
                 return self.member_refusal()
             family = bool(me) or self.is_admin()
-            return self.send_json({"messages": board_read(board=board, for_member=bool(me)),
+            if not family and posture_value("visitor_community") == "members" and not self.local_console():
+                return self.send_json({"error": LOCKDOWN_MSG, "posture": True}, 403)
+            sealed_info: dict = {}
+            return self.send_json({"messages": board_read(board=board, for_member=bool(me), info=sealed_info),
+                                   "sealed": sealed_info or None,      # family board: locked? posts hidden?
                                    "mesh": services_up().get("mesh", False), "board": board,
                                    "member": {"name": me["name"]} if me else None,
                                    # visitors' radio requests, for the people who may send them
                                    "mesh_pending": mesh_pending_list() if family and board == "community" else None,
-                                   "mesh_needs_ok": not family and CFG.visitor_mesh == "approve",
-                                   "mesh_visitors": family or CFG.visitor_mesh == "approve"})
+                                   "mesh_needs_ok": not family and visitor_mesh_mode() == "approve",
+                                   "mesh_visitors": family or visitor_mesh_mode() == "approve"})
         if u.path == "/api/members/me":
             me = self.member()
             if not me:
@@ -2401,8 +3171,11 @@ class Handler(SimpleHTTPRequestHandler):
                 listing = usb_listing(one("drive"), target)
                 return self.send_json(listing) if listing else self.send_json({"error": "not found"}, 404)
             return self.send_usb_file(target)
+        if u.path == "/api/sealed":
+            return self.send_json(*sealed_api.get(self, sealed_store())[::-1])
         if u.path == "/api/features":
-            return self.send_json({"features": features_list()})
+            return self.send_json({"features": features_list(
+                visitor_view=not (self.member() or self.is_admin() or self.local_console()))})
         fr = match_feature("GET", u.path)
         if fr:
             return self.run_feature(fr, u.path, qs, None)
@@ -2445,6 +3218,8 @@ class Handler(SimpleHTTPRequestHandler):
             board = board if isinstance(board, str) else "?"
             if board == "family" and not me:
                 return self.member_refusal("the family board is for family members")
+            if board == "community" and not (me or self.is_admin()) and posture_value("visitor_community") == "members":
+                return self.send_json({"ok": False, "message": LOCKDOWN_MSG, "posture": True}, 403)
             ok, msg = board_post(self.client_ip(), str(data.get("name", "")), str(data.get("text", "")),
                                  data.get("mesh") is True, board, me, approved=self.is_admin())
             return self.send_json({"ok": ok, "message": msg}, 200 if ok else (507 if msg == STORAGE_FULL_MSG else 400))
@@ -2503,6 +3278,13 @@ class Handler(SimpleHTTPRequestHandler):
             except members_mod.StoreError as e:
                 return self.send_json({"ok": False, "error": str(e)}, 503)
             return self.send_json({"ok": ok}, headers={"Set-Cookie": self.set_cookie(MEMBER_COOKIE, "", 0)})
+        if u.path == "/api/sealed":
+            st, res = sealed_api.post(self, sealed_store(), data,
+                                      pin_matches=lambda pw: bool(CFG.admin_pin) and verify_pin(pw, CFG.admin_pin),
+                                      duress=types.SimpleNamespace(decoy=decoy_active(), real=real_sealer(),
+                                                                   trigger=self.duress_passphrase,
+                                                                   recovered=lambda: exit_decoy(self.admin_token())))
+            return self.send_json(res, st)
         if u.path == "/api/admin/login":
             return self.handle_login(data)
         if u.path == "/api/admin/logout":
@@ -2790,6 +3572,226 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"ok": False, "error": str(e)}, 400)
         return self.send_json({"ok": False, "error": "unknown members operation"}, 400)
 
+    def duress_passphrase(self) -> sealed.Sealer:
+        """The duress passphrase was typed for the sealed records: this admin session is a duress one too."""
+        with _auth_lock:
+            if self.admin_token() in TOKENS:
+                DURESS_TOKENS.add(self.admin_token())
+        return duress_triggered(held=False)
+
+    def recheck_pin(self, d: dict):
+        """The admin PIN typed again for a destructive step: "ok", "duress" (the duress PIN typed under
+        pressure: the wipe starts quietly and the step only pretends), or an error reply already sent."""
+        pin = d.get("pin")
+        pin = pin[:MAX_PIN] if isinstance(pin, str) else ""
+        if len(pin) < MIN_PIN:
+            self.send_json({"ok": False, "error": "Type the admin PIN to confirm."}, 400)
+            return None
+        result, wait = attempt_login(self.client_ip(), pin, self.local_console())
+        if result == "locked":
+            secs = int(wait) + 1
+            self.send_json({"ok": False, "error": f"Too many wrong PINs. Try again in {secs} s."}, 429, {"Retry-After": str(secs)})
+            return None
+        if result == "bad":
+            self.send_json({"ok": False, "error": "That isn't the admin PIN. Nothing was changed."}, 403)
+            return None
+        if result == "duress":
+            with _auth_lock:
+                DURESS_TOKENS.add(self.admin_token())
+            duress_triggered(held=not real_sealer().is_unlocked())
+        return result
+
+    def handle_wipe(self, d: dict):
+        """POST /api/admin/wipe {"op": …}: status | panic {"confirm": "WIPE"} | handover {"confirm":
+        "HANDOVER", "pin", "sale"?} | duress_set {"pin", "duress"} | duress_clear {"pin"} |
+        deadman_arm {"pin", "days"} | deadman_confirm {"code"} | deadman_off |
+        action {"pin", "action": "lock"|"wipe"} | phrase_set {"passphrase", "duress"} | phrase_clear {"passphrase"} |
+        decoy_get | decoy_save {"profile"} | decoy_regen.
+        Everything but status, deadman_off and the decoy ops needs an encrypted connection (https, or the Badger
+        itself). In a duress session every answer looks real, and nothing but the duress action happens. While
+        the made-up household is shown (after any duress), every session sees the settings as "nothing set up"
+        and setting changes only pretend; a panic wipe or handover from a session that did NOT come in with a
+        duress secret is real (a real wipe can't hurt the people in the room)."""
+        op = d.get("op", "status")
+        op = op if isinstance(op, str) else "?"
+        with _auth_lock:
+            duress_session = self.admin_token() in DURESS_TOKENS
+        duress = duress_session or decoy_active()
+        secure = self.secure_transport()
+        started = ("Wiping now. In a few seconds this Badger holds no family data; the library stays. The Wi-Fi "
+                   "password changes: read the new one on the Badger's screen (knob → Join Wi-Fi).")
+        if op == "status":
+            dm = read_json(CFG.deadman_state, None)
+            days = (CFG.raw.get("wipe") or {}).get("deadman_days", 0) if isinstance(CFG.raw.get("wipe"), dict) else 0
+            try:
+                days = tomllib.loads(Path(CFG.path).read_text()).get("wipe", {}).get("deadman_days", days)
+            except (OSError, ValueError, AttributeError):
+                pass
+            armed = isinstance(dm, dict) and isinstance(days, int) and not isinstance(days, bool) and days > 0 and not duress
+            idle = dm.get("idle_s") if armed and isinstance(dm.get("idle_s"), (int, float)) else 0
+            left = max(0.0, days * 86400 - idle) if armed else 0
+            rs = real_sealer()
+            return self.send_json({"ok": True, "secure": secure, "duress_set": bool(CFG.duress_pin) and not duress,
+                                   "deadman": {"armed": armed, "days": days if armed else 0,
+                                               "left_h": round(left / 3600, 1), "warning": armed and left <= 48 * 3600},
+                                   "duress_action": "lock" if duress else duress_action(),
+                                   "duress_phrase": (not duress) and rs.has_duress(),
+                                   "sealed_setup": True if duress else rs.is_setup(),
+                                   "panel_code": panel_lock_on()})
+        if op in ("decoy_get", "decoy_save", "decoy_regen"):
+            return self.handle_decoy(op, d, duress)
+        if op == "deadman_off":
+            if duress:
+                return self.send_json({"ok": True, "output": "dead-man switch off"})
+            rc, out = ctl("deadman-off")
+            return self.send_json({"ok": rc == 0, "output": out[-2000:]}, 200 if rc == 0 else 500)
+        if not secure:
+            return self.send_json({"ok": False, "secure": False, "error":
+                                   "For safety this works only over an encrypted connection. Open this page with "
+                                   "https://, or use the Badger's own screen (knob → System → Panic wipe / Hand over)."}, 403)
+        if op == "panic":
+            if d.get("confirm") != "WIPE":
+                return self.send_json({"ok": False, "error": "Type WIPE (capital letters) to confirm."}, 400)
+            if duress_session or wipe_already_running():
+                return self.send_json({"ok": True, "message": started})
+            erase_sealed_in_memory()
+            rc, out = start_wipe("panic-wipe", "admin")
+            if rc != 0:
+                return self.send_json({"ok": False, "error": "The wipe could not start: " + out[-300:]}, 500)
+            return self.send_json({"ok": True, "message": started})
+        if op == "handover":
+            if d.get("confirm") != "HANDOVER":
+                return self.send_json({"ok": False, "error": "Type HANDOVER (capital letters) to confirm."}, 400)
+            r = self.recheck_pin(d)
+            if r is None:
+                return None
+            msg = ("Resetting for the next owner. The Badger's Wi-Fi gets a new name and password (on its screen: knob "
+                   "→ Join Wi-Fi), and it has no admin PIN until the new owner sets one at the Badger.")
+            if r == "duress" or duress_session:
+                return self.send_json({"ok": True, "message": msg})
+            rc, out = start_wipe("handover-reset", "admin", ("--sale",) if d.get("sale") is True else ())
+            if rc != 0:
+                return self.send_json({"ok": False, "error": "The reset could not start: " + out[-300:]}, 500)
+            return self.send_json({"ok": True, "message": msg})
+        if op in ("duress_set", "duress_clear"):
+            r = self.recheck_pin(d)
+            if r is None:
+                return None
+            if op == "duress_clear":
+                if r == "duress" or duress:
+                    return self.send_json({"ok": True, "duress_set": False})
+                rc, out = ctl("set-duress", "--clear")
+                if rc == 0:
+                    CFG.duress_pin = ""
+                return self.send_json({"ok": rc == 0, "duress_set": bool(CFG.duress_pin), "output": out[-500:]},
+                                      200 if rc == 0 else 500)
+            new = d.get("duress")
+            err, _warn = pin_policy(new)
+            if err:
+                return self.send_json({"ok": False, "error": err}, 400)
+            if r == "duress" or duress:
+                return self.send_json({"ok": True, "duress_set": True})
+            if verify_pin(new, CFG.admin_pin):
+                return self.send_json({"ok": False, "error": "The duress PIN must be different from the admin PIN."}, 400)
+            h = hash_pin(new)
+            rc, out = ctl("set-duress", "--hash", input=h + "\n")
+            if rc == 0:
+                CFG.duress_pin = h
+            return self.send_json({"ok": rc == 0, "duress_set": rc == 0, "output": out[-500:]}, 200 if rc == 0 else 500)
+        if op == "deadman_arm":
+            r = self.recheck_pin(d)
+            if r is None:
+                return None
+            days = d.get("days")
+            if not isinstance(days, int) or isinstance(days, bool) or not 3 <= days <= 365:
+                return self.send_json({"ok": False, "error": "Choose 3 to 365 days."}, 400)
+            if r == "duress" or duress:
+                return self.send_json({"ok": True, "code": "".join(secrets.choice("ABCDEFGHJKMNPQRSTVWXYZ23456789")
+                                                                   for _ in range(6))})
+            rc, out = ctl("deadman-set", str(days))
+            m = re.search(r"confirm-code: ([A-Z0-9]{6})", out or "")
+            if rc != 0 or not m:
+                return self.send_json({"ok": False, "error": out[-300:] or "failed"}, 500)
+            return self.send_json({"ok": True, "code": m.group(1)})
+        if op == "deadman_confirm":
+            code = d.get("code")
+            if not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9]{6}", code.strip()):
+                return self.send_json({"ok": False, "error": "Type the 6-character code shown."}, 400)
+            if duress:
+                return self.send_json({"ok": True, "output": "dead-man switch ARMED"})
+            rc, out = ctl("deadman-set", "--confirm", code.strip().upper())
+            return self.send_json({"ok": rc == 0, "output": out[-1000:]}, 200 if rc == 0 else 400)
+        if op == "action":
+            r = self.recheck_pin(d)
+            if r is None:
+                return None
+            act = d.get("action")
+            if act not in ("lock", "wipe"):
+                return self.send_json({"ok": False, "error": "Choose lock or wipe."}, 400)
+            if r == "duress" or duress:
+                return self.send_json({"ok": True, "duress_action": act})
+            try:
+                update_settings(lambda st: {**st, "duress_action": act})
+            except (OSError, ValueError) as e:
+                return self.send_json({"ok": False, "error": f"Not saved: {e}"}, 500)
+            return self.send_json({"ok": True, "duress_action": duress_action()})
+        if op in ("phrase_set", "phrase_clear"):
+            rs = real_sealer()
+            try:
+                if duress:
+                    if op == "phrase_set":
+                        bad = sealed.passphrase_problem(d.get("duress"))
+                        if bad:
+                            raise sealed.Refused(400, bad)
+                    if rs.is_setup():
+                        rs.check_secret(d.get("passphrase"), self.client_ip(), allow_recovery=False)
+                    return self.send_json({"ok": True, "duress_phrase": op == "phrase_set"})
+                if op == "phrase_set":
+                    if isinstance(d.get("duress"), str) and CFG.admin_pin and verify_pin(d["duress"], CFG.admin_pin):
+                        raise sealed.Refused(400, "Don't use the admin PIN as the duress passphrase.")
+                    rs.set_duress(d.get("passphrase"), d.get("duress"), self.client_ip())
+                else:
+                    rs.clear_duress(d.get("passphrase"), self.client_ip())
+            except sealed.DuressSecret:
+                self.duress_passphrase()                 # the duress passphrase typed as the owner's: it IS a duress
+                return self.send_json({"ok": True, "duress_phrase": op == "phrase_set"})
+            except sealed.Refused as e:
+                return self.send_json({"ok": False, "error": e.message}, e.status)
+            except sealed.SealError as e:
+                return self.send_json({"ok": False, "error": f"Sealed records aren't working: {e}"}, 503)
+            return self.send_json({"ok": True, "duress_phrase": rs.has_duress()})
+        return self.send_json({"ok": False, "error": "unknown wipe operation"}, 400)
+
+    def handle_decoy(self, op: str, d: dict, duress: bool):
+        """The owner's decoy editor: preview, edit (names, supplies, board posts), regenerate. While the made-up
+        household is shown, a change only pretends (the working copy stays as it is)."""
+        try:
+            prof = decoy_profile()
+            n = len(decoy_mod.member_skeleton(real_path("members_file")))
+            if op == "decoy_get":
+                return self.send_json({"ok": True, "profile": prof, "preview": decoy_mod.preview(prof, n),
+                                       "categories": list(decoy_mod.CATEGORIES)})
+            if op == "decoy_regen":
+                new = decoy_mod.generate()
+            else:
+                body = d.get("profile")
+                if not isinstance(body, dict):
+                    return self.send_json({"ok": False, "error": "Nothing to save."}, 400)
+                if len(json.dumps(body)) > decoy_mod.MAX_BYTES:
+                    return self.send_json({"ok": False, "error": "That is too much for the decoy."}, 413)
+                new = decoy_mod.normalize({**body, "seed": prof["seed"], "created": prof.get("created")})
+                if not new["supplies"] or not new["board"]:
+                    return self.send_json({"ok": False, "error": "Keep a few supplies and a few board posts: an "
+                                                                 "empty list looks wrong."}, 400)
+            if not duress:
+                new = decoy_mod.save(decoy_profile_file(), new)
+            return self.send_json({"ok": True, "profile": new, "preview": decoy_mod.preview(new, n),
+                                   "categories": list(decoy_mod.CATEGORIES)})
+        except ValueError as e:
+            return self.send_json({"ok": False, "error": str(e)}, 400)
+        except OSError as e:
+            return self.send_json({"ok": False, "error": f"Not saved ({e.strerror or e})."}, 500)
+
     def handle_login(self, data: dict):
         ip = self.client_ip()
         local = self.local_console()
@@ -2806,17 +3808,28 @@ class Handler(SimpleHTTPRequestHandler):
                                             f"sudo prepperctl set-pin"}, 400)
         pin = pin[:MAX_PIN]                      # hashing a megabyte "PIN" is a free CPU burner
         time.sleep(0.25)
+        if not CFG.admin_pin:
+            # (a handover reset clears it: the next owner sets one at the Badger)
+            return self.send_json({"error": "This Badger has no admin PIN yet. Set one at the Badger (keyboard and "
+                                            "screen, or SSH): sudo prepperctl set-pin", "no_pin": True}, 403)
         result, wait = attempt_login(ip, pin, local)
         if result == "locked":
             secs = int(wait) + 1
             return self.send_json({"error": f"Too many wrong PINs. Try again in {secs} s.", "retry_after": secs},
                                   429, {"Retry-After": str(secs)})
-        if result == "ok":
+        if result in ("ok", "duress"):
+            # The duress PIN gets exactly the same reply (keys, cookie, timing): see duress_wipe().
             prune_tokens()
             tok = secrets.token_urlsafe(24)
             with _auth_lock:
                 TOKENS[tok] = time.time() + ADMIN_TTL
-            if pin_is_legacy(CFG.admin_pin):     # an older PBKDF2 hash: replace it with scrypt (same secret)
+                if result == "duress":
+                    DURESS_TOKENS.add(tok)
+            if result == "duress":
+                duress_triggered(held=not real_sealer().is_unlocked())
+            else:
+                note_checkin()
+            if result == "ok" and pin_is_legacy(CFG.admin_pin):     # an older PBKDF2 hash: scrypt it (same secret)
                 threading.Thread(target=upgrade_pin_hash, args=(pin,), daemon=True).start()
             err, warn = pin_policy(pin)
             # The launcher uses the HttpOnly cookie; the token in the body is for tools and plugins.
@@ -2896,6 +3909,8 @@ class Handler(SimpleHTTPRequestHandler):
         return self.send_json({"ok": True, "message": msg, "personal": personal_view(True)})
 
     def handle_admin(self, action: str, d: dict):
+        if action == "wipe":
+            return self.handle_wipe(d)
         if action == "members":
             return self.handle_members(d)
         if action == "personal":
@@ -3146,6 +4161,11 @@ def main() -> None:
     cfg_path = Path(os.environ.get("PREPPER_CONFIG", upd.DEFAULT_CONFIG))
     CFG = PortalConfig(cfg_path)
     load_features()
+    start_family_inbox_timer()
+    try:
+        decoy_profile()                          # the made-up household, always ready (docs/SECURITY.md → "Duress")
+    except Exception as e:  # noqa: BLE001
+        print(f"[portal] decoy profile not made: {type(e).__name__}", file=sys.stderr)
     host, port = CFG.listen.rsplit(":", 1)
     srv = PortalServer((host, int(port)), Handler, max_threads=CFG.max_threads)
     print(f"[portal] {CFG.edition} edition on http://{CFG.listen} "

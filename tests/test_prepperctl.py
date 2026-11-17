@@ -33,6 +33,11 @@ SENSITIVE = {   # verb → valid-looking arguments
     "set-pin": ["246813"],
     "gen-key": [],
     "gen-tls": [],
+    # panic wipe internals (os/wipe.py): root, the panel and the timers only
+    "wipe-finish": [],
+    "wipe-resume": [],
+    "wipe-status": [],
+    "deadman-check": [],
 }
 
 
@@ -56,7 +61,7 @@ class Ctl(TempDirCase):
         stub install.sh and upd.py that only log (FAKE_LOG) and exit FAKE_RC."""
         opt = self.root / "opt/prepper"
         (opt / "os").mkdir(parents=True)
-        for f in ("render.py", "conf_write.py", "nm_wifi.py", "prepper.toml.example", "bin", "systemd"):
+        for f in ("render.py", "conf_write.py", "nm_wifi.py", "wipe.py", "prepper.toml.example", "bin", "systemd"):
             (opt / "os" / f).symlink_to(REPO / "os" / f)
         (opt / "software/upd").mkdir(parents=True)
         (opt / "software/portal").symlink_to(REPO / "software/portal")

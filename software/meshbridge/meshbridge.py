@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import base64
 import collections
+import fcntl
 import hashlib
 import hmac
 import inspect
@@ -82,6 +83,7 @@ import queue
 import random
 import re
 import secrets
+import stat
 import sys
 import tempfile
 import threading
@@ -93,6 +95,12 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+try:                                    # the security posture (software/common/posture.py), shipped alongside
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
+    import posture as posture_mod
+except Exception:  # noqa: BLE001 — an older install without it: the [radio] keys alone, as before
+    posture_mod = None
+
 # Defaults; [portal] board_file / mesh_outbox / mesh_nodes / mesh_telemetry … in prepper.toml
 # (shared with the portal) or BOARD_FILE / MESH_OUTBOX / MESH_NODES / MESH_TELEMETRY /
 # ALERTS_FILE in the environment override them.
@@ -100,21 +108,33 @@ BOARD = Path("/var/lib/prepper/portal/board.jsonl")                  # community
 FAMILY_BOARD = Path("/var/lib/prepper/portal/family-board.jsonl")
 MEMBERS = Path("/var/lib/prepper/portal/members.json")
 OUTBOX = Path("/var/lib/prepper/portal/mesh-outbox.jsonl")
-NODES = Path("/var/lib/prepper/portal/mesh-nodes.json")
-TELEMETRY = Path("/var/lib/prepper/portal/mesh-telemetry.jsonl")
+# What the radio tells us about the mesh lives in RAM only (/run/prepper, a tmpfs): radio positions, Badgers
+# heard, telemetry, the channel links (they hold keys) and the Bluetooth PIN. A seized or stolen Badger's
+# disk holds none of it; after a restart the bridge reads it all from the radio again.
+RUN = Path("/run/prepper")
+NODES = RUN / "mesh-nodes.json"                                     # radio positions (≤ 24 h old)
+TELEMETRY = RUN / "mesh-telemetry.jsonl"
+FAMILY_INBOX = RUN / "family-inbox.jsonl"                           # family radio lines for the portal to seal: 0600
 ALERTS = Path("/run/prepper/alerts.json")
 BEAT = Path("/run/prepper/mesh.ok")
 ROTATE_REQ = Path("/var/lib/prepper/portal/mesh-rotate.json")
 ROTATE_RES = Path("/var/lib/prepper/portal/mesh-rotate-result.json")
-CHANNEL_LINK = Path("/var/lib/prepper/portal/mesh-channel.json")   # holds the key: 0600
-BT_PIN = Path("/var/lib/prepper/portal/mesh-bt-pin.json")          # the radio's Bluetooth PIN: 0600
-PEERS = Path("/var/lib/prepper/portal/mesh-peers.json")            # Badgers heard + courtesy status: 0640
+CHANNEL_LINK = RUN / "mesh-channel.json"                            # holds the key: 0600
+BT_PIN = RUN / "mesh-bt-pin.json"                                   # the radio's Bluetooth PIN: 0600
+PEERS = RUN / "mesh-peers.json"                                     # Badgers heard + courtesy status: 0640
+CIRCLE_LINK = RUN / "mesh-circle.json"                              # the trusted circle's link (its key): 0600
+CIRCLE_STATUS = RUN / "circle-status.json"                          # circle queries answered/refused, answers: 0640
+CIRCLE_ASK = RUN / "circle-ask.json"                                # "ask the circle" requests from the portal
+RADIO_REQ = Path("/var/lib/prepper/portal/mesh-radio-req.json")     # circle create/join/rotate/leave, radio rename
+RADIO_RES = Path("/var/lib/prepper/portal/mesh-radio-res.json")     # …their results (never a key): 0600
+NODE_MAX_AGE = 24 * 3600                                            # radio positions older than this are dropped
 PAIR_FILE = Path("/var/lib/prepper/portal/mesh-pair.json")         # radio pairing confirmations for the portal: 0600
 API = os.environ.get("PREPPER_API", "http://127.0.0.1:8000")
 MAX_BYTES = 200                                   # what one LoRa text message carries
 ROTATE_TTL = 120                                  # a key-change request older than this is ignored
 BOARD_MAX_BYTES = 2_000_000                       # (same limit the portal keeps its boards under)
 TELEMETRY_MAX_BYTES = 1_000_000
+INBOX_MAX_BYTES = 1_000_000                       # a spool the portal isn't taking in: post straight to the board
 TELEMETRY_EVERY = 30.0                            # at most one telemetry line per radio per 30 s
 NODE_RE = re.compile(r"^![0-9a-f]{8}$")
 
@@ -244,6 +264,101 @@ def trim_jsonl(path: Path, max_bytes: int, mode: int = 0o640) -> None:
         print(f"meshbridge: cannot trim {path.name}: {e}", file=sys.stderr)
 
 
+# ─────────────────────────────── sealed records ──────────────────────────────
+# software/common/sealed.py (the sealed-records feature): this process can SEAL with the device's public key
+# (it never holds the private one). Family-board lines go to a RAM spool the portal seals with its own current
+# key (spool_family; sealed here only when that can't be written), and radio state
+# configured to a persistent path ([portal] mesh_nodes / mesh_peers / … outside /run): never plaintext on disk.
+# Without sealed.py, or before the portal has made the device key, today's behaviour (plain) stays.
+SEALER = None
+RAM_DIRS: list[str] = []
+_SEALED_SAID: set = set()
+
+
+def setup_sealer(raw: dict, members: Path):
+    """The sealed-records instance for this process, if the portal has set one up (device.key exists)."""
+    global SEALER
+    try:
+        import sealed as sealed_mod
+    except Exception:  # noqa: BLE001 — not shipped / no openssl: plain, as before
+        return None
+    c = raw.get("sealed") if isinstance(raw.get("sealed"), dict) else {}
+    v = raw.get("vault") if isinstance(raw.get("vault"), dict) else {}
+    folder = Path(c["dir"]) if isinstance(c.get("dir"), str) and c["dir"] else Path(members).parent / "sealed"
+    if not (folder / "device.key").exists():
+        return None                                  # the portal makes the key; the bridge never does
+    try:
+        SEALER = sealed_mod.use(folder, openssl=str(c.get("openssl") or v.get("openssl") or "/usr/bin/openssl"))
+    except Exception as e:  # noqa: BLE001
+        print(f"meshbridge: sealed records not available here ({type(e).__name__}): writing plain", file=sys.stderr)
+        SEALER = None
+    return SEALER
+
+
+def on_ram(path: Path) -> bool:
+    s = str(path)
+    return any(s == d or s.startswith(d.rstrip("/") + "/") for d in ["/run", "/dev/shm", *RAM_DIRS])
+
+
+def state_bytes(path: Path, doc: dict) -> bytes:
+    """What a radio-state file holds: the JSON itself in RAM; on persistent storage, sealed —
+    {"sealed": token} (+ empty "nodes"/"peers" lists, so a reader that can't open it sees nothing)."""
+    text = json.dumps(doc)
+    if on_ram(path):
+        return text.encode()
+    if SEALER is None:
+        if str(path) not in _SEALED_SAID:
+            _SEALED_SAID.add(str(path))
+            print(f"meshbridge: {path.name} is configured outside /run (persistent) and sealed records aren't set up: "
+                  "it is written in the clear", file=sys.stderr)
+        return text.encode()
+    out = {"sealed": SEALER.seal_text(text)}
+    for k in ("nodes", "peers"):
+        if k in doc:
+            out[k] = []
+    return json.dumps(out).encode()
+
+
+def write_state(path: Path, doc: dict, mode: int = 0o640) -> bool:
+    try:
+        _private_file(path, state_bytes(path, doc), mode)
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"meshbridge: cannot write {path.name}: {type(e).__name__}: {e}", file=sys.stderr)
+        return False
+
+
+def spool_family(rec: dict) -> bool:
+    """A family-board line while the board is on persistent storage: into the RAM spool (FAMILY_INBOX, 0600),
+    which the portal seals with its CURRENT key — so family members can read it while the Badger is locked
+    (with our own key only an unlocked portal could). flock(LOCK_EX) per append: the portal holds the same
+    lock while it copies and truncates the spool. False (→ the old way: sealed straight onto the board) when
+    the spool can't be written or the portal isn't taking it in (past INBOX_MAX_BYTES)."""
+    try:
+        fd = os.open(FAMILY_INBOX, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError:
+        return False
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return False
+        if st.st_mode & 0o077:
+            os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if os.fstat(fd).st_size > INBOX_MAX_BYTES:
+            return False
+        data = (json.dumps(rec) + "\n").encode()
+        while data:
+            n = os.write(fd, data)
+            data = data[n:]
+        return True
+    except OSError as e:
+        print(f"meshbridge: family spool not written ({type(e).__name__})", file=sys.stderr)
+        return False
+    finally:
+        os.close(fd)                                 # (releases the lock)
+
+
 def board_add(name, text, board: str = "community", radio="", member: str | None = None) -> None:
     """A post heard on the mesh. Never "verified" (a radio ID proves nothing on the air); a member
     id (for the "removed member" mark) only on the family board, where the channel key vouches."""
@@ -252,6 +367,8 @@ def board_add(name, text, board: str = "community", radio="", member: str | None
     if member and board == "family":
         rec["member"] = str(member)[:16]
     path = FAMILY_BOARD if board == "family" else BOARD
+    if board == "family" and SEALER is not None and not on_ram(path) and spool_family(rec):
+        return                                       # the portal seals it onto the board within seconds
     # 0640 (group prepper only) even when this creates the file; an older world-readable one is tightened
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
     with os.fdopen(fd, "a") as fh:
@@ -260,7 +377,14 @@ def board_add(name, text, board: str = "community", radio="", member: str | None
                 os.fchmod(fd, 0o640)
         except OSError:
             pass
-        fh.write(json.dumps(rec) + "\n")
+        line = json.dumps(rec)
+        if board == "family" and SEALER is not None:
+            try:
+                import sealed as sealed_mod
+                line = sealed_mod.seal_jsonl_line(rec, SEALER)     # never the family's words in the clear
+            except Exception as e:  # noqa: BLE001 — sealing failed: the post still lands (the portal seals it)
+                print(f"meshbridge: family post not sealed ({type(e).__name__})", file=sys.stderr)
+        fh.write(line + "\n")
     trim_jsonl(path, BOARD_MAX_BYTES)
 
 
@@ -273,7 +397,9 @@ def radio_registry(path: Path) -> dict[str, dict]:
     for mid, m in (mems.items() if isinstance(mems, dict) else []):
         if not isinstance(m, dict):
             continue
-        name = clean(m.get("name", ""), 32)
+        name = clean(m.get("name") if isinstance(m.get("name"), str) else "", 32)
+        if not name or name.startswith("hbs1:"):
+            name = "a family member"                 # names are sealed in members.json (sealed records)
         radios = m.get("radios") if isinstance(m.get("radios"), list) else []
         gone = m.get("removed_radios") if isinstance(m.get("removed_radios"), list) else []
         for r in radios:
@@ -451,6 +577,12 @@ class Commands:
     @staticmethod
     def _key(sender) -> str:
         return clean(sender, 40).lower()            # "!A1B2C3D4", " !a1b2c3d4" … are one radio
+
+    def set_budgets(self, total: int, each: int) -> None:
+        """The stranger budgets changed (the security posture): applies to the next question."""
+        with self._lock:
+            self.budget = (max(0, int(total)), self.budget[1])
+            self.per_radio = (max(0, int(each)), self.per_radio[1])
 
     def _prune(self, now: float) -> None:
         if len(self.last) > 500:
@@ -672,8 +804,9 @@ def _dict(v) -> dict:
     return v if isinstance(v, dict) else {}
 
 
-def nodes_snapshot(nodes: dict, my_id: str | None, now: float, max_age: float = 7 * 86400) -> list[dict]:
-    """Radios that shared a position, for the map: name, lat/lon, when, battery. Bad or ancient fixes dropped."""
+def nodes_snapshot(nodes: dict, my_id: str | None, now: float, max_age: float = NODE_MAX_AGE) -> list[dict]:
+    """Radios that shared a position, for the map: name, lat/lon, when, battery. Bad fixes, and fixes older
+    than 24 h, are dropped (the snapshot lives in RAM too): a seized Badger mustn't be a map of households."""
     out = []
     for nid, n in (nodes.items() if isinstance(nodes, dict) else []):
         if not isinstance(n, dict):
@@ -819,6 +952,43 @@ def rotate_family_key(iface, family_ch: int, rng=os.urandom) -> str | None:
     return None
 
 
+def wipe_radio_keys(iface, family_ch: int, factory_reset: bool = False, rng=os.urandom) -> dict:
+    """The panic wipe's radio step: a new random key on EVERY private channel (the family channel and any other
+    enabled channel 1–7 with its own key: the trusted circle) — whatever was said on them can't be read with
+    the old keys any more, and the radio no longer holds them. Or, with factory_reset, the radio's own factory
+    reset (all keys and its node list). Channel 0 / channels with a well-known default key are left alone."""
+    node = iface.localNode
+    if factory_reset and callable(getattr(node, "factoryReset", None)):
+        try:
+            node.factoryReset()
+            return {"ok": True, "wipe": True, "factory_reset": True}
+        except Exception as e:  # noqa: BLE001 — fall back to new keys
+            print(f"meshbridge: factory reset refused ({type(e).__name__}); new keys instead", file=sys.stderr)
+    done, errors = [], []
+    for i, ch in enumerate(list(getattr(node, "channels", None) or [])[:8]):
+        if i == 0:
+            continue
+        try:
+            role = int(getattr(ch, "role", 0) or 0)
+        except (TypeError, ValueError):
+            role = 0
+        if role == 0 or (len(_psk_of(ch)) < 16 and i != family_ch):
+            continue
+        try:
+            ch.settings.psk = rng(32)
+            node.writeChannel(i)
+            done.append(i)
+        except Exception as e:  # noqa: BLE001 — keep going: every channel we can
+            errors.append(f"{i}: {type(e).__name__}")
+    res = {"ok": bool(done) and not errors, "wipe": True, "factory_reset": False, "channels": done}
+    if errors:
+        res["error"] = "not re-keyed: " + ", ".join(errors)
+    elif not done:
+        res.update(ok=True, note="no private channel on the radio")
+    print(f"meshbridge: wipe: new keys on channels {done}" + (f" ({res['error']})" if errors else ""), file=sys.stderr)
+    return res
+
+
 def save_channel_link(iface, path: Path) -> str | None:
     """Keep the radio's current channel link where the admin page (over HTTPS) and the front panel can
     show it again (it contains the keys, so 0600). The failsafe after a key change: the link is never lost."""
@@ -830,7 +1000,7 @@ def save_channel_link(iface, path: Path) -> str | None:
     if not isinstance(url, str) or not url:
         return None
     try:
-        _private_file(path, json.dumps({"url": url, "at": time.time()}).encode(), 0o600)
+        _private_file(path, state_bytes(path, {"url": url, "at": time.time()}), 0o600)
     except OSError as e:
         print(f"meshbridge: cannot save the channel link: {e}", file=sys.stderr)
     return url
@@ -877,6 +1047,17 @@ def handle_rotation(iface, family_ch: int, req_path: Path, res_path: Path, link_
         print("meshbridge: ignored a stale family key request", file=sys.stderr)
         atomic_json(res_path, res, 0o600)
         return res
+    if req.get("wipe") is True:                         # the panic wipe (os/wipe.py): every private channel
+        res = wipe_radio_keys(iface, family_ch, factory_reset=req.get("factory_reset") is True)
+        res.update(id=rid, at=time.time(), req=sig)
+        if req.get("forget_link") is True and link_path:
+            for f in (link_path, CIRCLE_LINK):
+                try:
+                    f.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        atomic_json(res_path, res, 0o600)
+        return res
     written, url = False, None
     try:
         url = rotate_family_key(iface, family_ch)
@@ -914,12 +1095,18 @@ def secure_bt_pin(iface, path: Path, rng=None) -> str | None:
             return None
         mode, pin = int(getattr(bt, "mode", 0) or 0), int(getattr(bt, "fixed_pin", 0) or 0)
         # Meshtastic: mode 0 = RANDOM_PIN (shown on the radio's own screen), 1 = FIXED_PIN, 2 = NO_PIN
-        if mode == 0 or (mode == 1 and pin not in (0, 123456)):
+        if mode == 0:
+            return None
+        if mode == 1 and pin not in (0, 123456):
+            # already a non-default PIN (ours, from before a restart: the file lives in RAM) — show it again
+            if 100000 <= pin <= 999999 and read_json(path, None, limit=4096) is None:
+                _private_file(path, state_bytes(path, {"pin": f"{pin:06d}", "at": time.time(), "from_radio": True}),
+                              0o600)
             return None
         new = 100000 + (rng or secrets.randbelow)(900000)
         bt.mode, bt.fixed_pin = 1, new
         iface.localNode.writeConfig("bluetooth")
-        _private_file(path, json.dumps({"pin": f"{new:06d}", "at": time.time()}).encode(), 0o600)
+        _private_file(path, state_bytes(path, {"pin": f"{new:06d}", "at": time.time()}), 0o600)
         print("meshbridge: the radio had the default Bluetooth PIN; it now has a random one "
               "(front panel → Radio Bluetooth PIN)", file=sys.stderr)
         return f"{new:06d}"
@@ -1165,11 +1352,27 @@ class Silence:
     or community posts — except, with [radio] mesh_silent_allow_family = true (default), family-board
     posts a member typed and chose to send. It still receives, logs and fills the boards."""
 
-    def __init__(self, path: Path | None, configured: bool = False, allow_family: bool = True, clock=None):
-        self.path, self.configured, self.allow_family = path, configured, allow_family
+    def __init__(self, path: Path | None, configured: bool = False, allow_family: bool = True, clock=None,
+                 posture=None):
+        self.path, self.configured, self._allow_family = path, configured, allow_family
         self.clock = clock or (lambda: time.time())
         self._cache = (-1e18, False)
         self.lock = threading.Lock()
+        # posture(): (silent, allow_family) from the security posture (Lockdown = silence), or None
+        self.posture = posture
+
+    def _posture(self):
+        if self.posture is None:
+            return None
+        try:
+            return self.posture()
+        except Exception:  # noqa: BLE001 — a broken posture reader fails closed: silent
+            return (True, True)
+
+    @property
+    def allow_family(self) -> bool:
+        p = self._posture()
+        return bool(p[1]) if p is not None else self._allow_family
 
     def flag(self) -> bool:
         if self.path is None:
@@ -1186,6 +1389,9 @@ class Silence:
 
     def active(self) -> bool:
         if self.configured:
+            return True
+        p = self._posture()
+        if p is not None and p[0]:
             return True
         now = self.clock()
         with self.lock:
@@ -1735,10 +1941,11 @@ class RadioLink:
             print(f"meshbridge: send failed ({e})", file=sys.stderr)
             return False
 
-    def data(self, payload: bytes, channel: int, hop_limit=None) -> bool:
+    def data(self, payload: bytes, channel: int, hop_limit=None, dest: str | None = None) -> bool:
         if not isinstance(channel, int) or channel < 0 or not hasattr(self.iface, "sendData") or self.silence.active():
             return False
-        kw = {"destinationId": "^all", "portNum": PRIVATE_APP, "wantAck": False, "channelIndex": channel}
+        kw = {"destinationId": dest if isinstance(dest, str) and NODE_RE.match(dest) else "^all",
+              "portNum": PRIVATE_APP, "wantAck": False, "channelIndex": channel}
         if hop_limit is not None and "hopLimit" in self.data_kw:
             kw["hopLimit"] = int(hop_limit)
         try:
@@ -2294,6 +2501,7 @@ class Bridge:
         self.alerts_dirty = False
         self.booted = False
         self.lock = threading.Lock()
+        self.circle: CircleService | None = None       # the trusted circle (main() sets it up)
 
     def _pair_allowed(self, sender: str) -> bool:
         now = self.clock()
@@ -2359,6 +2567,8 @@ class Bridge:
         if reg and reg.get("removed"):
             print(f"meshbridge: ignored a message from a removed member's radio {sender}", file=sys.stderr)
             return
+        if self.circle is not None and self.circle.heard_text(text, packet):
+            return                                   # a circle query: answered (or not) by the circle rules only
         if text[:5].lower() == "!pair":
             # radio pairing confirmation: only on the family channel, never a DM, never answered on air and
             # never on a board; anywhere else dropped without a word
@@ -2461,6 +2671,8 @@ class Bridge:
     def on_data(self, packet, interface=None):
         """Everything the radio hears ("meshtastic.receive"): only PRIVATE_APP courtesy packets are ours."""
         try:
+            if self.circle is not None and self.circle.heard_data(packet):
+                return                               # a trusted-circle query or answer
             if self.courtesy is not None:
                 self.courtesy.heard_control(packet)
         except Exception as e:  # noqa: BLE001 — a hostile packet must not take the bridge down
@@ -2532,9 +2744,846 @@ class Bridge:
         return doc
 
 
+# ─────────────────────────────── security posture ────────────────────────────
+# One switch (software/common/posture.py, docs/features/posture.md): Neighbourly / Guarded / Lockdown. The
+# portal writes posture.json; the bridge follows it within a couple of seconds, no restart: radio commands,
+# stranger budgets, the public position, radio silence, NOAA relays on the public channel, circle answers,
+# and in Lockdown the radio itself (CLIENT_MUTE, no node-info/position/telemetry broadcasts, restored after).
+
+class PostureWatch:
+    """The effective posture settings, re-read when posture.json or the launcher's settings change (checked
+    at most every `every` s). Without posture.py (an older install) it reports the [radio] keys' meaning."""
+
+    def __init__(self, raw: dict | None, path: Path | None, settings: Path | None, clock=None, every: float = 2.0):
+        self.raw = raw if isinstance(raw, dict) else {}
+        self.path, self.settings_path = path, settings
+        self.clock = clock or (lambda: time.time())
+        self.every = every
+        self._t, self._sig = -1e18, None
+        self.level, self.info, self.eff, self.vals = "guarded", {}, {}, {}
+        self.lock = threading.Lock()
+        self.refresh(force=True)
+
+    def _stat(self, p: Path | None):
+        try:
+            st = os.stat(p) if p is not None else None
+            return (st.st_mtime_ns, st.st_size, st.st_ino) if st else None
+        except OSError:
+            return None
+
+    def refresh(self, force: bool = False) -> bool:
+        """True when the effective settings changed."""
+        now = self.clock()
+        with self.lock:
+            if not force and 0 <= now - self._t < self.every:
+                return False
+            self._t = now
+        sig = (self._stat(self.path), self._stat(self.settings_path))
+        if not force and sig == self._sig:
+            return False
+        settings = read_json(self.settings_path, {}) if self.settings_path is not None else {}
+        settings = settings if isinstance(settings, dict) else {}
+        if posture_mod is None:
+            info = {"level": "guarded", "label": "Guarded", "damaged": False}
+            vals = {"mesh_commands": {k[1:]: v for k, v in command_access(self.raw.get("radio"),
+                                                                          settings.get("mesh_commands")).items()},
+                    "public_position": (self.raw.get("radio") or {}).get("mesh_public_position", "off"),
+                    "radio_silence": (self.raw.get("radio") or {}).get("mesh_silent") is True,
+                    "silent_allow_family": (self.raw.get("radio") or {}).get("mesh_silent_allow_family", True) is not False,
+                    "alerts_public": (self.raw.get("radio") or {}).get("mesh_alerts_public", True) is not False,
+                    "circle_sharing": "opt-in", "lockdown_radio": False}
+            total, each = stranger_budgets(self.raw.get("radio") or {})
+            vals.update(stranger_replies_per_hour=total[0], stranger_replies_per_radio_hour=each[0])
+            eff = {}
+        else:
+            info = posture_mod.read(self.path, self.raw)
+            eff = posture_mod.effective(info["level"], self.raw, settings)
+            vals = posture_mod.values(eff)
+        with self.lock:
+            changed = vals != self.vals or info.get("level") != self.level
+            self._sig, self.info, self.eff, self.vals = sig, info, eff, vals
+            self.level = info.get("level", "guarded")
+        return changed
+
+    def value(self, knob: str, default=None):
+        with self.lock:
+            return self.vals.get(knob, default)
+
+    def commands(self) -> dict[str, str]:
+        cmds = self.value("mesh_commands") or {}
+        return {"!" + k: v for k, v in cmds.items()} if isinstance(cmds, dict) else dict(DEFAULT_ACCESS)
+
+    def silence(self) -> tuple[bool, bool]:
+        return bool(self.value("radio_silence", False)), bool(self.value("silent_allow_family", True))
+
+    def sharing(self) -> bool:
+        return self.value("circle_sharing", "opt-in") != "none"
+
+
+# The radio itself in Lockdown. Meshtastic Config.DeviceConfig.Role: CLIENT = 0, CLIENT_MUTE = 1 (receives and
+# sends its own messages, never repeats others'). Broadcast intervals are seconds; 0 means "the firmware default"
+# (not "off"), so "off" is the largest value the field takes.
+ROLE_CLIENT_MUTE = 1
+NEVER = 4294967295                       # UINT32 max: "as rarely as the firmware allows"
+LOCKDOWN_RADIO = (
+    ("device", "role", ROLE_CLIENT_MUTE),                         # no rebroadcasting of other people's packets
+    ("device", "node_info_broadcast_secs", NEVER),                # no "here I am, my names are …" announcements
+    ("position", "position_broadcast_secs", NEVER),               # no position broadcasts
+    ("position", "position_broadcast_smart_enabled", False),
+    ("telemetry", "device_update_interval", NEVER),               # no battery / airtime telemetry
+    ("telemetry", "environment_update_interval", NEVER),
+    ("telemetry", "power_update_interval", NEVER),
+    ("telemetry", "air_quality_interval", NEVER),
+    ("neighbor_info", "enabled", False),                          # no lists of the radios it hears
+)
+
+
+def _config_section(node, section: str):
+    for holder in ("localConfig", "moduleConfig"):
+        obj = getattr(getattr(node, holder, None), section, None)
+        if obj is not None:
+            return obj
+    return None
+
+
+def _write_sections(node, sections: list[str]) -> None:
+    """writeConfig for each section, in one settings transaction where the library has one (one reboot)."""
+    begin, commit = getattr(node, "beginSettingsTransaction", None), getattr(node, "commitSettingsTransaction", None)
+    tx = callable(begin) and callable(commit) and len(sections) > 1
+    if tx:
+        begin()
+    try:
+        for sec in sections:
+            node.writeConfig(sec)
+    finally:
+        if tx:
+            commit()
+
+
+def apply_lockdown_radio(iface, saved_path: Path) -> dict:
+    """Lockdown: mute the radio (LOCKDOWN_RADIO). The settings it had are saved first (saved_path, 0640; kept
+    until restored), so leaving Lockdown puts them back. Idempotent (a second call writes nothing); a setting
+    the radio/library doesn't have is skipped and reported; never raises."""
+    res = {"applied": [], "skipped": [], "error": None}
+    try:
+        node = iface.localNode
+        saved = read_json(saved_path, None)
+        saved = saved if isinstance(saved, dict) and isinstance(saved.get("old"), dict) else None
+        old = saved["old"] if saved else {}
+        sections: list[str] = []
+        for sec, field, want in LOCKDOWN_RADIO:
+            obj = _config_section(node, sec)
+            if obj is None or not hasattr(obj, field):
+                res["skipped"].append(f"{sec}.{field}")
+                continue
+            cur = getattr(obj, field)
+            if isinstance(cur, bool) or isinstance(cur, int):
+                cur = bool(cur) if isinstance(want, bool) else int(cur)
+            if saved is None or f"{sec}.{field}" not in old:
+                old[f"{sec}.{field}"] = cur
+            if cur != want:
+                setattr(obj, field, want)
+                res["applied"].append(f"{sec}.{field}={want}")
+                if sec not in sections:
+                    sections.append(sec)
+        if saved is None or old != saved.get("old"):
+            # saved BEFORE writing: whatever happens next, leaving Lockdown can restore these
+            atomic_json(saved_path, {"v": 1, "old": old, "at": time.time()}, 0o640)
+        if sections:
+            _write_sections(node, sections)
+        res["note"] = ("radio muted: " + ", ".join(res["applied"])) if res["applied"] else "radio already muted"
+    except Exception as e:  # noqa: BLE001 — an unsupported radio/library: leave it, say so
+        res["error"] = f"{type(e).__name__}: {e}"[:200]
+        res["note"] = f"radio not muted ({res['error']})"
+    return res
+
+
+def restore_radio(iface, saved_path: Path) -> dict:
+    """Leaving Lockdown: the settings saved by apply_lockdown_radio go back; the saved file is removed once
+    written. Nothing saved: nothing to do. Never raises."""
+    res = {"restored": [], "error": None}
+    saved = read_json(saved_path, None)
+    old = saved.get("old") if isinstance(saved, dict) else None
+    if not isinstance(old, dict):
+        res["note"] = "nothing to restore"
+        return res
+    try:
+        node = iface.localNode
+        sections: list[str] = []
+        for key, val in list(old.items())[:32]:
+            sec, _, field = str(key).partition(".")
+            if (sec, field) not in {(a, b) for a, b, _ in LOCKDOWN_RADIO}:
+                continue                             # only what we changed, never a field named in a damaged file
+            if isinstance(val, bool) or (isinstance(val, int) and 0 <= val <= NEVER):
+                obj = _config_section(node, sec)
+                if obj is None or not hasattr(obj, field):
+                    continue
+                if getattr(obj, field) != val:
+                    setattr(obj, field, val)
+                    res["restored"].append(f"{key}={val}")
+                    if sec not in sections:
+                        sections.append(sec)
+        if sections:
+            _write_sections(node, sections)
+        saved_path.unlink(missing_ok=True)
+        res["note"] = ("radio settings restored: " + ", ".join(res["restored"])) if res["restored"] \
+            else "radio settings were already back"
+    except Exception as e:  # noqa: BLE001
+        res["error"] = f"{type(e).__name__}: {e}"[:200]
+        res["note"] = f"radio settings not restored yet ({res['error']}); will try again"
+    return res
+
+
+# ─────────────────────────────── channel links ───────────────────────────────
+# A Meshtastic channel link is https://meshtastic.org/e/#<base64url(ChannelSet protobuf)>. The trusted circle's
+# link holds ONLY the circle channel (name + key, position precision 0), never the family channel or LoRa
+# settings, so we encode/decode the few protobuf fields ourselves (no library needed, testable anywhere):
+#   ChannelSet:      1 settings (ChannelSettings, repeated) · 2 lora_config (ignored)
+#   ChannelSettings: 1 channel_num · 2 psk · 3 name · 4 id (fixed32) · 5 uplink · 6 downlink · 7 module_settings
+#   ModuleSettings:  1 position_precision · 2 is_client_muted
+LINK_PREFIX = "https://meshtastic.org/e/#"
+LINK_MAX = 1000
+
+
+def _pb_varint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        out.append(b | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
+
+def _pb_field(num: int, wire: int, payload: bytes | int) -> bytes:
+    key = _pb_varint((num << 3) | wire)
+    if wire == 0:
+        return key + _pb_varint(int(payload))
+    return key + _pb_varint(len(payload)) + bytes(payload)
+
+
+def _pb_parse(b: bytes, depth: int = 0) -> list[tuple[int, int, object]]:
+    """[(field, wire, value)] — raises ValueError on anything malformed."""
+    if depth > 3:
+        raise ValueError("too deep")
+    out, i = [], 0
+    while i < len(b):
+        key, i = _pb_read_varint(b, i)
+        num, wire = key >> 3, key & 7
+        if num == 0:
+            raise ValueError("field 0")
+        if wire == 0:
+            v, i = _pb_read_varint(b, i)
+        elif wire == 2:
+            n, i = _pb_read_varint(b, i)
+            if i + n > len(b):
+                raise ValueError("truncated")
+            v, i = b[i:i + n], i + n
+        elif wire == 5:
+            if i + 4 > len(b):
+                raise ValueError("truncated")
+            v, i = b[i:i + 4], i + 4
+        elif wire == 1:
+            if i + 8 > len(b):
+                raise ValueError("truncated")
+            v, i = b[i:i + 8], i + 8
+        else:
+            raise ValueError("wire type")
+        out.append((num, wire, v))
+        if len(out) > 64:
+            raise ValueError("too many fields")
+    return out
+
+
+def _pb_read_varint(b: bytes, i: int) -> tuple[int, int]:
+    n = shift = 0
+    while True:
+        if i >= len(b) or shift > 63:
+            raise ValueError("bad varint")
+        c = b[i]
+        i += 1
+        n |= (c & 0x7F) << shift
+        shift += 7
+        if not c & 0x80:
+            return n, i
+
+
+def channel_link(name: str, psk: bytes) -> str:
+    """A link with exactly one channel: `name`, key `psk`, position precision 0 (no position on it)."""
+    cs = _pb_field(2, 2, bytes(psk)) + _pb_field(3, 2, str(name).encode()[:11]) + _pb_field(7, 2, _pb_field(1, 0, 0))
+    raw = _pb_field(1, 2, cs)
+    return LINK_PREFIX + base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def parse_channel_link(url) -> list[dict]:
+    """[{"name", "psk"}] from a meshtastic.org/e/ link (also …/e/?add=true#…). ValueError if it isn't one."""
+    if not isinstance(url, str) or len(url) > LINK_MAX:
+        raise ValueError("not a channel link")
+    url = url.strip()
+    m = re.fullmatch(r"https://meshtastic\.org/e/(?:\?[A-Za-z0-9=&_-]{0,40})?#([A-Za-z0-9_-]{4,900}={0,2})", url)
+    if not m:
+        raise ValueError("not a Meshtastic channel link (https://meshtastic.org/e/#…)")
+    frag = m.group(1).rstrip("=")
+    try:
+        raw = base64.urlsafe_b64decode(frag + "=" * (-len(frag) % 4))
+    except (ValueError, TypeError) as e:
+        raise ValueError("the link is damaged") from e
+    out = []
+    for num, wire, v in _pb_parse(raw):
+        if num != 1 or wire != 2:
+            continue
+        name, psk = "", b""
+        for f, w, x in _pb_parse(v, 1):
+            if f == 2 and w == 2:
+                psk = bytes(x)
+            elif f == 3 and w == 2:
+                name = clean(bytes(x).decode("utf-8", "replace"), 11)
+        out.append({"name": name, "psk": psk})
+        if len(out) >= 8:
+            break
+    if not out:
+        raise ValueError("the link holds no channel")
+    return out
+
+
+def _channels(iface) -> list:
+    return list(getattr(iface.localNode, "channels", None) or [])
+
+
+def _psk_of(ch) -> bytes:
+    try:
+        return bytes(ch.settings.psk)
+    except Exception:  # noqa: BLE001
+        return b""
+
+
+def save_circle_link(iface, ch: int, path: Path) -> str | None:
+    """The circle channel's own link (only that channel) where members and the front panel see it (0600, RAM)."""
+    try:
+        chans = _channels(iface)
+        if not 0 < ch < len(chans) or int(getattr(chans[ch], "role", 0) or 0) == 0:
+            path.unlink(missing_ok=True)
+            return None
+        psk = _psk_of(chans[ch])
+        if len(psk) < 16:
+            return None
+        url = channel_link(getattr(chans[ch].settings, "name", "") or "", psk)
+        _private_file(path, state_bytes(path, {"url": url, "channel": ch, "at": time.time()}), 0o600)
+        return url
+    except Exception as e:  # noqa: BLE001
+        print(f"meshbridge: cannot save the circle link: {type(e).__name__}", file=sys.stderr)
+        return None
+
+
+def _set_channel(iface, ch: int, name: str, psk: bytes, enabled: bool = True) -> None:
+    node = iface.localNode
+    c = _channels(iface)[ch]
+    c.settings.psk = psk if enabled else b""
+    if hasattr(c.settings, "name"):
+        c.settings.name = name if enabled else ""
+    ms = getattr(c.settings, "module_settings", None)
+    if ms is not None and hasattr(ms, "position_precision"):
+        ms.position_precision = 0                    # never a position on the circle channel
+    for flag in ("uplink_enabled", "downlink_enabled"):
+        if hasattr(c.settings, flag):
+            setattr(c.settings, flag, False)         # never bridged to MQTT / the internet
+    c.role = 2 if enabled else 0                     # SECONDARY / DISABLED
+    node.writeChannel(ch)
+
+
+CIRCLE_NAME_RE = re.compile(r"^[A-Za-z0-9 ._-]{1,11}$")
+
+
+def circle_slot(cfg: dict, family_ch: int, public_ch: int, slot_path: Path | None) -> int:
+    """The circle's channel: [radio] mesh_circle_channel if set (1–7), else the one the bridge picked when the
+    circle was created or joined (mesh-circle-slot.json), else -1."""
+    ch = circle_channel(cfg, family_ch, public_ch)
+    if ch > 0:
+        return ch
+    d = read_json(slot_path, None) if slot_path is not None else None
+    v = d.get("ch") if isinstance(d, dict) else None
+    if isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 7 and v not in (family_ch, public_ch):
+        return v
+    return -1
+
+
+def _free_slot(iface, family_ch: int, public_ch: int) -> int:
+    chans = _channels(iface)
+    for i in range(1, min(8, len(chans))):
+        if i in (family_ch, public_ch):
+            continue
+        try:
+            if int(getattr(chans[i], "role", 0) or 0) == 0:
+                return i
+        except (TypeError, ValueError):
+            continue
+    return -1
+
+
+def circle_op(iface, req: dict, *, cfg: dict, family_ch: int, public_ch: int, slot_path: Path,
+              link_path: Path, rng=os.urandom) -> dict:
+    """One circle operation on the radio: create (a fresh 256-bit key), join (a link someone showed you),
+    rotate (a fresh key, same name: re-share it in person with the households you still trust), leave.
+    Also "rename": a neutral long/short name for the radio. Returns a result WITHOUT any key; the link
+    goes to link_path (0600, RAM). Raises ValueError with a plain message when it can't be done."""
+    op = req.get("op")
+    if op == "rename":
+        num = node_num(req.get("my_id")) or 0
+        tail = f"{num & 0xFFFF:04x}" if num else secrets.token_hex(2)
+        long_name, short_name = f"Meshtastic {tail}", tail      # what thousands of untouched radios are called
+        iface.localNode.setOwner(long_name=long_name, short_name=short_name)
+        return {"op": op, "long_name": long_name, "short_name": short_name}
+    chans = _channels(iface)
+    cur = circle_slot(cfg, family_ch, public_ch, slot_path)
+    if op in ("create", "join"):
+        if op == "create":
+            name = clean(req.get("name"), 11) or "Circle"
+            if not CIRCLE_NAME_RE.match(name):
+                raise ValueError("a circle name is 1–11 letters, digits, spaces, dots or dashes")
+            psk = bytes(rng(32))
+        else:
+            chs = parse_channel_link(req.get("url"))
+            name, psk = chs[0]["name"] or "Circle", chs[0]["psk"]
+            if len(psk) not in (16, 32):
+                raise ValueError("that link's channel has no private key (or a well-known default one): "
+                                 "it is not private, so it can't be a trusted circle")
+            for other in (family_ch, public_ch):
+                if 0 <= other < len(chans) and _psk_of(chans[other]) == psk:
+                    raise ValueError("that link is for a channel you already use (family or public), not a circle")
+        ch = cur if cur > 0 else _free_slot(iface, family_ch, public_ch)
+        if ch <= 0 or ch >= len(chans):
+            raise ValueError("the radio has no free channel for a circle (it has 8: free one in the Meshtastic app)")
+        if ch in (family_ch, public_ch):
+            raise ValueError("the circle can't share the family or the public channel")
+        _set_channel(iface, ch, name, psk)
+        atomic_json(slot_path, {"ch": ch, "at": time.time()}, 0o640)
+        save_circle_link(iface, ch, link_path)
+        return {"op": op, "channel": ch, "name": name}
+    if cur <= 0 or cur >= len(chans):
+        raise ValueError("this Badger isn't in a circle")
+    if op == "rotate":
+        name = getattr(chans[cur].settings, "name", "") or "Circle"
+        _set_channel(iface, cur, name, bytes(rng(32)))
+        save_circle_link(iface, cur, link_path)
+        return {"op": op, "channel": cur, "name": name}
+    if op == "leave":
+        _set_channel(iface, cur, "", b"", enabled=False)
+        if slot_path is not None:
+            slot_path.unlink(missing_ok=True)
+        link_path.unlink(missing_ok=True)
+        return {"op": op, "channel": cur}
+    raise ValueError("unknown radio operation")
+
+
+_handled_radio: collections.OrderedDict = collections.OrderedDict()
+
+
+def handle_radio_request(iface, req_path: Path, res_path: Path, run) -> dict | None:
+    """The portal's radio requests (circle create/join/rotate/leave, rename), with the family key change's
+    failsafes: acted on once (even if the file can't be deleted), never when older than ROTATE_TTL s, the
+    request file removed before acting. run(req) does the work and returns the result (or raises)."""
+    try:
+        st = req_path.stat()
+    except OSError:
+        return None
+    req = read_json(req_path, None, limit=8192)
+    if not isinstance(req, dict) or not isinstance(req.get("id"), str):
+        try:
+            req_path.unlink()
+        except OSError:
+            pass
+        return None
+    rid = req["id"][:32]
+    sig = f"{rid}:{st.st_ino}:{st.st_mtime_ns}:{st.st_size}"
+    prev = read_json(res_path, None)
+    try:
+        req_path.unlink()
+    except OSError as e:
+        print(f"meshbridge: cannot remove the radio request ({e}); acting on it once only", file=sys.stderr)
+    if sig in _handled_radio or (isinstance(prev, dict) and prev.get("req") == sig):
+        return None
+    _handled_radio[sig] = True
+    while len(_handled_radio) > 200:
+        _handled_radio.popitem(last=False)
+    now = time.time()
+    at = _num(req.get("at"))
+    op = req.get("op") if isinstance(req.get("op"), str) else "?"
+    if at is None or abs(now - at) > ROTATE_TTL:
+        res = {"id": rid, "op": op[:12], "ok": False, "at": now, "req": sig,
+               "error": "the request was too old (the radio bridge was away); nothing changed"}
+    else:
+        try:
+            res = {"id": rid, "ok": True, "at": time.time(), **run(req)}
+            print(f"meshbridge: radio request {op[:12]} done", file=sys.stderr)
+        except ValueError as e:
+            res = {"id": rid, "op": op[:12], "ok": False, "error": str(e)[:300], "at": time.time()}
+        except Exception as e:  # noqa: BLE001 — a radio/library error: report it
+            res = {"id": rid, "op": op[:12], "ok": False, "error": f"the radio said: {type(e).__name__}: {e}"[:300],
+                   "at": time.time()}
+            print(f"meshbridge: radio request {op[:12]} failed: {e}", file=sys.stderr)
+    res["req"] = sig
+    atomic_json(res_path, res, 0o600)
+    return res
+
+
+# ─────────────────────────────── trusted circle ──────────────────────────────
+# A circle = a private channel (own key) shared in person between vetted households (docs/features/circles.md).
+# Hard rules, enforced here:
+#   * records stay on their origin Badger; peers get POINTERS only ("power: can fix generators — ask Elm St"),
+#     never a location, never an amount, never a list or a count;
+#   * PULL, not push: a circle radio asks ("!help power" on the circle channel, or a sealed query packet from
+#     another Badger); this Badger answers only that requester (a direct message / unicast), after a random
+#     wait, within budgets, and logs it; sweeps (several topics, "all", "inventory" …) are refused and flagged;
+#   * only categories the owner opted in; nothing at all in Lockdown; blocked radios get nothing;
+#   * only on the circle channel; packets sealed with a key from the circle's own secret, padded.
+CIRCLE_TOPICS = ("power", "water", "food", "medical", "shelter", "tools", "comms", "transport", "childcare",
+                 "aid", "missing", "other")
+CIRCLE_CATEGORIES = ("skills", "resources", "aid", "missing")
+SWEEP_WORDS = frozenset({"all", "everything", "*", "any", "anything", "list", "inventory", "stock", "stocks",
+                         "supplies", "everyone", "everybody", "total", "count", "how", "much", "many", "who", "where",
+                         "what", "map", "addresses", "address"})
+CIRCLE_PER_REQUESTER = (3, 3600.0)       # answers to one radio per hour
+CIRCLE_TOTAL = (10, 3600.0)              # answers to everyone per hour
+CIRCLE_TOPIC_REPEAT = 1800.0             # the same radio, the same topic: once per 30 min
+CIRCLE_SWEEP = (4, 3600.0)               # more distinct topics than this from one radio in an hour = a sweep
+CIRCLE_SEEN = (20, 600.0)                # queries from one radio we even look at, per 10 min
+CIRCLE_ASKS = (6, 3600.0)                # our own queries per hour
+CIRCLE_DELAY = (2.0, 10.0)               # an answer waits this long (random): no instant, trackable reply
+CIRCLE_ANSWER_TTL = 24 * 3600            # answers we got are forgotten after a day
+CIRCLE_V = 1
+CQ_QUERY, CQ_ANSWER = 1, 2
+CIRCLE_MIN, CIRCLE_MAX = 24, 200         # sealed circle packets are padded to a random length in this range
+CIRCLE_TEXT_MAX = 150
+
+
+def circle_key(secret: bytes | None) -> bytes:
+    raw = bytes(secret) if isinstance(secret, (bytes, bytearray)) and len(secret) >= 16 else _FALLBACK_SECRET
+    return hmac.new(raw, b"trusted circle pointers v1", hashlib.sha256).digest()
+
+
+def _cks(key: bytes, nonce: bytes, n: int) -> bytes:
+    out, i = b"", 0
+    while len(out) < n:
+        out += hmac.new(key, b"s" + nonce + bytes([i]), hashlib.sha256).digest()
+        i += 1
+    return out[:n]
+
+
+def circle_seal(body: bytes, key: bytes, rng=None) -> bytes:
+    rng = rng or _SYSRNG
+    nonce = rng.randbytes(6)
+    head = nonce + hmac.new(key, b"m" + nonce + body, hashlib.sha256).digest()[:8] + \
+        bytes(a ^ b for a, b in zip(body, _cks(key, nonce, len(body)), strict=True))
+    n = int(round(rng.lognormvariate(math.log(48.0), 0.5)))
+    want = max(len(head), CIRCLE_MIN, min(CIRCLE_MAX, n))
+    return head + rng.randbytes(want - len(head))
+
+
+def circle_query(qid: bytes, topic: str, key: bytes, rng=None) -> bytes:
+    return circle_seal(bytes([CIRCLE_V, CQ_QUERY]) + bytes(qid[:4]).ljust(4, b"\0") +
+                       bytes([CIRCLE_TOPICS.index(topic)]), key, rng)
+
+
+def circle_answer(qid: bytes, text: str, key: bytes, rng=None) -> bytes:
+    t = fit(text, CIRCLE_TEXT_MAX).encode()
+    return circle_seal(bytes([CIRCLE_V, CQ_ANSWER]) + bytes(qid[:4]).ljust(4, b"\0") + bytes([len(t)]) + t, key, rng)
+
+
+def circle_open(payload, key: bytes) -> dict | None:
+    """A sealed circle packet → {"type": "query", "qid", "topic"} | {"type": "answer", "qid", "text"}; None for
+    anything else (another key, garbled, a courtesy packet, oversized)."""
+    if isinstance(payload, str):
+        try:
+            payload = base64.b64decode(payload, validate=True) if len(payload) <= 2 * CIRCLE_MAX else b""
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+        return None
+    b = bytes(payload)
+    if not 14 + 7 <= len(b) <= CIRCLE_MAX + 20:
+        return None
+    nonce, mac, enc = b[:6], b[6:14], b[14:]
+    ks = _cks(key, nonce, min(len(enc), 7 + 255))
+    head = bytes(x ^ y for x, y in zip(enc[:7], ks, strict=False))
+    if len(head) < 7 or head[0] != CIRCLE_V or head[1] not in (CQ_QUERY, CQ_ANSWER):
+        return None
+    n = 7 if head[1] == CQ_QUERY else 7 + head[6]
+    if head[1] == CQ_ANSWER and (head[6] > CIRCLE_TEXT_MAX or len(enc) < n):
+        return None
+    body = bytes(x ^ y for x, y in zip(enc[:n], ks, strict=False))
+    if len(body) < n or not hmac.compare_digest(mac, hmac.new(key, b"m" + nonce + body, hashlib.sha256).digest()[:8]):
+        return None
+    qid = body[2:6]
+    if body[1] == CQ_QUERY:
+        if body[6] >= len(CIRCLE_TOPICS):
+            return None
+        return {"type": "query", "qid": qid, "topic": CIRCLE_TOPICS[body[6]]}
+    return {"type": "answer", "qid": qid, "text": clean(body[7:n].decode("utf-8", "replace"), CIRCLE_TEXT_MAX)}
+
+
+def circle_conf(raw) -> dict:
+    """The portal's circle settings for the bridge (features/circles/bridge.json), validated: anything odd is
+    dropped, never trusted. {"name", "share": {category: bool}, "offers": [...], "blocked": set()}."""
+    raw = raw if isinstance(raw, dict) else {}
+    name = clean(raw.get("name"), 24)
+    share = raw.get("share") if isinstance(raw.get("share"), dict) else {}
+    offers = []
+    now = time.time()
+    for o in (raw.get("offers") if isinstance(raw.get("offers"), list) else [])[:200]:
+        if not isinstance(o, dict) or o.get("category") not in CIRCLE_CATEGORIES or o.get("topic") not in CIRCLE_TOPICS:
+            continue
+        exp = _num(o.get("expires"))
+        if exp is not None and exp < now:
+            continue
+        offers.append({"category": o["category"], "topic": o["topic"], "text": clean(o.get("text"), 80),
+                       "at": _num(o.get("at")) or 0})
+    blocked = {b.lower() for b in (raw.get("blocked") if isinstance(raw.get("blocked"), list) else [])[:500]
+               if isinstance(b, str) and NODE_RE.match(b.lower())}
+    return {"name": name, "share": {c: share.get(c) is True for c in CIRCLE_CATEGORIES}, "offers": offers,
+            "blocked": blocked}
+
+
+def pointer_text(offer: dict, name: str) -> str:
+    """What a circle peer is told: the topic, the offer's short text, and this Badger's chosen circle name."""
+    who = name or "us"
+    if offer.get("text"):
+        return fit(f"{offer['topic']}: {offer['text']} — ask {who}", CIRCLE_TEXT_MAX)
+    return fit(f"Someone can help with {offer['topic']} — ask {who}", CIRCLE_TEXT_MAX)
+
+
+class CircleService:
+    """The circle protocol on one Badger. channel() → the circle channel (or -1); key() → the sealing key;
+    send_text(text, dest, ch) / send_data(payload, ch, dest) → bool; conf() → circle_conf(); sharing() → False in
+    Lockdown. Thread-safe; sends happen from tick() (answers wait CIRCLE_DELAY first)."""
+
+    def __init__(self, channel, key, send_text, send_data, clock, rng=None, conf=None, sharing=None, my_id=None):
+        self.channel, self.key = channel, key
+        self.send_text, self.send_data, self.clock = send_text, send_data, clock
+        self.rng = rng or random.SystemRandom()
+        self.conf = conf or (lambda: circle_conf({}))
+        self.sharing = sharing or (lambda: True)
+        self.my_id = my_id.strip().lower() if isinstance(my_id, str) and my_id.strip() else None
+        self.lock = threading.Lock()
+        self.log: collections.deque = collections.deque(maxlen=200)
+        self.flags: collections.deque = collections.deque(maxlen=50)
+        self.answers: collections.deque = collections.deque(maxlen=50)
+        self.asks: collections.OrderedDict = collections.OrderedDict()     # qid → {"topic", "at", "from_ids"}
+        self.ask_times: collections.deque = collections.deque()
+        self.answered: dict[str, collections.deque] = {}                   # requester → answer times
+        self.total: collections.deque = collections.deque()
+        self.topic_last: dict[tuple, float] = {}
+        self.topics_seen: dict[str, collections.deque] = {}                # requester → (t, topic)
+        self.seen: dict[str, collections.deque] = {}
+        self.due: list = []                                                 # (t, fn)
+        self.dirty = True
+
+    # — helpers (lock held) —
+    def _note(self, sender: str, topic: str, result: str, via: str, now: float) -> None:
+        self.log.append({"at": now, "from": sender, "topic": topic, "result": result, "via": via})
+        self.dirty = True
+
+    @staticmethod
+    def _window(d: collections.deque, now: float, win: float) -> None:
+        while d and now - (d[0][0] if isinstance(d[0], tuple) else d[0]) > win:
+            d.popleft()
+
+    def _requester(self, packet) -> str | None:
+        sid = packet.get("fromId") if isinstance(packet, dict) else None
+        sid = sid.strip().lower() if isinstance(sid, str) else ""
+        if not NODE_RE.match(sid):
+            num = node_num(packet.get("from")) if isinstance(packet, dict) else None
+            sid = f"!{num:08x}" if num else ""
+        return sid or None
+
+    def _decide(self, sender: str, words: list[str], via: str) -> tuple[str, dict | None]:
+        """("answer", offer) or (reason, None). Applies every rule and the budgets (charging them on "answer")."""
+        now = self.clock()
+        conf = self.conf()
+        topic = words[0] if len(words) == 1 else " ".join(words)[:30]
+        if sender in conf["blocked"]:
+            return "refused: blocked", None
+        seen = self.seen.setdefault(sender, collections.deque())
+        self._window(seen, now, CIRCLE_SEEN[1])
+        if len(seen) >= CIRCLE_SEEN[0]:
+            return "ignored: flood", None
+        seen.append(now)
+        if not self.sharing():
+            return "refused: Lockdown", None
+        if len(words) != 1 or words[0] in SWEEP_WORDS:
+            self.flags.append({"at": now, "from": sender, "what": "asked for everything at once: " + topic,
+                               "via": via})
+            return "refused: sweep (flagged)", None
+        topic = words[0]
+        if topic not in CIRCLE_TOPICS:
+            return "unknown topic", None
+        ts = self.topics_seen.setdefault(sender, collections.deque())
+        self._window(ts, now, CIRCLE_SWEEP[1])
+        ts.append((now, topic))
+        if len({t for _, t in ts}) > CIRCLE_SWEEP[0]:
+            self.flags.append({"at": now, "from": sender, "what": f"asked about {len({t for _, t in ts})} different "
+                               "things in an hour", "via": via})
+            return "refused: sweep (flagged)", None
+        offer = None
+        for o in sorted(conf["offers"], key=lambda o: -o["at"]):
+            if o["topic"] == topic and conf["share"].get(o["category"]):
+                offer = o
+                break
+        if offer is None:
+            return "nothing to offer", None              # (silence: a "no" would tell them something too)
+        if now - self.topic_last.get((sender, topic), -1e18) < CIRCLE_TOPIC_REPEAT:
+            return "refused: asked again too soon", None
+        mine = self.answered.setdefault(sender, collections.deque())
+        self._window(mine, now, CIRCLE_PER_REQUESTER[1])
+        self._window(self.total, now, CIRCLE_TOTAL[1])
+        if len(mine) >= CIRCLE_PER_REQUESTER[0] or len(self.total) >= CIRCLE_TOTAL[0]:
+            return "refused: budget", None
+        mine.append(now)
+        self.total.append(now)
+        self.topic_last[(sender, topic)] = now
+        for d in (self.answered, self.seen, self.topics_seen):
+            if len(d) > 1000:
+                for k in [k for k, q in d.items() if not q]:
+                    del d[k]
+        if len(self.topic_last) > 2000:
+            for k in [k for k, t in self.topic_last.items() if now - t > CIRCLE_TOPIC_REPEAT]:
+                del self.topic_last[k]
+        return "answer", offer
+
+    def _schedule(self, fn) -> None:
+        self.due.append((self.clock() + self.rng.uniform(*CIRCLE_DELAY), fn))
+
+    # — heard on the circle channel —
+    def heard_text(self, text, packet) -> bool:
+        """A text on the circle channel. "!help <topic>" is a query (answered by a direct message to that radio,
+        if at all); anything else isn't ours. True when it was a circle query (handled or refused)."""
+        ch = self.channel()
+        if ch <= 0 or not isinstance(packet, dict) or packet.get("channel") != ch or not isinstance(text, str):
+            return False
+        t = text.strip()
+        if t[:5].lower() != "!help":
+            return False
+        sender = self._requester(packet)
+        if sender is None or (self.my_id and sender == self.my_id):
+            return True
+        words = t[5:].lower().split()
+        if not words:
+            return True                                  # "!help" alone on the circle: nothing (no menu)
+        with self.lock:
+            why, offer = self._decide(sender, words[:6], "text")
+            self._note(sender, words[0][:20] if len(words) == 1 else "(several)", "answered" if offer else why, "text",
+                       self.clock())
+            if offer is not None:
+                msg = pointer_text(offer, self.conf()["name"])
+                self._schedule(lambda: self.send_text(msg, sender, ch))
+        return True
+
+    def heard_data(self, packet) -> bool:
+        """A PRIVATE_APP packet on the circle channel: a sealed query from another Badger (answered by unicast)
+        or an answer to one of our own queries. False for anything that isn't a circle packet."""
+        ch = self.channel()
+        if ch <= 0 or not isinstance(packet, dict) or packet.get("channel") != ch:
+            return False
+        dec = packet.get("decoded")
+        if not isinstance(dec, dict) or dec.get("portnum") not in ("PRIVATE_APP", PRIVATE_APP):
+            return False
+        key = self.key()
+        if not key:
+            return False
+        msg = circle_open(dec.get("payload"), key)
+        if msg is None:
+            return False
+        sender = self._requester(packet)
+        if sender is None or (self.my_id and sender == self.my_id):
+            return True
+        with self.lock:
+            now = self.clock()
+            if msg["type"] == "query":
+                why, offer = self._decide(sender, [msg["topic"]], "packet")
+                self._note(sender, msg["topic"], "answered" if offer else why, "packet", now)
+                if offer is not None:
+                    payload = circle_answer(msg["qid"], pointer_text(offer, self.conf()["name"]), key, self.rng)
+                    self._schedule(lambda: self.send_data(payload, ch, sender))
+                return True
+            ask = self.asks.get(bytes(msg["qid"]))
+            if ask is None or now - ask["at"] > 900 or sender in ask["from"] or sender in self.conf()["blocked"]:
+                return True                              # not ours, too late, a repeat or a blocked radio
+            ask["from"].add(sender)
+            self.answers.append({"at": now, "topic": ask["topic"], "from": sender, "text": msg["text"]})
+            self.dirty = True
+        return True
+
+    # — our own question to the circle —
+    def ask(self, topic: str) -> str | None:
+        """Ask the circle who can help with `topic` (broadcast, sealed, on the circle channel). Returns why not, or
+        None when sent."""
+        if topic not in CIRCLE_TOPICS:
+            return "unknown topic"
+        ch, key = self.channel(), self.key()
+        if ch <= 0 or not key:
+            return "not in a circle"
+        if not self.sharing():
+            return "Lockdown: nothing goes out to the circle"
+        with self.lock:
+            now = self.clock()
+            self._window(self.ask_times, now, CIRCLE_ASKS[1])
+            if len(self.ask_times) >= CIRCLE_ASKS[0]:
+                return "too many questions this hour"
+            self.ask_times.append(now)
+            qid = self.rng.randbytes(4)
+            self.asks[qid] = {"topic": topic, "at": now, "from": set()}
+            while len(self.asks) > 50:
+                self.asks.popitem(last=False)
+            payload = circle_query(qid, topic, key, self.rng)
+            self.dirty = True
+        return None if self.send_data(payload, ch, None) else "the radio didn't take it"
+
+    def tick(self) -> None:
+        now = self.clock()
+        with self.lock:
+            go = [fn for t, fn in self.due if t <= now]
+            self.due = [(t, fn) for t, fn in self.due if t > now]
+            while self.answers and now - self.answers[0]["at"] > CIRCLE_ANSWER_TTL:
+                self.answers.popleft()
+                self.dirty = True
+        for fn in go:
+            if not self.sharing():
+                continue                                 # Lockdown came meanwhile: nothing goes out
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001
+                print(f"meshbridge: circle answer not sent ({type(e).__name__})", file=sys.stderr)
+
+    def status(self) -> dict:
+        with self.lock:
+            self.dirty = False
+            return {"updated": self.clock(), "channel": self.channel(), "sharing": bool(self.sharing()),
+                    "log": list(self.log)[-100:], "flags": list(self.flags), "answers": list(self.answers),
+                    "asks": [{"topic": a["topic"], "at": a["at"], "answers": len(a["from"])} for a in self.asks.values()]}
+
+
+def read_asks(path: Path, seen: collections.OrderedDict, now: float) -> list[str]:
+    """New "ask the circle" requests from the portal ({"asks": [{"id", "topic", "at"}]}): topics, once each, none
+    older than 2 minutes."""
+    d = read_json(path, None, limit=16384)
+    out = []
+    for a in (d.get("asks") if isinstance(d, dict) and isinstance(d.get("asks"), list) else [])[:20]:
+        if not isinstance(a, dict) or not isinstance(a.get("id"), str) or a.get("topic") not in CIRCLE_TOPICS:
+            continue
+        at = _num(a.get("at"))
+        if at is None or not -30 <= now - at <= ROTATE_TTL or a["id"] in seen:
+            continue
+        seen[a["id"][:32]] = now
+        while len(seen) > 200:
+            seen.popitem(last=False)
+        out.append(a["topic"])
+    return out
+
+
 def circle_channel(cfg: dict, family_ch: int, public_ch: int) -> int:
-    """[radio] mesh_circle_channel: a private channel shared with neighbouring Badgers' owners (its own key),
-    used only for courtesy control packets. -1 = none (default); never 0, the public or the family channel."""
+    """[radio] mesh_circle_channel: a private channel shared with neighbouring Badgers' owners (its own key):
+    the trusted circle (pointers, pull queries) and courtesy control packets. -1 = none (default; the admin page
+    can still create or join a circle — the bridge then picks a free channel, see circle_slot); never 0, the
+    public or the family channel."""
     v = cfg.get("mesh_circle_channel", -1)
     if isinstance(v, bool) or not isinstance(v, int) or not -1 <= v <= 7:
         print(f"meshbridge: [radio] mesh_circle_channel = {v!r} is not a channel (1–7, -1 for none): not used",
@@ -2657,30 +3706,44 @@ def open_radio(factory, sleep=None, wait: float = 60.0, log=None, tries: int | N
 
 def main() -> int:
     global BOARD, FAMILY_BOARD, MEMBERS, OUTBOX, NODES, ALERTS, ROTATE_REQ, ROTATE_RES, CHANNEL_LINK, TELEMETRY, BT_PIN, PEERS
+    global CIRCLE_LINK, CIRCLE_STATUS, CIRCLE_ASK, RADIO_REQ, RADIO_RES, FAMILY_INBOX
     cfg_path = Path(os.environ.get("PREPPER_CONFIG", "/etc/prepper/prepper.toml"))
     raw = tomllib.loads(cfg_path.read_text()) if cfg_path.exists() else {}
     cfg, portal = raw.get("radio", {}), raw.get("portal", {})
+    run = Path(os.environ.get("PREPPER_RUN_DIR") or portal.get("run_dir") or RUN)       # RAM (tmpfs)
     BOARD = Path(os.environ.get("BOARD_FILE") or portal.get("board_file") or BOARD)
     FAMILY_BOARD = Path(os.environ.get("FAMILY_BOARD_FILE") or portal.get("family_board_file") or FAMILY_BOARD)
     MEMBERS = Path(os.environ.get("MEMBERS_FILE") or portal.get("members_file") or MEMBERS)
     OUTBOX = Path(os.environ.get("MESH_OUTBOX") or portal.get("mesh_outbox") or OUTBOX)
-    NODES = Path(os.environ.get("MESH_NODES") or portal.get("mesh_nodes") or NODES)
-    TELEMETRY = Path(os.environ.get("MESH_TELEMETRY") or portal.get("mesh_telemetry") or TELEMETRY)
+    NODES = Path(os.environ.get("MESH_NODES") or portal.get("mesh_nodes") or run / NODES.name)
+    TELEMETRY = Path(os.environ.get("MESH_TELEMETRY") or portal.get("mesh_telemetry") or run / TELEMETRY.name)
+    FAMILY_INBOX = Path(portal.get("family_inbox") or run / FAMILY_INBOX.name)
     ALERTS = Path(os.environ.get("ALERTS_FILE") or portal.get("alerts_file") or ALERTS)
     ROTATE_REQ = Path(portal.get("mesh_rotate_request") or ROTATE_REQ)
     ROTATE_RES = Path(portal.get("mesh_rotate_result") or ROTATE_RES)
-    CHANNEL_LINK = Path(portal.get("mesh_channel_link") or CHANNEL_LINK)
-    BT_PIN = Path(portal.get("mesh_bt_pin_file") or BT_PIN)
-    PEERS = Path(os.environ.get("MESH_PEERS") or portal.get("mesh_peers") or OUTBOX.with_name("mesh-peers.json"))
+    CHANNEL_LINK = Path(portal.get("mesh_channel_link") or run / CHANNEL_LINK.name)
+    BT_PIN = Path(portal.get("mesh_bt_pin_file") or run / BT_PIN.name)
+    PEERS = Path(os.environ.get("MESH_PEERS") or portal.get("mesh_peers") or run / PEERS.name)
+    CIRCLE_LINK = Path(portal.get("mesh_circle_link") or run / CIRCLE_LINK.name)
+    CIRCLE_STATUS = Path(portal.get("circle_status_file") or run / CIRCLE_STATUS.name)
+    CIRCLE_ASK = Path(portal.get("circle_ask_file") or run / CIRCLE_ASK.name)
+    RADIO_REQ = Path(portal.get("mesh_radio_request") or OUTBOX.with_name(RADIO_REQ.name))
+    RADIO_RES = Path(portal.get("mesh_radio_result") or OUTBOX.with_name(RADIO_RES.name))
     pair_file = Path(portal.get("mesh_pair_file") or PAIR_FILE)
     silent_file = Path(os.environ.get("MESH_SILENT_FILE") or portal.get("mesh_silent_file")
                        or OUTBOX.with_name("mesh-silent"))
+    posture_file = Path(portal.get("posture_file") or OUTBOX.with_name("posture.json"))
+    slot_file = OUTBOX.with_name("mesh-circle-slot.json")
+    radio_saved = OUTBOX.with_name("mesh-radio-saved.json")      # the radio's own settings from before Lockdown
+    features_data = Path(portal.get("features_data") or OUTBOX.parent / "features")
+    circle_bridge_file = features_data / "circles" / "bridge.json"
     if cfg.get("mesh") == "off":
         return 0
+    RAM_DIRS[:] = [str(run)]
+    setup_sealer(raw, MEMBERS)
     family_ch, public_ch, notes = channel_config(cfg)
     for n in notes:
         print(f"meshbridge: {n}", file=sys.stderr)
-    alerts_public = cfg.get("mesh_alerts_public", True) is not False
     relay_alerts = cfg.get("mesh_alerts", True) is not False
     share_map = cfg.get("mesh_map", True) is not False
     try:
@@ -2693,10 +3756,15 @@ def main() -> int:
     BEAT.unlink(missing_ok=True)                     # "not connected" until a real node answers
     iface = open_radio(meshtastic.serial_interface.SerialInterface)
 
+    settings_file = Path(os.environ.get("PORTAL_SETTINGS") or portal.get("settings_file")
+                         or "/var/lib/prepper/portal/portal-settings.json")
+    clock = lambda: time.time()  # noqa: E731 — (tests swap the module's time)
+    pw = PostureWatch(raw, posture_file, settings_file, clock)
+    print(f"meshbridge: security posture {pw.info.get('label', pw.level)}"
+          + (" (posture file damaged: Lockdown until the admin sets it again)" if pw.info.get("damaged") else ""),
+          file=sys.stderr)
     send_lock = threading.Lock()
-    silence = Silence(silent_file, configured=cfg.get("mesh_silent") is True,
-                      allow_family=cfg.get("mesh_silent_allow_family", True) is not False,
-                      clock=lambda: time.time())
+    silence = Silence(silent_file, configured=False, clock=clock, posture=pw.silence)
     link = RadioLink(iface, send_lock, silence)
 
     def send(text: str, dest: str | None = None, channel: int | None = None) -> bool:
@@ -2722,16 +3790,19 @@ def main() -> int:
         except queue.Full:
             print("meshbridge: command queue full — a request was dropped", file=sys.stderr)
 
-    settings_file = Path(os.environ.get("PORTAL_SETTINGS") or portal.get("settings_file")
-                         or "/var/lib/prepper/portal/portal-settings.json")
     try:
         ai_cooldown = float(cfg.get("mesh_ai_cooldown_s", 120))
     except (TypeError, ValueError):
         ai_cooldown = 120.0
-    def access():                                    # re-read on every command: admin changes apply at once
-        s = read_json(settings_file, {})
-        return command_access(cfg, s.get("mesh_commands") if isinstance(s, dict) else None)
-    budget_all, budget_each = stranger_budgets(cfg)
+
+    def access():                                    # re-read on every command: admin/posture changes apply at once
+        pw.refresh()
+        return pw.commands()
+
+    def budgets():
+        return ((int(pw.value("stranger_replies_per_hour", STRANGER_BUDGET[0])), 3600.0),
+                (int(pw.value("stranger_replies_per_radio_hour", STRANGER_PER_RADIO[0])), 3600.0))
+    budget_all, budget_each = budgets()
     commands = Commands(send, ai_enabled=cfg.get("mesh_ai", True) is not False, ai_cooldown=ai_cooldown, io=io,
                         access=access, public_budget=budget_all, per_radio_budget=budget_each)
     try:
@@ -2742,7 +3813,6 @@ def main() -> int:
         my_num = getattr(getattr(iface, "myInfo", None), "my_node_num", None)
     except Exception:  # noqa: BLE001
         my_num = None
-    clock = lambda: time.time()  # noqa: E731 — (tests swap the module's time)
     load_cache = {"v": (None, None), "at": -1e18}
 
     def load():                                      # the radio's channel utilization, read once a minute
@@ -2753,30 +3823,55 @@ def main() -> int:
             load_cache.update(v=channel_load(iface), at=now)
     refresh_load(clock())
     # control packets: only on private channels whose own key the radio tells us (sealed with it)
-    ctrl_chs = [c for c in (family_ch, circle_channel(cfg, family_ch, public_ch)) if c > 0 and c != public_ch]
+    circle = {"ch": circle_slot(cfg, family_ch, public_ch, slot_file), "key": None}
+    ctrl_chs = [c for c in (family_ch, circle["ch"]) if c > 0 and c != public_ch]
     ctrl_keys: dict[int, bytes] = {}
 
-    def channel_key(c: int) -> bytes | None:
+    def channel_key(c: int, quiet: bool = False) -> bytes | None:
         with send_lock:
             state, secret = channel_secret(iface, c)
         if state == "weak":
-            print(f"meshbridge: channel {c} has no private key (or a well-known default one) — anyone can read it; "
-                  "no Badger control packets there. Give it its own key in the Meshtastic app", file=sys.stderr)
+            if not quiet:
+                print(f"meshbridge: channel {c} has no private key (or a well-known default one) — anyone can read "
+                      "it; no Badger control packets there. Give it its own key in the Meshtastic app", file=sys.stderr)
             return None
-        if state == "unknown":
+        if state == "unknown" and not quiet:
             print(f"meshbridge: can't read channel {c}'s key from the radio: control packets there use a fixed key",
                   file=sys.stderr)
         return ctrl_key(secret)
+
+    def circle_secret(c: int) -> bytes | None:
+        with send_lock:
+            state, secret = channel_secret(iface, c)
+        return secret if state == "ok" else None
     for c in list(ctrl_chs):
         k = channel_key(c)
         if k is None:
             ctrl_chs.remove(c)
         else:
             ctrl_keys[c] = k
+    if circle["ch"] > 0:
+        s = circle_secret(circle["ch"])
+        circle["key"] = circle_key(s) if s else None
     bridge = build_bridge(link, cfg=cfg, family_ch=family_ch, public_ch=public_ch, my_id=my_id, my_num=my_num,
                           commands=commands, members=MEMBERS, telemetry=TelemetryLog(TELEMETRY, family_ch, clock),
                           clock=clock, peers_file=PEERS, load=load, silence=silence, ctrl_chs=ctrl_chs,
                           ctrl_keys=ctrl_keys, rotation=ROTATE_RES, pair_file=pair_file)
+    conf_cache = {"sig": None, "conf": circle_conf({})}
+
+    def circle_settings() -> dict:
+        try:
+            st = circle_bridge_file.stat()
+            sig = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            sig = None
+        if sig != conf_cache["sig"]:
+            conf_cache.update(sig=sig, conf=circle_conf(read_json(circle_bridge_file, {}, limit=256_000)))
+        return conf_cache["conf"]
+    bridge.circle = CircleService(lambda: circle["ch"], lambda: circle["key"],
+                                  lambda text, dest, ch: link.text(text, dest, ch, hop_limit=bridge.hop_local),
+                                  lambda payload, ch, dest: link.data(payload, ch, hop_limit=bridge.hop_local, dest=dest),
+                                  clock, conf=circle_settings, sharing=pw.sharing, my_id=my_id)
     if silence.active():
         print("meshbridge: radio silence is on — receiving only", file=sys.stderr)
     if not bridge.courtesy.enabled:
@@ -2792,12 +3887,36 @@ def main() -> int:
     pub.subscribe(on_lost, "meshtastic.connection.lost")
     print("meshbridge: connected", file=sys.stderr)
     save_channel_link(iface, CHANNEL_LINK)
+    if circle["ch"] > 0:
+        save_circle_link(iface, circle["ch"], CIRCLE_LINK)
     if cfg.get("mesh_bt_pin", "secure") != "leave":
         secure_bt_pin(iface, BT_PIN)
-    with send_lock:                                  # the radio's own position on the public channel
-        pp = apply_position_privacy(iface, public_ch, cfg.get("mesh_public_position", "off"),
-                                    OUTBOX.with_name("mesh-position-applied.json"))
-    print(f"meshbridge: public position {pp['mode']}: {pp['note']}", file=sys.stderr)
+    radio_state = {"position": None, "lockdown": None, "note": "", "retry_at": 0.0}
+
+    def apply_posture(why: str) -> None:
+        """Bring the radio in line with the posture: the public position, and the radio's own mute in Lockdown
+        (restored after). Idempotent; called at start and whenever the effective settings change."""
+        commands.set_budgets(*(b[0] for b in budgets()))
+        pos = pw.value("public_position", "off")
+        if pos != radio_state["position"]:
+            with send_lock:                          # the radio's own position on the public channel
+                pp = apply_position_privacy(iface, public_ch, pos, OUTBOX.with_name("mesh-position-applied.json"))
+            print(f"meshbridge: public position {pp['mode']}: {pp['note']}", file=sys.stderr)
+            radio_state["position"] = pos
+        want = bool(pw.value("lockdown_radio", False))
+        if want != radio_state["lockdown"] or (want is False and radio_saved.exists()):
+            with send_lock:
+                r = apply_lockdown_radio(iface, radio_saved) if want else restore_radio(iface, radio_saved)
+            if r.get("applied") or r.get("restored") or r.get("error") or r.get("skipped"):
+                print(f"meshbridge: {why}: {r.get('note')}"
+                      + (f" (not supported here: {', '.join(r['skipped'])})" if r.get("skipped") else ""),
+                      file=sys.stderr)
+            radio_state["note"] = r.get("note", "") if want or r.get("restored") or r.get("error") else ""
+            if r.get("error"):
+                radio_state["retry_at"] = clock() + 60       # a radio that refused: try again in a minute
+            else:
+                radio_state["lockdown"] = want
+    apply_posture("posture " + pw.level)
     # Where we got to, kept next to the outbox: posts written while the bridge
     # was down (node unplugged, Pi rebooting) are still sent.
     outbox = Outbox(OUTBOX, family_ch, public_ch, send, clock, airtime=bridge.airtime, courtesy=bridge.courtesy,
@@ -2806,13 +3925,37 @@ def main() -> int:
     sent_alerts = read_json(sent_file, {})
     if not isinstance(sent_alerts, dict):
         sent_alerts = {}
-    last_snapshot, last_link, last_status = 0.0, time.time(), 0.0
+    last_snapshot, last_link, last_status, last_circle = 0.0, time.time(), 0.0, 0.0
+    asks_seen: collections.OrderedDict = collections.OrderedDict()
 
     def step(what, fn):
         try:
             fn()
         except Exception as e:  # noqa: BLE001 — a bad file or a radio hiccup: log, carry on next round
             print(f"meshbridge: {what} failed: {type(e).__name__}: {e}", file=sys.stderr)
+
+    def circle_changed(ch: int) -> None:
+        """The circle channel or its key changed (created, joined, re-keyed, left)."""
+        old = circle["ch"]
+        if old > 0 and old != ch:
+            bridge.courtesy.set_ctrl_key(old, None)
+        circle["ch"] = ch
+        s = circle_secret(ch) if ch > 0 else None
+        circle["key"] = circle_key(s) if s else None
+        if ch > 0:
+            bridge.courtesy.set_ctrl_key(ch, ctrl_key(s) if s else None)
+
+    def radio_request():
+        def run_op(req):
+            with send_lock:
+                res = circle_op(iface, dict(req, my_id=my_id), cfg=cfg, family_ch=family_ch, public_ch=public_ch,
+                                slot_path=slot_file, link_path=CIRCLE_LINK)
+            if res.get("op") in ("create", "join", "rotate"):
+                circle_changed(res.get("channel", -1))
+            elif res.get("op") == "leave":
+                circle_changed(-1)
+            return res
+        handle_radio_request(iface, RADIO_REQ, RADIO_RES, run_op)
 
     while True:
         if lost:
@@ -2827,28 +3970,44 @@ def main() -> int:
                 res = handle_rotation(iface, family_ch, ROTATE_REQ, ROTATE_RES, CHANNEL_LINK)
             if isinstance(res, dict) and res.get("ok") and family_ch > 0:
                 bridge.courtesy.set_ctrl_key(family_ch, channel_key(family_ch))   # sealed with the new secret
+            if isinstance(res, dict) and res.get("wipe") and circle["ch"] > 0:
+                circle_changed(circle["ch"])             # the circle got a new key too
         step("key change", rotation)
+        step("radio request", radio_request)
+        if pw.refresh():                             # the security posture (or an override) changed
+            print(f"meshbridge: security posture now {pw.info.get('label', pw.level)}", file=sys.stderr)
+            step("posture", lambda: apply_posture("posture " + pw.level))
+        elif now >= radio_state["retry_at"] and (radio_state["lockdown"] != bool(pw.value("lockdown_radio", False)) or (
+                not pw.value("lockdown_radio", False) and radio_saved.exists())):
+            step("posture", lambda: apply_posture("posture " + pw.level))      # a radio that refused: try again
 
         step("channel load", lambda now=now: refresh_load(now))
 
         # NOAA alerts → one relay per channel per alert on the whole mesh, remembered across restarts
         def alerts(now=now):
-            bridge.relay_alerts(read_json(ALERTS, []), sent_alerts, now, alerts_public)
+            bridge.relay_alerts(read_json(ALERTS, []), sent_alerts, now, bool(pw.value("alerts_public", True)))
             if bridge.alerts_dirty:
                 bridge.alerts_dirty = False
                 atomic_json(sent_file, sent_alerts)
         if relay_alerts:
             step("alerts", alerts)
         step("courtesy", bridge.tick)
+        step("circle", bridge.circle.tick)
+        for topic in read_asks(CIRCLE_ASK, asks_seen, now) if circle["ch"] > 0 else []:
+            why = bridge.circle.ask(topic)
+            print(f"meshbridge: asked the circle about {topic}" + (f" — not sent: {why}" if why else ""),
+                  file=sys.stderr)
         # positions → the offline map
         if share_map and now - last_snapshot >= 30:
             last_snapshot = now
-            step("map snapshot", lambda now=now: atomic_json(NODES, {"updated": now, "nodes": nodes_snapshot(
+            step("map snapshot", lambda now=now: write_state(NODES, {"updated": now, "nodes": nodes_snapshot(
                 dict(getattr(iface, "nodes", None) or {}), my_id, now)}))
         # the channel link, kept fresh (it changes when someone edits channels in the Meshtastic app)
         if now - last_link >= 600:
             last_link = now
             step("channel link", lambda: save_channel_link(iface, CHANNEL_LINK))
+            if circle["ch"] > 0:
+                step("circle link", lambda: save_circle_link(iface, circle["ch"], CIRCLE_LINK))
             if family_ch in bridge.courtesy.ctrl_chs:     # re-keyed in the Meshtastic app? follow it
                 step("channel key", lambda: bridge.courtesy.set_ctrl_key(family_ch, channel_key(family_ch)))
         # board posts marked "Send over mesh"
@@ -2856,8 +4015,31 @@ def main() -> int:
         # Badgers nearby + what the courtesy did, for the launcher's status line and the front panel
         if now - last_status >= 30:
             last_status = now
-            step("peers file", lambda now=now: atomic_json(PEERS, bridge.status_doc(now), 0o640))
+
+            def status_doc(now=now):
+                doc = bridge.status_doc(now)
+                doc["posture"] = {"level": pw.level, "radio": radio_state["note"]}
+                doc["radio_names"] = radio_names(iface, my_id)
+                write_state(PEERS, doc, 0o640)
+            step("peers file", status_doc)
+        if bridge.circle.dirty or now - last_circle >= 60:
+            last_circle = now
+            step("circle status", lambda: atomic_json(CIRCLE_STATUS, bridge.circle.status(), 0o640))
         time.sleep(1)
+
+
+def radio_names(iface, my_id) -> dict:
+    """The radio's own long and short name (for "what this Badger reveals"), from the node database."""
+    try:
+        info = iface.getMyNodeInfo() or {}
+        user = info.get("user") if isinstance(info, dict) else None
+    except Exception:  # noqa: BLE001
+        user = None
+    if not isinstance(user, dict):
+        n = (getattr(iface, "nodes", None) or {}).get(my_id) if my_id else None
+        user = n.get("user") if isinstance(n, dict) else {}
+    user = user if isinstance(user, dict) else {}
+    return {"long": clean(user.get("longName"), 40), "short": clean(user.get("shortName"), 8)}
 
 
 if __name__ == "__main__":
