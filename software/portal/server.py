@@ -1213,7 +1213,7 @@ def software_version() -> str:
     """The release in the repo's VERSION file (installed with the software), e.g. "0.4.0"."""
     try:
         v = (HERE.parent.parent / "VERSION").read_text().strip()
-        return v if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", v) else "unknown"
+        return v if re.fullmatch(r"[0-9]+(?:\.[0-9]+){2,3}(?:[-+][0-9A-Za-z.-]+)?", v) else "unknown"
     except OSError:
         return "unknown"
 

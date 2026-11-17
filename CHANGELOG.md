@@ -1,9 +1,11 @@
 # Changelog
 
-All notable changes to Honey Badger™. Versions follow `MAJOR.MINOR.PATCH`; the running version is in
+All notable changes to Honey Badger™. Versions follow `MAJOR.MINOR.PATCH`, with an optional fourth number for small follow-up releases (e.g. `0.4.0.1`); the running version is in
 [`VERSION`](VERSION) and on the launcher's Status page and the front panel.
 
-## Unreleased
+## v0.4.0.1 — 2026-11-17 (pre-release)
+
+A follow-up to v0.4: the slimmer enclosure. Software unchanged.
 
 ### Hardware
 - **Slimmer case:** the four front-to-rear edge bumpers are gone (with their dovetail grooves in the side walls and
