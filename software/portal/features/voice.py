@@ -151,7 +151,7 @@ def ask(req, ctx, args):
     if not av["stt"]:
         req.close_connection = True
         return 503, {"error": "Speech recognition isn't installed on this Badger yet.", "install_hint": av["hint"]}
-    ip, now = args["ip"], time.time()
+    ip, now = args["ip"], time.monotonic()       # in-memory windows and job ages: immune to clock jumps
     with S.lock:
         _cleanup(ctx, now)
         dq = S.hits.setdefault(ip, collections.deque())
@@ -341,7 +341,7 @@ def _loop(ctx):
         with S.cv:
             while not S.queue:
                 S.cv.wait(60)
-                _cleanup(ctx, time.time())
+                _cleanup(ctx, time.monotonic())
             jid = S.queue.popleft()
             S.running = jid
         try:

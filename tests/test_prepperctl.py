@@ -683,6 +683,20 @@ class Power(Ctl):
 
 
 class NetUp(Ctl):
+    def assert_hotspot_allow_list(self, rules: str, ap_if: str):
+        """Only DNS, DHCP, NTP, ICMP and nginx's ports from the hotspot; everything else dropped."""
+        lines = [x.strip() for x in rules.splitlines() if x.strip().startswith("iifname")]
+        self.assertEqual(lines, [
+            f"iifname {ap_if} ct state established,related accept",
+            f"iifname {ap_if} tcp dport 22 drop",
+            f"iifname {ap_if} meta l4proto {{ icmp, ipv6-icmp }} accept",
+            f"iifname {ap_if} udp dport {{ 53, 67, 123 }} accept",
+            f"iifname {ap_if} tcp dport {{ 53, 80, 443, 8088, 8443, 8089 }} accept",
+            f"iifname {ap_if} drop",
+        ])
+        for port in ("22", "8080", "8000", "8081", "8090", "8091", "60631", "5000", "8096"):
+            self.assertNotRegex(rules, rf"dport \{{[^}}]*\b{port}\b", f"port {port} open to the hotspot")
+
     def test_usb_adapter_and_shared_uplink(self):
         self.write_conf(example_config(network={
             "ap_iface": "wlan1", "share_uplink": True,
@@ -703,9 +717,19 @@ class NetUp(Ctl):
         self.assertIn("ip saddr 10.10.10.0/24 oifname != \"wlan1\" masquerade", rules)
         self.assertIn("delete table inet prepper", rules)
         self.assertIn('iifname "wlan1" tcp dport 22 drop', rules)
+        self.assert_hotspot_allow_list(rules, '"wlan1"')
         self.assertIn(["-qw", "net.ipv4.ip_forward=1"], self.stubs.argvs("sysctl"))
         nm = (self.root / "etc/NetworkManager/conf.d/99-prepper.conf").read_text()
         self.assertIn("interface-name:wlan1", nm)
+
+    def test_bridged_hotspot_firewall_covers_both_interfaces(self):
+        self.write_conf(example_config(network={"ap_iface": "wlan1", "security": "owe-transition"}))
+        self.ok("net-up", STUB_STDIN="nft")
+        (_, _, rules), = [c for c in self.stubs.calls("nft") if c[1] == ["-f", "-"]]
+        env = (self.root / "etc/default/prepper").read_text()
+        bridge = env.split("AP_LINK_IFACE=", 1)[1].split()[0]
+        self.assertNotEqual(bridge, "wlan1")
+        self.assert_hotspot_allow_list(rules, f'{{ "wlan1", "{bridge}" }}')
 
     def test_wlan0_deferred_while_provisioning(self):
         (self.root / "var/lib/prepper/first-pull-pending").touch()
@@ -740,6 +764,7 @@ class NetUp(Ctl):
         self.assertEqual(len(rules), 1)
         self.assertNotIn("masquerade", rules[0])                  # share_uplink = false
         self.assertIn('iifname "wlan0" tcp dport 22 drop', rules[0])
+        self.assert_hotspot_allow_list(rules[0], '"wlan0"')
 
     def test_bad_config_without_previous_fails_before_touching_network(self):
         self.write_conf(example_config(network={"ssid": "a\nb"}))
@@ -969,6 +994,41 @@ class WifiRotate(Ctl):
         self.ok("set-pin", input="246813\n")
         self.assertEqual(self.conf.read_text().count("[portal]"), 1)
         self.assertTrue(tomllib.loads(self.conf.read_text())["portal"]["admin_pin"].startswith("scrypt$"))
+
+
+class AiModel(Ctl):
+    def setUp(self):
+        super().setUp()
+        (self.root / "srv/prepper/models").mkdir(parents=True)
+        (self.root / "srv/prepper/models/m1.current").write_text("gguf")
+        cat = self.root / "opt/prepper/content"
+        cat.mkdir(parents=True)
+        (cat / "catalog.toml").write_text('[[item]]\nid = "m1"\nkind = "model"\nctx = 6144\nflash_attn = true\n')
+
+    def test_selects_and_restarts(self):
+        r = self.ok("ai-model", "m1", sudo_user="prepper")
+        self.assertIn("AI model: m1", r.stdout)
+        self.assertEqual((self.root / "run/prepper/llama-model").read_text(), "m1\nctx=6144\nflash=1\n")
+        self.assertIn(["try-restart", "--no-block", "llama-server"], self.stubs.argvs("systemctl"))
+
+    def test_without_catalog_entry_just_the_id(self):
+        (self.root / "srv/prepper/models/m2.current").write_text("gguf")
+        self.ok("ai-model", "m2")
+        self.assertEqual((self.root / "run/prepper/llama-model").read_text(), "m2\n")
+
+    def test_refusals(self):
+        for bad in ("../m1", ".hidden", "m1/x", "a b", "-x", "nope"):
+            with self.subTest(id=bad):
+                self.fails("ai-model", bad)
+        self.fails("ai-model")
+        self.assertFalse((self.root / "run/prepper/llama-model").exists())
+        self.assertNotIn("try-restart", [a[0] for a in self.stubs.argvs("systemctl")])
+
+    def test_refused_in_endurance(self):
+        (self.root / "run/prepper").mkdir(parents=True, exist_ok=True)
+        (self.root / "run/prepper/llama-variant").write_text("endurance\n")
+        self.fails("ai-model", "m1", msg="battery-saving")
+        self.assertFalse((self.root / "run/prepper/llama-model").exists())
 
 
 if __name__ == "__main__":

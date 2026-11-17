@@ -142,8 +142,8 @@ def _strs(v) -> list[str]:
 
 
 class Members:
-    def __init__(self, path: Path, clock=time.time):
-        self.path, self.clock = Path(path), clock
+    def __init__(self, path: Path, clock=time.time, mono=None):
+        self.path, self.clock, self._mono = Path(path), clock, mono
         self.lock = threading.Lock()
         self._fails: dict[str, list[float]] = {}        # ip → [count, first_fail, locked_until]
         self._seen_write: dict[str, float] = {}
@@ -297,8 +297,9 @@ class Members:
             elif nm and self._name_taken(d, nm):
                 raise ValueError("someone already has that name (or one that looks just like it)")
             pool = [v for v in d["invites"].values() if (v.get("source") or "admin") == source]
+            mono = self.mono()
             if source == "panel":
-                self._panel_made = [t for t in self._panel_made if now - t < PANEL_RATE[1]]
+                self._panel_made = [t for t in self._panel_made if mono - t < PANEL_RATE[1]]
                 if len(pool) >= PANEL_MAX_INVITES:
                     raise ValueError("too many open invites from this screen: use one or wait a day")
                 if len(self._panel_made) >= PANEL_RATE[0]:
@@ -313,7 +314,7 @@ class Members:
             d["invites"][_code_hash(norm_code(raw), self._salt(d))] = rec
             self._save(d)
             if source == "panel":
-                self._panel_made.append(now)
+                self._panel_made.append(mono)
         return {"code": f"{raw[:4]}-{raw[4:8]}-{raw[8:]}", "expires": now + ttl, "id": iid}
 
     def cancel_invite(self, invite_id: str | None = None, source: str | None = None) -> int:
@@ -330,12 +331,20 @@ class Members:
                 self._save(d)
         return len(gone)
 
+    def mono(self) -> float:
+        """The clock for in-memory limits (wrong-code lockout, the panel's invite rate): monotonic, so a
+        wall-clock jump can't stretch a 10-minute lockout to hours or end it early. Stored dates use
+        self.clock(). A test that passes its own clock drives both."""
+        if self._mono is not None:
+            return self._mono()
+        return time.monotonic() if self.clock is time.time else self.clock()
+
     def join_wait(self, ip: str) -> float:
         rec = self._fails.get(ip)
-        return max(0.0, rec[2] - self.clock()) if rec else 0.0
+        return max(0.0, rec[2] - self.mono()) if rec else 0.0
 
     def _join_failed(self, ip: str) -> None:
-        now = self.clock()
+        now = self.mono()
         rec = self._fails.setdefault(ip, [0, now, 0.0])
         if now - rec[1] > JOIN_WINDOW and rec[2] <= now:
             rec[:] = [0, now, 0.0]

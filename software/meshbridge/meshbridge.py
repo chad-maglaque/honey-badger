@@ -252,7 +252,14 @@ def board_add(name, text, board: str = "community", radio="", member: str | None
     if member and board == "family":
         rec["member"] = str(member)[:16]
     path = FAMILY_BOARD if board == "family" else BOARD
-    with open(path, "a") as fh:
+    # 0640 (group prepper only) even when this creates the file; an older world-readable one is tightened
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
+    with os.fdopen(fd, "a") as fh:
+        try:
+            if os.fstat(fd).st_mode & 0o007:
+                os.fchmod(fd, 0o640)
+        except OSError:
+            pass
         fh.write(json.dumps(rec) + "\n")
     trim_jsonl(path, BOARD_MAX_BYTES)
 
@@ -2595,6 +2602,59 @@ def stranger_budgets(cfg: dict) -> tuple[tuple[int, float], tuple[int, float]]:
     return (total, 3600.0), (each, 3600.0)
 
 
+def radio_ready(iface) -> bool:
+    """True only when the interface really talks to a Meshtastic node. With no radio plugged in, meshtastic
+    2.7.x hands back a half-built SerialInterface instead of raising: devPath None, no .nodes, no myInfo, and a
+    localNode (if any) still at node number -1. Treating that as "connected" made the launcher show the mesh as
+    up with no radio attached, and the map snapshot failed every 30 s."""
+    try:
+        if not getattr(iface, "devPath", None):
+            return False
+        num = getattr(getattr(iface, "myInfo", None), "my_node_num", None)
+        if isinstance(num, int) and not isinstance(num, bool) and num > 0:
+            return True
+        num = getattr(getattr(iface, "localNode", None), "nodeNum", None)
+        return isinstance(num, int) and not isinstance(num, bool) and num > 0
+    except Exception:  # noqa: BLE001 — a broken interface object is "no radio"
+        return False
+
+
+def close_quietly(iface) -> None:
+    try:
+        iface.close()
+    except BaseException as e:  # noqa: BLE001 — a half-built interface may not even have a stream to close
+        if isinstance(e, KeyboardInterrupt):
+            raise
+
+
+def open_radio(factory, sleep=None, wait: float = 60.0, log=None, tries: int | None = None):
+    """Wait for a Meshtastic node: call factory() (the library's SerialInterface) until it returns an interface
+    that radio_ready() accepts; anything else is closed and retried every `wait` seconds. The "no radio" line
+    is logged when the reason changes and then once every 10 tries, not every minute. Returns the interface,
+    or None after `tries` attempts (tests)."""
+    log = log or (lambda m: print(m, file=sys.stderr))
+    sleep = sleep or (lambda s: time.sleep(s))
+    last, n = None, 0
+    while tries is None or n < tries:
+        n += 1
+        try:
+            iface = factory()
+        except KeyboardInterrupt:
+            raise
+        except BaseException as e:  # noqa: BLE001 — no device yet (the library calls sys.exit for that)
+            iface, why = None, f"no Meshtastic node ({type(e).__name__}: {e})"
+        else:
+            if radio_ready(iface):
+                return iface
+            close_quietly(iface)
+            iface, why = None, "no Meshtastic radio found (no device answered on the serial ports)"
+        if why != last or n % 10 == 0:
+            log(f"meshbridge: {why}; retrying every {int(wait)} s")
+            last = why
+        sleep(wait)
+    return None
+
+
 def main() -> int:
     global BOARD, FAMILY_BOARD, MEMBERS, OUTBOX, NODES, ALERTS, ROTATE_REQ, ROTATE_RES, CHANNEL_LINK, TELEMETRY, BT_PIN, PEERS
     cfg_path = Path(os.environ.get("PREPPER_CONFIG", "/etc/prepper/prepper.toml"))
@@ -2630,15 +2690,8 @@ def main() -> int:
         print("meshbridge: meshtastic python package missing", file=sys.stderr)
         time.sleep(3600); return 0
 
-    while True:                                      # wait for a node to be plugged in
-        try:
-            iface = meshtastic.serial_interface.SerialInterface()
-            break
-        except KeyboardInterrupt:
-            raise
-        except BaseException as e:  # noqa: BLE001 — no device yet (the library calls sys.exit for that)
-            print(f"meshbridge: no Meshtastic node ({e}); retrying in 60 s", file=sys.stderr)
-            time.sleep(60)
+    BEAT.unlink(missing_ok=True)                     # "not connected" until a real node answers
+    iface = open_radio(meshtastic.serial_interface.SerialInterface)
 
     send_lock = threading.Lock()
     silence = Silence(silent_file, configured=cfg.get("mesh_silent") is True,
@@ -2791,7 +2844,7 @@ def main() -> int:
         if share_map and now - last_snapshot >= 30:
             last_snapshot = now
             step("map snapshot", lambda now=now: atomic_json(NODES, {"updated": now, "nodes": nodes_snapshot(
-                dict(iface.nodes or {}), my_id, now)}))
+                dict(getattr(iface, "nodes", None) or {}), my_id, now)}))
         # the channel link, kept fresh (it changes when someone edits channels in the Meshtastic app)
         if now - last_link >= 600:
             last_link = now

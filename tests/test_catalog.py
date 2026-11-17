@@ -12,6 +12,7 @@ import re
 import sys
 import tomllib
 import unittest
+from unittest import mock
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -31,7 +32,7 @@ TIERS = {"pocket", "field", "base", "ultimate"}
 SOURCE_KEYS = {                     # what each resolver in upd.py reads from `source`
     "kiwix": ({"name"}, {"name", "path"}),
     "http": (set(), {"url", "filename", "index", "pattern", "download_base", "sha256_url"}),
-    "hf": ({"repo", "file"}, {"repo", "file", "revision"}),
+    "hf": ({"repo", "file"}, {"repo", "file", "revision", "sha256"}),
     "git": ({"url"}, {"url", "ref", "commit"}),
     "rsync": ({"url"}, {"url"}),
     "pmtiles": (set(), {"builds", "base", "bbox", "maxzoom"}),
@@ -192,6 +193,45 @@ class CatalogTest(unittest.TestCase):
 
     def test_category_lists_agree(self):
         self.assertEqual([c for c, _ in gen_contents.CATS], [c for c, _, _ in server.CATEGORIES])
+
+
+class HfPinTest(unittest.TestCase):
+    """resolve_hf with a pinned source.sha256 against a fake Hugging Face response."""
+    SHA = "a" * 64
+
+    def run_hf(self, pin, etag):
+        class Resp:
+            headers = {"X-Linked-Etag": '"%s"' % etag, "X-Linked-Size": "123"}
+
+        class Opener:
+            def open(self, req, timeout=None):
+                return Resp()
+        src = {"repo": "o/r", "file": "m.gguf"}
+        if pin is not None:
+            src["sha256"] = pin
+        item = upd.Item(id="m", title="m", category="ai", kind="model", source=src, size_gb=1, tiers=["base"],
+                        renderer="x")
+        with mock.patch.object(upd.urllib.request, "build_opener", return_value=Opener()):
+            return upd.resolve_hf(item, mock.Mock(timeout=5))
+
+    def test_no_pin_keeps_behaviour(self):
+        r = self.run_hf(None, self.SHA)
+        self.assertEqual((r.sha256, r.size), (self.SHA, 123))
+
+    def test_matching_pin(self):
+        self.assertEqual(self.run_hf(self.SHA, self.SHA).sha256, self.SHA)
+
+    def test_mismatch_refused(self):
+        with self.assertRaises(ValueError):
+            self.run_hf("b" * 64, self.SHA)
+
+    def test_pin_without_lfs_hash_refused(self):
+        with self.assertRaises(ValueError):
+            self.run_hf(self.SHA, "not-a-sha")
+
+    def test_bad_pin_refused(self):
+        with self.assertRaises(ValueError):
+            self.run_hf("XYZ", self.SHA)
 
 
 if __name__ == "__main__":

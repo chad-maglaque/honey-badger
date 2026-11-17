@@ -350,6 +350,14 @@ def app_csp(prefix: str) -> str:
 
 
 APPS_PORT, APPS_TLS_PORT = 8088, 8443
+# Kolibri runs on 127.0.0.1 only (KOLIBRI_LISTEN_ADDRESS in env_file). Its HTML5-app sandbox (a second,
+# "alternate origin" server) listens on 127.0.0.1:KOLIBRI_ZIP_PORT; nginx publishes it on
+# KOLIBRI_ZIP_PUBLIC_PORT, which Kolibri is told about (KOLIBRI_ZIP_CONTENT_ORIGIN, port form).
+KOLIBRI_PORT, KOLIBRI_ZIP_PORT, KOLIBRI_ZIP_PUBLIC_PORT = 8080, 8091, 8089
+# Every port nginx listens on for phones. os/bin/prepperctl's hotspot firewall must allow exactly
+# these (plus DNS, DHCP, NTP, ICMP) — tests/test_os_render.py checks the two agree.
+API_CONN_PER_IP = 20
+API_POST_RATE, API_POST_BURST = "10r/s", 20
 
 
 def apps_server(data: str, tls: bool) -> str:
@@ -380,6 +388,25 @@ def apps_server(data: str, tls: bool) -> str:
         {SANDBOX}
     }}
     location / {{ return 404; }}
+}}
+"""
+
+
+def kolibri_zip_server() -> str:
+    """Kolibri's HTML5-app sandbox on its own origin (another port), proxied to the localhost-only
+    server. Plain http only: Kolibri is given the port alone, so pages opened over https can't use it
+    (the same as before, when Kolibri served it itself on a random port)."""
+    return f"""server {{
+    listen {KOLIBRI_ZIP_PUBLIC_PORT};
+    listen [::]:{KOLIBRI_ZIP_PUBLIC_PORT};
+    server_name _;
+    access_log off;
+    location / {{
+        proxy_pass http://127.0.0.1:{KOLIBRI_ZIP_PORT};
+        proxy_set_header Host $host;
+        proxy_read_timeout 120s;
+        add_header X-Content-Type-Options nosniff always;
+    }}
 }}
 """
 
@@ -416,8 +443,16 @@ def nginx(c: dict, tls_ready: bool = True) -> str:
 """
     return f"""# Rendered by /opt/prepper/os/render.py — edit prepper.toml, not this file.
 map $scheme $prepper_apps_port {{ https {APPS_TLS_PORT if https else APPS_PORT}; default {APPS_PORT}; }}
+# One phone can't tie up the portal: at most {API_CONN_PER_IP} open /api/ requests per address (each holds a
+# portal thread), and POSTs (board, logins, uploads) at {API_POST_RATE} per address with a short burst.
+# GETs are not rate-limited here (the portal has its own per-route limits). Only POSTs get a key; an
+# empty key is never counted.
+limit_conn_zone $binary_remote_addr zone=prepper_api_conn:1m;
+map $request_method $prepper_post_key {{ POST $binary_remote_addr; default ""; }}
+limit_req_zone $prepper_post_key zone=prepper_api_post:1m rate={API_POST_RATE};
 
 {apps_server(data, https)}
+{kolibri_zip_server()}
 server {{
     listen 80 default_server;
     listen [::]:80 default_server;
@@ -446,7 +481,16 @@ server {{
         # Feature uploads (voice notes, the document vault) up to 25 MB; the portal enforces each
         # route's own limit and keeps its 1 MB cap on JSON bodies.
         client_max_body_size 26m;
-        client_body_timeout 60s;
+        # Between two reads of the body, not for the whole upload: a phone that stalls 20 s is cut off
+        # (the portal also has an overall deadline per request).
+        client_body_timeout 20s;
+        limit_conn prepper_api_conn {API_CONN_PER_IP};
+        limit_req zone=prepper_api_post burst={API_POST_BURST} nodelay;
+        limit_conn_status 429;
+        limit_req_status 429;
+        # nginx's own refusals as JSON the launcher can show (its default HTML error page is not JSON)
+        error_page 413 = @api_too_large;
+        error_page 429 = @api_busy;
         # The portal compares Origin with Host on admin POSTs: pass the real one.
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -458,6 +502,15 @@ server {{
         proxy_buffering off;               # /api/ask streams tokens
         proxy_request_buffering off;       # stream big uploads to the portal instead of spooling them
         proxy_read_timeout 600s;
+    }}
+    location @api_too_large {{
+        default_type application/json;
+        return 413 '{{"error": "That is too big for the Badger to take (the limit is 25 MB). Try a smaller file."}}';
+    }}
+    location @api_busy {{
+        default_type application/json;
+        add_header Retry-After 5 always;
+        return 429 '{{"error": "Too many requests from this phone at once. Wait a few seconds and try again.", "retry_after": 5}}';
     }}
     location /kiwix/ {{
         proxy_pass http://127.0.0.1:8081;
@@ -503,7 +556,7 @@ server {{
         proxy_read_timeout 600s;
         {app_csp("/ai/")}
     }}
-    location /learn/ {{ proxy_pass http://127.0.0.1:8080; proxy_set_header Host $host; proxy_read_timeout 300s; {app_csp("/learn/")} }}
+    location /learn/ {{ proxy_pass http://127.0.0.1:{KOLIBRI_PORT}; proxy_set_header Host $host; proxy_read_timeout 300s; {app_csp("/learn/")} }}
     location /books/ {{ proxy_pass http://127.0.0.1:5000; proxy_set_header Host $host; {app_csp("/books/")} }}
     location /video/ {{ proxy_pass http://127.0.0.1:8096; proxy_set_header Host $host; proxy_buffering off; {app_csp("/video/")} }}
 }}
@@ -542,6 +595,12 @@ def env_file(c: dict, iface: str) -> str:
         # home holds its database (accounts, password hashes).
         "KOLIBRI_HOME=/var/lib/kolibri",
         "KOLIBRI_URL_PATH_PREFIX=/learn/",
+        # Localhost only: phones reach Kolibri through nginx (/learn/), never directly on 8080 or on
+        # its HTML5-app port (nginx publishes that one on KOLIBRI_ZIP_PUBLIC_PORT).
+        "KOLIBRI_LISTEN_ADDRESS=127.0.0.1",
+        f"KOLIBRI_HTTP_PORT={KOLIBRI_PORT}",
+        f"KOLIBRI_ZIP_CONTENT_PORT={KOLIBRI_ZIP_PORT}",
+        f"KOLIBRI_ZIP_CONTENT_ORIGIN={KOLIBRI_ZIP_PUBLIC_PORT}",
         "",
     ])
 
@@ -587,6 +646,39 @@ def update_timer(c: dict) -> str:
     return head + f"[Timer]\nOnCalendar=\nOnCalendar=Sun {h1:02d}:{m1:02d}\nRandomizedDelaySec={spread}min\n"
 
 
+HOSTS_BEGIN = "# BEGIN prepper (managed by /opt/prepper/os/render.py from prepper.toml; edit outside this block)"
+HOSTS_END = "# END prepper"
+HOSTS_DEFAULT = "127.0.0.1\tlocalhost\n::1\t\tlocalhost ip6-localhost ip6-loopback\n"
+
+
+def hosts_file(old: str, host: str, addr: str) -> str:
+    """/etc/hosts with our names in a marked block; every other line is kept. Lines outside the
+    block that map one of our names (or 127.0.1.1, the hostname's address on Debian — e.g. the
+    whole file an older release wrote, or the image's previous hostname) are dropped so the
+    block is the only answer for them."""
+    ours = {host, f"{host}.lan", f"{host}.local", "box.lan"}
+    kept, inside = [], False
+    for line in old.splitlines():
+        s = line.strip()
+        if s.startswith("# BEGIN prepper"):
+            inside = True
+            continue
+        if inside:
+            if s == HOSTS_END:
+                inside = False
+            continue
+        fields = s.split("#", 1)[0].split()
+        if fields and (fields[0] == "127.0.1.1" or ours & set(fields[1:])):
+            continue
+        kept.append(line)
+    while kept and not kept[-1].strip():
+        kept.pop()
+    if not any(s.split("#", 1)[0].split()[:1] == ["127.0.0.1"] for s in kept):
+        kept = HOSTS_DEFAULT.splitlines() + kept
+    block = [HOSTS_BEGIN, f"127.0.1.1\t{host}", f"{addr}\t{host}.lan {host}.local box.lan", HOSTS_END]
+    return "\n".join(kept + [""] + block) + "\n"
+
+
 def render_all(c: dict, root: Path, iface: str, force_24ghz: bool = False) -> None:
     c.setdefault("network", {}); c.setdefault("upd", {})
     check(c, iface)                  # nothing is written unless everything is valid
@@ -615,9 +707,12 @@ def render_all(c: dict, root: Path, iface: str, force_24ghz: bool = False) -> No
     write(root, "/etc/systemd/system/upd-apply.timer.d/prepper-window.conf", update_timer(c))
     host, addr = hostname(c), ap_address(c)
     write(root, "/etc/hostname", host + "\n")
-    write(root, "/etc/hosts", f"127.0.0.1\tlocalhost\n127.0.1.1\t{host}\n"
-                              f"{addr}\t{host}.lan {host}.local box.lan\n"
-                              "::1\t\tlocalhost ip6-localhost ip6-loopback\n")
+    hosts_path = root / "etc/hosts"
+    try:
+        old_hosts = hosts_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        old_hosts = ""
+    write(root, "/etc/hosts", hosts_file(old_hosts, host, addr))
 
 
 def main() -> int:

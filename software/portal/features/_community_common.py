@@ -116,7 +116,7 @@ class RateLimit:
     """At most `count` events per `window` seconds per key. check() records the event when it is
     allowed and returns 0, else returns the seconds to wait (nothing recorded)."""
 
-    def __init__(self, count: int, window: float, clock=time.time, max_keys: int = 2000):
+    def __init__(self, count: int, window: float, clock=time.monotonic, max_keys: int = 2000):
         self.count, self.window, self.clock, self.max_keys = count, window, clock, max_keys
         self.lock = threading.Lock()
         self.hits: dict[str, list[float]] = {}

@@ -57,11 +57,16 @@ def _now() -> float:
     return time.time()
 
 
-_add_limit = C.RateLimit(3, 600, clock=lambda: _now())
-_edit_limit = C.RateLimit(30, 600, clock=lambda: _now())
-_photo_limit = C.RateLimit(10, 600, clock=lambda: _now())
-_flag_limit = C.RateLimit(10, 600, clock=lambda: _now())
-_mesh_limit = C.RateLimit(3, 3600, clock=lambda: _now())
+def _mono() -> float:
+    """Rate-limit windows and lockouts (in memory): a wall-clock jump must not stretch or skip them."""
+    return time.monotonic()
+
+
+_add_limit = C.RateLimit(3, 600, clock=lambda: _mono())
+_edit_limit = C.RateLimit(30, 600, clock=lambda: _mono())
+_photo_limit = C.RateLimit(10, 600, clock=lambda: _mono())
+_flag_limit = C.RateLimit(10, 600, clock=lambda: _mono())
+_mesh_limit = C.RateLimit(3, 3600, clock=lambda: _mono())
 _stores: dict[str, C.JsonStore] = {}
 _stores_lock = threading.Lock()
 

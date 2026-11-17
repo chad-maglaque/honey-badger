@@ -1,0 +1,19 @@
+[Unit]
+Description=Problem solver: sandboxed Python runner (one fresh sandbox per connection)
+Documentation=file:///opt/prepper/docs/features/solver.md
+
+[Socket]
+# Only root and the portal's group may connect. Each connection starts a new
+# prepper-solver-sandbox@.service instance (Accept=yes) that runs one snippet and exits.
+ListenStream=/run/prepper-solver/sandbox.sock
+SocketUser=root
+SocketGroup=prepper
+SocketMode=0660
+DirectoryMode=0755
+Accept=yes
+MaxConnections=4
+TriggerLimitIntervalSec=10s
+TriggerLimitBurst=40
+
+[Install]
+WantedBy=sockets.target

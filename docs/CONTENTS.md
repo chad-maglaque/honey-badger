@@ -7,9 +7,9 @@ Sizes are decimal GB from the Kiwix mirror on 2026-11-16; they drift with every 
 | Edition | Drive | English only | + Spanish |
 |---|---|---:|---:|
 | Pocket (laptop go-bag pool, filled by priority to a budget) | — | 39 GB | 47 GB |
-| Field | 512 GB | 277 GB | 294 GB |
-| Base | 1 TB | 459 GB | 499 GB |
-| Ultimate | 2 TB (4 TB for growth) | 1,351 GB | 1,392 GB |
+| Field | 512 GB | 280 GB | 297 GB |
+| Base | 1 TB | 474 GB | 515 GB |
+| Ultimate | 2 TB (4 TB for growth) | 1,370 GB | 1,411 GB |
 
 Each drive also needs free space for one new copy of its largest item during updates (127 GB for full Wikipedia).
 
@@ -101,11 +101,13 @@ Legend: **P** pocket · **F** field · **B** base · **U** ultimate · priority 
 | **Woodworking Q&A**<br><sub>Joinery, tools and finishing.</sub> | 0.11 |  | ● | ● | ● | 5 | `woodworking.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Engineering Q&A**<br><sub>Mechanical, civil and structural engineering.</sub> | 0.26 |  |  | ● | ● | 6 | `engineering.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Raspberry Pi Q&A**<br><sub>Fix and extend this device.</sub> | 0.30 |  | ● | ● | ● | 6 | `raspberrypi.stackexchange.com_en_all` | CC BY-SA / per source |
+| **3D Printing Q&A**<br><sub>Printing replacement parts: printers, materials, troubleshooting.</sub> | 0.12 |  |  | ● | ● | 7 | `3dprinting.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Arduino Q&A**<br><sub>Microcontrollers and sensors.</sub> | 0.26 |  |  | ● | ● | 7 | `arduino.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Arts & Crafts Q&A**<br><sub>Sewing, leather, materials.</sub> | 0.06 |  |  | ● | ● | 7 | `crafts.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Lifehacks Q&A**<br><sub>Improvised fixes.</sub> | 0.05 |  | ● | ● | ● | 7 | `lifehacks.stackexchange.com_en_all` | CC BY-SA / per source |
 | **OpenWrt documentation**<br><sub>Router firmware — rebuild networks.</sub> | 0.52 |  |  | ● | ● | 7 | `openwrt.org_en_all` | CC BY-NC-SA 4.0 |
 | **Ask Ubuntu**<br><sub>Ubuntu Linux Q&A.</sub> | 2.79 |  |  |  | ● | 8 | `askubuntu.com_en_all` | CC BY-SA / per source |
+| **Robotics Q&A**<br><sub>Motors, sensors, control and small automation.</sub> | 0.10 |  |  |  | ● | 8 | `robotics.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Super User**<br><sub>Computer hardware and software Q&A.</sub> | 3.97 |  |  |  | ● | 8 | `superuser.com_en_all` | CC BY-SA / per source |
 | **Unix & Linux Q&A**<br><sub>Linux administration.</sub> | 1.29 |  |  | ● | ● | 8 | `unix.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Stack Overflow**<br><sub>Programming Q&A — the whole thing.</sub> | 114.89 |  |  |  | ● | 9 | `stackoverflow.com_en_all` | CC BY-SA / per source |
@@ -140,21 +142,29 @@ Legend: **P** pocket · **F** field · **B** base · **U** ultimate · priority 
 | **LibreTexts Biology**<br><sub>Open university and school textbooks.</sub> | 2.25 |  |  | ● | ● | 6 | `libretexts.org_en_bio` | CC BY-NC-SA / per book |
 | **LibreTexts Chemistry**<br><sub>Open university and school textbooks.</sub> | 2.15 |  |  | ● | ● | 6 | `libretexts.org_en_chem` | CC BY-NC-SA / per book |
 | **LibreTexts Engineering**<br><sub>Open university and school textbooks.</sub> | 0.68 |  |  | ● | ● | 6 | `libretexts.org_en_eng` | CC BY-NC-SA / per book |
+| **Mathematics Q&A**<br><sub>Algebra, calculus, probability, geometry: worked questions and answers.</sub> | 6.50 |  |  | ● | ● | 6 | `math.stackexchange.com_en_all` | CC BY-SA / per source |
 | **PhET simulations**<br><sub>Interactive math and science simulations.</sub> | 0.11 | ● | ● | ● | ● | 6 | `phet_en_all` | CC BY |
 | **Biology Q&A**<br><sub>Life sciences: plants, animals, microbes and the human body.</sub> | 0.42 |  |  | ● | ● | 7 | `biology.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Chemistry Q&A**<br><sub>Practical and theoretical chemistry.</sub> | 0.42 |  |  | ● | ● | 7 | `chemistry.stackexchange.com_en_all` | CC BY-SA / per source |
+| **Computer Science Q&A**<br><sub>Algorithms, data structures and how programs work.</sub> | 0.45 |  |  | ● | ● | 7 | `cs.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Earth Science Q&A**<br><sub>Weather, geology, climate.</sub> | 0.13 |  |  | ● | ● | 7 | `earthscience.stackexchange.com_en_all` | CC BY-SA / per source |
+| **Economics & game theory Q&A**<br><sub>Game theory, decisions, trade and markets.</sub> | 0.12 |  |  | ● | ● | 7 | `economics.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Khan Academy (2023 snapshot)**<br><sub>Video lessons and exercises, K-12 through college.</sub> | 180.39 |  |  |  | ● | 7 | `khanacademy_en_all` | CC BY-NC-SA |
 | **LibreTexts Geosciences**<br><sub>Open university and school textbooks.</sub> | 1.18 |  |  | ● | ● | 7 | `libretexts.org_en_geo` | CC BY-NC-SA / per book |
 | **LibreTexts Mathematics**<br><sub>Open university and school textbooks.</sub> | 0.83 |  |  | ● | ● | 7 | `libretexts.org_en_math` | CC BY-NC-SA / per book |
 | **LibreTexts Physics**<br><sub>Open university and school textbooks.</sub> | 0.56 |  |  | ● | ● | 7 | `libretexts.org_en_phys` | CC BY-NC-SA / per book |
+| **Operations Research Q&A**<br><sub>Linear programming, scheduling, allocation and optimisation.</sub> | 0.05 |  |  | ● | ● | 7 | `or.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Wikiversity**<br><sub>Open learning materials and course notes.</sub> | 2.15 |  |  | ● | ● | 7 | `wikiversity_en_all_maxi` | CC BY-SA / per source |
+| **Astronomy Q&A**<br><sub>Stars, planets, the sky and celestial navigation.</sub> | 0.25 |  |  |  | ● | 8 | `astronomy.stackexchange.com_en_all` | CC BY-SA / per source |
+| **Computational Science Q&A**<br><sub>Numerical methods and scientific computing.</sub> | 0.12 |  |  |  | ● | 8 | `scicomp.stackexchange.com_en_all` | CC BY-SA / per source |
 | **Crash Course (video)**<br><sub>Fast-paced video courses across subjects.</sub> | 22.55 |  |  |  | ● | 8 | `crashcourse_en_all` | CC BY-NC-SA |
 | **LibreTexts Business**<br><sub>Open university and school textbooks.</sub> | 0.84 |  |  |  | ● | 8 | `libretexts.org_en_biz` | CC BY-NC-SA / per book |
 | **LibreTexts Humanities**<br><sub>Open university and school textbooks.</sub> | 4.40 |  |  |  | ● | 8 | `libretexts.org_en_human` | CC BY-NC-SA / per book |
 | **LibreTexts Social sciences**<br><sub>Open university and school textbooks.</sub> | 2.04 |  |  |  | ● | 8 | `libretexts.org_en_socialsci` | CC BY-NC-SA / per book |
 | **LibreTexts Statistics**<br><sub>Open university and school textbooks.</sub> | 0.22 |  |  | ● | ● | 8 | `libretexts.org_en_stats` | CC BY-NC-SA / per book |
 | **Physics Q&A**<br><sub>Mechanics, electricity, heat and optics explained.</sub> | 1.82 |  |  |  | ● | 8 | `physics.stackexchange.com_en_all` | CC BY-SA / per source |
+| **Software Engineering Q&A**<br><sub>How to design, structure and maintain programs.</sub> | 1.20 |  |  |  | ● | 8 | `softwareengineering.stackexchange.com_en_all` | CC BY-SA / per source |
+| **Statistics Q&A (Cross Validated)**<br><sub>Statistics, probability and data analysis.</sub> | 1.40 |  |  |  | ● | 8 | `stats.stackexchange.com_en_all` | CC BY-SA / per source |
 | **VOA Learning English (video)**<br><sub>English lessons for non-native speakers.</sub> | 7.09 |  |  |  | ● | 8 | `voa_learning_en_all` | Public domain |
 
 ## Books
@@ -200,6 +210,9 @@ Legend: **P** pocket · **F** field · **B** base · **U** ultimate · priority 
 |---|---:|:-:|:-:|:-:|:-:|:-:|---|---|
 | **Qwen2.5 1.5B Instruct (endurance AI model)** (mul)<br><sub>Smaller, ~10 tokens/s on a Pi 5; used in Endurance power mode.</sub> | 1.10 | ● | ● | ● | ● | 3 | hf | Apache-2.0 |
 | **Qwen3 4B Instruct (default AI model)** (mul)<br><sub>Answers Ask-the-Library questions from retrieved articles. ~3–5 tokens/s on a Pi 5 (estimate).</sub> | 2.50 |  | ● | ● | ● | 4 | hf | Apache-2.0 |
+| **Qwen3 4B Thinking 2507 (small reasoning AI model)** (mul)<br><sub>A smaller thinking model for deep solves: about twice as fast as the 8B, strong at maths; the self-test decides which one a Badger uses. ~3–5 tokens/s on a Pi 5 (estimate).</sub> | 2.50 |  | ● | ● | ● | 5 | hf | Apache-2.0 |
+| **Qwen3 8B (reasoning AI model)** (mul)<br><sub>Slower, stronger model for the Problem solver's deep solves (thinks step by step). ~1.5–2.5 tokens/s on a Pi 5 (estimate); loaded only while it works.</sub> | 5.03 |  |  | ● | ● | 5 | hf | Apache-2.0 |
+| **Qwen2.5 Coder 1.5B Instruct (coding AI model)** (mul)<br><sub>Small code model the Problem solver loads for programming questions. ~8–10 tokens/s on a Pi 5 (estimate).</sub> | 1.12 |  |  | ● | ● | 6 | hf | Apache-2.0 |
 
 ## Apps & software
 

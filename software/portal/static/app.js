@@ -717,6 +717,7 @@
             return '<option value="' + l + '"' + (l === cur ? " selected" : "") + ">" + { community: "Community (anyone)", family: "Family only", off: "Off (family told it is off)", ignore: "Ignore (no reply)" }[l] + "</option>"; }).join("") + "</select>";
       }).join("") + '<div class="btns" style="margin-top:10px"><button class="btn ghost" id="saveMc">Save radio commands</button></div>' +
       '<h3 class="section">Services</h3><div id="svc" class="btns"></div>' +
+      '<p class="small"><a href="#/solver">AI models → Problem solver page</a></p>' +
       '<h3 class="section">System</h3><div class="btns"><button class="btn ghost" data-sys="reboot">Restart</button><button class="btn danger" data-sys="shutdown">Shut down</button><button class="btn ghost" id="logout">Lock</button></div>' +
       '<pre id="out" class="small mono" style="white-space:pre-wrap"></pre>';
     var out = document.getElementById("out");

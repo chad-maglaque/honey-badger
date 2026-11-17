@@ -146,7 +146,7 @@ Each has its own page on the launcher's home screen and its own guide. The overv
 | Radio & sky | 🛰️ Weather satellites, Meteor-M (SDR 2) | [satellites.md](features/satellites.md) | everyone; admin sets the antenna and orbit data |
 | More | 🎙️ Voice: ask out loud, hear the answer | [voice.md](features/voice.md) | everyone (admin can limit it to family) |
 
-- **Settings:** each feature reads its own `[<name>]` section of `/etc/prepper/prepper.toml` (examples in `os/prepper.toml.d/`). Turn one off with `[features] <name> = false`. Most have an admin box at the bottom of their page, and what you set there wins.
+- **Settings:** each feature reads its own `[<name>]` section of `/etc/prepper/prepper.toml` (documented in `os/prepper.toml.example`). Turn one off with `[features] <name> = false`. Most have an admin box at the bottom of their page, and what you set there wins.
 - **Data:** each feature keeps its files in `/var/lib/prepper/portal/features/<name>/`, owned by `prepper`.
 - **Installers:** the speech software (forecast, Voice), the radio programs (aircraft, satellites) and the sensor firmware switches are installed by `os/install.d/speech.sh`, `sdr.sh` and `sensors.sh`. On an older Badger, run one again with `sudo bash /opt/prepper/os/install.d/<name>.sh` while it has internet.
 - **Second radio:** SDR 2 needs its serial number set once at build time, and the Badger needs to know which antenna is on its jack. See [HARDWARE](HARDWARE.md#second-sdr-sdr-2).
@@ -307,7 +307,13 @@ Nothing is installed on them, and nothing is stored on them unless the user choo
 | `/var/lib/kolibri` | kolibri | Courses data |
 | `/srv/prepper` | — | the content |
 
-`kiwix-serve`, `llama-server` and Kolibri run as their own users (kiwix, llama, kolibri), so a bug in one can't reach the others' files.
+`kiwix-serve`, `llama-server` and Kolibri run as their own users (kiwix, llama, kolibri), so a bug in one can't reach the others' files. All of them, and the launcher API, listen on 127.0.0.1 only; phones reach them through nginx.
+
+**Hotspot firewall** (`prepperctl net-up`): from the Wi-Fi hotspot only DNS (53), DHCP (67), time (123/udp), nginx (80, 443, the apps origin 8088/8443, Kolibri's HTML5-app origin 8089) and ping get through; everything else, SSH included, is dropped. Ethernet and the uplink are not filtered. nginx also caps each phone at 20 open `/api/` requests and 10 POSTs a second (burst 20); over that it answers 429.
+
+**Crash restarts:** nginx, dnsmasq, chrony and gpsd get a drop-in (`/etc/systemd/system/<unit>.d/prepper-restart.conf`) that restarts them 2 s after a crash; nginx and the launcher API have no start limit, so repeated restarts never leave them failed.
+
+`/etc/hosts`: `render.py` manages only the block between `# BEGIN prepper` and `# END prepper`; lines you add elsewhere are kept.
 
 Launcher settings (`[portal]`): `settings_file`, `board_file` and `mesh_outbox` point into `/var/lib/prepper/portal/`. `llama = "http://127.0.0.1:8090/ai"` is the AI server's address.
 

@@ -256,6 +256,130 @@ class AiAnswer(unittest.TestCase):
         self.assertEqual(mb.ai_answer("x"), "Library unavailable.")
 
 
+class NoRadio(unittest.TestCase):
+    """meshtastic 2.7.x returns a half-built SerialInterface when no radio is plugged in (devPath None, no .nodes,
+    no myInfo). The bridge must treat that as "no radio": close it, keep waiting, never write the heartbeat."""
+
+    class HalfBuilt:                                  # what the library hands back with no device attached
+        def __init__(self):
+            self.devPath, self.closed = None, False
+
+        def close(self):
+            self.closed = True
+            raise AttributeError("'SerialInterface' object has no attribute 'stream'")
+
+    class Real:
+        def __init__(self, num=0x1234abcd):
+            self.devPath = "/dev/ttyACM0"
+            self.myInfo = type("MyInfo", (), {"my_node_num": num})()
+            self.localNode = type("Node", (), {"nodeNum": num})()
+            self.nodes = {}
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def test_radio_ready(self):
+        self.assertFalse(mb.radio_ready(self.HalfBuilt()))
+        self.assertFalse(mb.radio_ready(None))
+        self.assertTrue(mb.radio_ready(self.Real()))
+        r = self.Real(); r.myInfo = None
+        self.assertTrue(mb.radio_ready(r))            # localNode already numbered is enough
+        r.localNode.nodeNum = -1                      # still the library's placeholder: not configured yet
+        self.assertFalse(mb.radio_ready(r))
+        r = self.Real(); r.devPath = ""
+        self.assertFalse(mb.radio_ready(r))
+        r = self.Real(num=True)
+        r.localNode = None
+        self.assertFalse(mb.radio_ready(r))           # a bool isn't a node number
+
+    def test_half_built_interface_is_closed_and_retried(self):
+        made, slept, logs = [], [], []
+
+        def factory():
+            made.append(self.HalfBuilt())
+            return made[-1]
+        got = mb.open_radio(factory, sleep=slept.append, wait=60, log=logs.append, tries=12)
+        self.assertIsNone(got)
+        self.assertEqual(len(made), 12)
+        self.assertTrue(all(m.closed for m in made))  # each one closed (its close() raising is swallowed)
+        self.assertEqual(slept, [60] * 12)
+        self.assertTrue(logs and "no Meshtastic radio" in logs[0])
+        self.assertLessEqual(len(logs), 3)            # not a line every minute
+
+    def test_library_exit_then_real_radio_connects(self):
+        seq = [SystemExit(1), self.HalfBuilt(), self.Real()]
+        slept = []
+
+        def factory():
+            x = seq.pop(0)
+            if isinstance(x, BaseException):
+                raise x
+            return x
+        got = mb.open_radio(factory, sleep=slept.append, wait=5, log=lambda m: None, tries=5)
+        self.assertIsInstance(got, self.Real)
+        self.assertFalse(got.closed)
+        self.assertEqual(slept, [5, 5])
+
+    def test_ctrl_c_still_stops(self):
+        def factory():
+            raise KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            mb.open_radio(factory, sleep=lambda s: None, log=lambda m: None, tries=3)
+
+    def test_main_without_radio_never_writes_heartbeat(self):
+        """main() with the library returning half-built interfaces: waits, closes each, and the heartbeat the
+        portal reads (services.mesh) stays absent, so the launcher says the mesh isn't connected."""
+        import types
+        tmp = Path(tempfile.mkdtemp(prefix="mesh-noradio-"))
+        beat = tmp / "mesh.ok"
+        beat.write_text("")                           # stale heartbeat from an earlier run: must go
+        cfg = tmp / "prepper.toml"
+        cfg.write_text(f'[portal]\nmesh_outbox = "{tmp}/mesh-outbox.jsonl"\nmesh_nodes = "{tmp}/mesh-nodes.json"\n')
+        made = []
+
+        class Stop(Exception):
+            pass
+
+        def factory():
+            made.append(self.HalfBuilt())
+            return made[-1]
+        calls = {"n": 0}
+
+        def fake_sleep(s):
+            calls["n"] += 1
+            self.assertFalse(beat.exists())
+            if calls["n"] >= 3:
+                raise Stop
+        mt = types.ModuleType("meshtastic")
+        mt.serial_interface = types.SimpleNamespace(SerialInterface=factory)
+        pubsub = types.ModuleType("pubsub")
+        pubsub.pub = types.SimpleNamespace(subscribe=lambda *a, **k: None)
+        saved = {k: sys.modules.get(k) for k in ("meshtastic", "meshtastic.serial_interface", "pubsub")}
+        sys.modules.update({"meshtastic": mt, "meshtastic.serial_interface": mt.serial_interface, "pubsub": pubsub})
+        old_beat, old_sleep, old_env = mb.BEAT, mb.time.sleep, os.environ.get("PREPPER_CONFIG")
+        mb.BEAT, os.environ["PREPPER_CONFIG"] = beat, str(cfg)
+        mb.time.sleep = fake_sleep
+        try:
+            with self.assertRaises(Stop):
+                mb.main()
+        finally:
+            mb.BEAT, mb.time.sleep = old_beat, old_sleep
+            if old_env is None:
+                os.environ.pop("PREPPER_CONFIG", None)
+            else:
+                os.environ["PREPPER_CONFIG"] = old_env
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+        self.assertEqual(len(made), 3)
+        self.assertTrue(all(m.closed for m in made))
+        self.assertFalse(beat.exists())
+        self.assertFalse(server.probe(f"file://{beat}"))    # what /api/status reports as services.mesh
+
+
 class Portal(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -891,6 +891,34 @@ description = "Mechanical, civil and structural engineering."
 source = { type = "kiwix", name = "engineering.stackexchange.com_en_all", path = "stack_exchange/" }
 
 [[item]]
+id = "3dprinting.stackexchange.com_en_all"
+title = "3D Printing Q&A"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.12                   # approximate (not from the mirror listing)
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+use = "any"
+description = "Printing replacement parts: printers, materials, troubleshooting."
+source = { type = "kiwix", name = "3dprinting.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "robotics.stackexchange.com_en_all"
+title = "Robotics Q&A"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.1                    # approximate (not from the mirror listing)
+tiers = ["ultimate"]
+priority = 8
+license = "CC BY-SA / per source"
+use = "any"
+description = "Motors, sensors, control and small automation."
+source = { type = "kiwix", name = "robotics.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
 id = "raspberrypi.stackexchange.com_en_all"
 title = "Raspberry Pi Q&A"
 category = "energy-repair"
@@ -1459,6 +1487,121 @@ use = "any"
 description = "Mechanics, electricity, heat and optics explained."
 source = { type = "kiwix", name = "physics.stackexchange.com_en_all", path = "stack_exchange/" }
 
+# Added for the Problem solver's library retrieval. Sizes are APPROXIMATE (estimated, not from the
+# 2026-11-16 mirror listing); upd uses the live size when fetching. Correct them at the next listing.
+
+[[item]]
+id = "math.stackexchange.com_en_all"
+title = "Mathematics Q&A"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 6.5                    # approximate
+tiers = ["base", "ultimate"]
+priority = 6
+license = "CC BY-SA / per source"
+use = "any"
+description = "Algebra, calculus, probability, geometry: worked questions and answers."
+source = { type = "kiwix", name = "math.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "or.stackexchange.com_en_all"
+title = "Operations Research Q&A"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.05                   # approximate
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+use = "any"
+description = "Linear programming, scheduling, allocation and optimisation."
+source = { type = "kiwix", name = "or.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "economics.stackexchange.com_en_all"
+title = "Economics & game theory Q&A"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.12                   # approximate
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+use = "any"
+description = "Game theory, decisions, trade and markets."
+source = { type = "kiwix", name = "economics.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "cs.stackexchange.com_en_all"
+title = "Computer Science Q&A"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.45                   # approximate
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+use = "any"
+description = "Algorithms, data structures and how programs work."
+source = { type = "kiwix", name = "cs.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "stats.stackexchange.com_en_all"
+title = "Statistics Q&A (Cross Validated)"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 1.4                    # approximate
+tiers = ["ultimate"]
+priority = 8
+license = "CC BY-SA / per source"
+use = "any"
+description = "Statistics, probability and data analysis."
+source = { type = "kiwix", name = "stats.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "scicomp.stackexchange.com_en_all"
+title = "Computational Science Q&A"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.12                   # approximate
+tiers = ["ultimate"]
+priority = 8
+license = "CC BY-SA / per source"
+use = "any"
+description = "Numerical methods and scientific computing."
+source = { type = "kiwix", name = "scicomp.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "astronomy.stackexchange.com_en_all"
+title = "Astronomy Q&A"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.25                   # approximate
+tiers = ["ultimate"]
+priority = 8
+license = "CC BY-SA / per source"
+use = "any"
+description = "Stars, planets, the sky and celestial navigation."
+source = { type = "kiwix", name = "astronomy.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "softwareengineering.stackexchange.com_en_all"
+title = "Software Engineering Q&A"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 1.2                    # approximate
+tiers = ["ultimate"]
+priority = 8
+license = "CC BY-SA / per source"
+use = "any"
+description = "How to design, structure and maintain programs."
+source = { type = "kiwix", name = "softwareengineering.stackexchange.com_en_all", path = "stack_exchange/" }
+
 [[item]]
 id = "voa_learning_en_all"
 title = "VOA Learning English (video)"
@@ -1873,6 +2016,13 @@ license = "Apache-2.0"
 use = "any"
 description = "Smaller, ~10 tokens/s on a Pi 5; used in Endurance power mode."
 source = { type = "hf", repo = "Qwen/Qwen2.5-1.5B-Instruct-GGUF", file = "qwen2.5-1.5b-instruct-q4_k_m.gguf" }
+role = "endurance"
+params_b = 1.5
+quant = "Q4_K_M"
+min_ram_gb = 2
+ctx = 4096
+kv_mb_per_1k = 28
+thinking = "none"
 
 [[item]]
 id = "model_qwen3_4b"
@@ -1887,6 +2037,95 @@ license = "Apache-2.0"
 use = "any"
 description = "Answers Ask-the-Library questions from retrieved articles. ~3–5 tokens/s on a Pi 5 (estimate)."
 source = { type = "hf", repo = "unsloth/Qwen3-4B-Instruct-2507-GGUF", file = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf" }
+role = "fast"
+params_b = 4.0
+quant = "Q4_K_M"
+min_ram_gb = 4
+ctx = 8192
+kv_mb_per_1k = 144
+thinking = "none"
+
+# Model roles (read by the problem solver, software/solver/models.py):
+#   role          fast | reasoning | coder | endurance
+#   params_b      parameters, billions          quant        GGUF quantisation
+#   min_ram_gb    smallest Badger it may run on (the solver also checks free RAM before loading)
+#   ctx           context it is run with        kv_mb_per_1k  KV-cache MB per 1000 tokens of context (f16)
+#   thinking      soft (Qwen3 /think /no_think) | always (thinking-only model) | none
+#   verified      false until a person has downloaded the pinned file once, checked its licence and
+#                 filled in sha256 (the solver shows "checksum not verified" until then; upd still checks
+#                 the Hugging Face LFS sha256 from X-Linked-Etag on every download)
+# A new, better model arrives as a new entry here (signed software update, USB bundle or another
+# Badger); the admin runs its self-test on the Problem solver page and promotes it only if it does at
+# least as well. Sizes are the Q4_K_M files' approximate sizes, to be confirmed on first download.
+
+[[item]]
+id = "model_qwen3_8b"
+title = "Qwen3 8B (reasoning AI model)"
+category = "ai"
+kind = "model"
+lang = "mul"
+size_gb = 5.03                   # approximate (Q4_K_M); confirm on first download
+tiers = ["base", "ultimate"]
+priority = 5
+license = "Apache-2.0"
+use = "any"
+description = "Slower, stronger model for the Problem solver's deep solves (thinks step by step). ~1.5–2.5 tokens/s on a Pi 5 (estimate); loaded only while it works."
+source = { type = "hf", repo = "Qwen/Qwen3-8B-GGUF", file = "Qwen3-8B-Q4_K_M.gguf" }
+role = "reasoning"
+params_b = 8.2
+quant = "Q4_K_M"
+min_ram_gb = 8
+ctx = 6144
+kv_mb_per_1k = 144
+thinking = "soft"
+verified = false
+sha256 = ""                      # <<< FILL IN after verifying the download (then move it to source.sha256; see report)
+
+[[item]]
+id = "model_qwen3_4b_thinking"
+title = "Qwen3 4B Thinking 2507 (small reasoning AI model)"
+category = "ai"
+kind = "model"
+lang = "mul"
+size_gb = 2.5                    # approximate (Q4_K_M); confirm on first download
+tiers = ["field", "base", "ultimate"]
+priority = 5
+license = "Apache-2.0"
+use = "any"
+description = "A smaller thinking model for deep solves: about twice as fast as the 8B, strong at maths; the self-test decides which one a Badger uses. ~3–5 tokens/s on a Pi 5 (estimate)."
+source = { type = "hf", repo = "unsloth/Qwen3-4B-Thinking-2507-GGUF", file = "Qwen3-4B-Thinking-2507-Q4_K_M.gguf" }
+role = "reasoning"
+params_b = 4.0
+quant = "Q4_K_M"
+min_ram_gb = 4
+ctx = 8192
+kv_mb_per_1k = 144
+thinking = "always"
+verified = false
+sha256 = ""                      # <<< FILL IN after verifying the download
+
+[[item]]
+id = "model_qwen25_coder_1_5b"
+title = "Qwen2.5 Coder 1.5B Instruct (coding AI model)"
+category = "ai"
+kind = "model"
+lang = "mul"
+size_gb = 1.12                   # approximate (Q4_K_M); confirm on first download
+tiers = ["base", "ultimate"]
+priority = 6
+license = "Apache-2.0"           # the 1.5B is Apache-2.0 (the 3B Coder is under the Qwen Research licence: not used)
+use = "any"
+description = "Small code model the Problem solver loads for programming questions. ~8–10 tokens/s on a Pi 5 (estimate)."
+source = { type = "hf", repo = "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF", file = "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf" }
+role = "coder"
+params_b = 1.5
+quant = "Q4_K_M"
+min_ram_gb = 4
+ctx = 8192
+kv_mb_per_1k = 28
+thinking = "none"
+verified = false
+sha256 = ""                      # <<< FILL IN after verifying the download
 
 
 # ════════ tools ════════

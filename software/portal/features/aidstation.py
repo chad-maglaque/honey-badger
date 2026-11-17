@@ -59,8 +59,13 @@ def _now() -> float:
     return time.time()
 
 
-_write_limit = C.RateLimit(120, 600, clock=lambda: _now())      # per volunteer: a busy station, not a script
-_status_limit = C.RateLimit(30, 600, clock=lambda: _now())
+def _mono() -> float:
+    """Rate-limit windows and lockouts (in memory): a wall-clock jump must not stretch or skip them."""
+    return time.monotonic()
+
+
+_write_limit = C.RateLimit(120, 600, clock=lambda: _mono())      # per volunteer: a busy station, not a script
+_status_limit = C.RateLimit(30, 600, clock=lambda: _mono())
 _stores: dict[str, dict] = {}
 _stores_lock = threading.Lock()
 _last_purge = [0.0]
@@ -138,11 +143,11 @@ class Staff:
     def join_wait(self, ip: str) -> float:
         with self.flock:
             rec = self.fails.get(ip)
-            return max(0.0, rec[2] - _now()) if rec else 0.0
+            return max(0.0, rec[2] - _mono()) if rec else 0.0
 
     def _failed(self, ip: str) -> None:
         with self.flock:
-            now = _now()
+            now = _mono()
             rec = self.fails.setdefault(ip, [0, now, 0.0])
             if now - rec[1] > JOIN_WINDOW:
                 rec[:] = [0, now, 0.0]
@@ -287,7 +292,7 @@ def purge(ctx, force: bool = False) -> int:
     """Delete records older than the retention period. Cheap; runs at most once a minute
     from requests, and hourly from a background thread."""
     now = _now()
-    if not force and now - _last_purge[0] < 60:
+    if not force and abs(now - _last_purge[0]) < 60:         # abs: a clock set back must not stall purging
         return 0
     _last_purge[0] = now
     cutoff = now - retention_days(ctx) * 86400

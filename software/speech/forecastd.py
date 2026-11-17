@@ -294,7 +294,8 @@ def run(c: Conf, force: bool, file: Path | None) -> int:
         with contextlib.suppress(OSError):
             req.unlink()
     overrides(c)
-    with open(c.data / ".run.lock", "a") as lock:  # held for the whole run
+    # held for the whole run; 0600 (a plain open() would make it world-readable)
+    with os.fdopen(os.open(c.data / ".run.lock", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), "a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:

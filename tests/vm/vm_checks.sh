@@ -108,6 +108,17 @@ journalctl -b -u prepper-powerd --no-pager | grep -qi "traceback" && bad "powerd
 for u in prepper-panel prepper-alertd prepper-meshbridge; do
   st=$(systemctl show -p Result --value "$u"); [ "$st" = success ] && ok "$u exits cleanly without hardware" || bad "$u result: $st"
 done
+# No LoRa radio attached: the bridge must report "no radio", not a link. (meshtastic 2.7 hands back a half-built
+# interface when no device exists; the bridge used to take that for a connected node.) The unit's Result says
+# nothing about this — check its heartbeat and what the launcher shows.
+[ ! -e /run/prepper/mesh.ok ] && ok "meshbridge heartbeat absent with no radio" || bad "meshbridge wrote its heartbeat (mesh.ok) with no radio attached"
+mesh=$(curl -s --max-time 5 http://127.0.0.1:8000/api/status | python3 -c 'import json,sys; print(json.load(sys.stdin).get("services", {}).get("mesh"))' 2>/dev/null)
+[ "$mesh" = False ] && ok "launcher shows the mesh not connected (no radio)" || bad "launcher status says mesh=$mesh with no radio attached"
+if systemctl is-active --quiet prepper-meshbridge; then
+  journalctl -b -u prepper-meshbridge --no-pager | grep -q "no Meshtastic" && ok "meshbridge logs that no radio was found" || bad "meshbridge never said it found no radio"
+  journalctl -b -u prepper-meshbridge --no-pager | grep -q "meshbridge: connected" && bad "meshbridge claimed a connection with no radio" || ok "meshbridge didn't claim a connection"
+  journalctl -b -u prepper-meshbridge --no-pager | grep -q "map snapshot failed" && bad "meshbridge map snapshot errors with no radio" || ok "no map snapshot errors without a radio"
+fi
 ok_restarts=$(systemctl show -p NRestarts --value prepper-powerd); [ "${ok_restarts:-0}" -lt 3 ] && ok "powerd not crash-looping (${ok_restarts} restarts)" || bad "powerd restarted $ok_restarts times"
 
 echo

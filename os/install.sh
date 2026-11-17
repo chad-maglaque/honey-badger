@@ -41,7 +41,8 @@ apt-get update -q
 apt-get install -y -q --no-install-recommends "${CORE_PKGS[@]}"
 pi_found=()
 for p in "${PI_PKGS[@]}"; do
-  if apt-cache show "$p" >/dev/null 2>&1; then pi_found+=("$p")
+  # (policy, not show: show also "finds" a name that other packages merely refer to)
+  if apt-cache policy "$p" 2>/dev/null | awk '$1 == "Candidate:" && $2 != "(none)" { ok = 1 } END { exit !ok }'; then pi_found+=("$p")
   else echo "warning: package $p is not in this system's archive (not Raspberry Pi OS?) — skipped"; fi
 done
 if [ "${#pi_found[@]}" -gt 0 ]; then
@@ -61,9 +62,13 @@ PCT=5 step "Users, folders, software"
 # get their own, so a bug in one cannot reach the others' files or root.
 sysuser prepper /var/lib/prepper/portal
 usermod -d /var/lib/prepper/portal prepper 2>/dev/null || true     # older installs: home was /var/lib/prepper
-# One group at a time: usermod -aG fails as a whole if any group is missing
-# (i2c and gpio exist only on Raspberry Pi OS), which would drop dialout too.
-for g in dialout plugdev i2c gpio; do
+# The device groups the units name in SupplementaryGroups= (sensord: i2c dialout gpio; alertd and
+# prepper-sdr: plugdev; meshbridge: dialout). i2c, gpio and spi exist only on Raspberry Pi OS: on
+# plain Debian a unit naming a missing group fails to start (and restart-loops), so create any
+# that are missing (a system group, idempotent). One usermod per group: -aG fails as a whole if
+# any group is missing, which would drop dialout too.
+for g in dialout plugdev i2c gpio spi; do
+  getent group "$g" >/dev/null || groupadd -rf "$g" || echo "warning: could not create group $g"
   getent group "$g" >/dev/null && usermod -aG "$g" prepper || echo "warning: group $g missing — prepper not added"
 done
 sysuser kiwix /nonexistent
@@ -192,20 +197,65 @@ fi
 
 if [ "$(toml ai.enabled)" != "False" ]; then
   PCT=9 step "llama.cpp $LLAMA_CPP_REF (builds on the Pi; ~15 min the first time)"
-  if ! stamp llama "$LLAMA_CPP_REF"; then
+  llama_ok() { "$OPT/llama/bin/llama-server" --version >/dev/null 2>&1; }
+  # "-static" in the stamp: builds before it were linked against shared libraries that the
+  # installer then deleted (libllama-server-impl.so …), so they never started — rebuild those.
+  if ! stamp llama "$LLAMA_CPP_REF-static" || ! llama_ok; then
     t=$(mktemp -d); git clone -q --depth 1 --branch "$LLAMA_CPP_REF" https://github.com/ggml-org/llama.cpp "$t/l"
-    # LLAMA_OPENSSL=OFF: the server only listens on localhost behind nginx and
-    # never downloads models itself (LLAMA_CURL is gone since v1.0.0).
-    cmake -S "$t/l" -B "$t/l/build" -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF >/dev/null
-    cmake --build "$t/l/build" --target llama-server -j4
+    # BUILD_SHARED_LIBS=OFF: only the llama-server binary is kept (the build folder is deleted),
+    # so it must not need libllama*.so / libggml*.so next to it.
+    # LLAMA_OPENSSL=OFF: the server only listens on localhost behind nginx and never downloads
+    # models itself (LLAMA_CURL is gone since v1.0.0).
+    # No web UI: v1.0.0 fetches a pre-built UI from Hugging Face at build time (unpinned code that
+    # nginx would serve to phones; the Badger only uses the API). The option that turns this off
+    # isn't stable across releases, so every *UI* option this checkout declares is switched OFF
+    # (names with OFFLINE/NO_/DISABLE/SKIP, which mean the opposite, are left alone), and the
+    # build runs behind a dead proxy so the download fails at once even if no option matched.
+    # (UI as a whole word only — LLAMA_BUILD_SERVER contains "UI" inside "BUILD".)
+    ui_off=()
+    for o in $(grep -rhoE 'option\([[:space:]]*LLAMA_[A-Z0-9_]+' "$t/l/CMakeLists.txt" "$t/l/tools" "$t/l/scripts" \
+                 2>/dev/null | sed -E 's/^option\([[:space:]]*//' | sort -u); do
+      case "$o" in
+        *OFFLINE*|*NO_*|*DISABLE*|*SKIP*) ;;
+        *_UI|*_UI_*|*_WEBUI|*_WEBUI_*) ui_off+=("-D$o=OFF") ;;
+      esac
+    done
+    echo "llama.cpp: web UI options switched off: ${ui_off[*]:-(none found)}"
+    noproxy=(env http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9
+             HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 no_proxy= NO_PROXY=)
+    llama_build() {   # llama_build SRC [extra cmake options] — a fresh configure + build of llama-server
+      local src=$1; shift
+      rm -rf "$src/build"
+      "${noproxy[@]}" cmake -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DBUILD_SHARED_LIBS=OFF \
+          -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF "$@" >/dev/null \
+        && "${noproxy[@]}" cmake --build "$src/build" --target llama-server -j4
+    }
+    if ! llama_build "$t/l" ${ui_off[@]+"${ui_off[@]}"}; then
+      # A UI option the server target can't do without: build again with the defaults (the dead
+      # proxy still stops the download; the server then simply has no built-in page).
+      [ "${#ui_off[@]}" -gt 0 ] || { echo "llama.cpp build failed" >&2; exit 1; }
+      echo "llama.cpp: build failed with ${ui_off[*]} — retrying with the UI options at their defaults"
+      llama_build "$t/l" || { echo "llama.cpp build failed" >&2; exit 1; }
+    fi
     mkdir -p "$OPT/llama/bin"; install -m 755 "$t/l/build/bin/llama-server" "$OPT/llama/bin/"
-    rm -rf "$t"; setstamp llama "$LLAMA_CPP_REF"
+    rm -rf "$t"
+  fi
+  if llama_ok; then
+    setstamp llama "$LLAMA_CPP_REF-static"
+  else
+    rm -f /var/lib/prepper/stamp.llama
+    echo "!! llama-server does not start (the AI stays off; re-run install.sh to rebuild). Its libraries:"
+    ldd "$OPT/llama/bin/llama-server" 2>&1 | sed 's/^/!!   /' || true
   fi
 fi
 
 PCT=9 step "Python environment (panel, mesh bridge, Kolibri)"
 [ -d "$OPT/venv" ] || python3 -m venv --system-site-packages "$OPT/venv"
-"$OPT/venv/bin/pip" install -q --upgrade luma.oled meshtastic qrcode
+# meshtastic is pinned: the mesh bridge relies on how SerialInterface behaves with no radio
+# attached (2.7.x hands back a half-built interface; meshbridge checks for a real device).
+# 2.7.11 is the release the VM pressure test ran; bump it only after re-running that test.
+MESHTASTIC_PY=2.7.11
+"$OPT/venv/bin/pip" install -q --upgrade luma.oled qrcode "meshtastic==$MESHTASTIC_PY"
 if [ "$(toml features.kolibri)" = "True" ] && ! stamp kolibri "$KOLIBRI"; then
   if "$OPT/venv/bin/pip" install -q "kolibri==$KOLIBRI"; then setstamp kolibri "$KOLIBRI"
   else echo "warning: Kolibri $KOLIBRI did not install — courses stay off; re-run install.sh to retry"; fi
@@ -218,6 +268,7 @@ After=network.target
 [Service]
 User=kolibri
 EnvironmentFile=/etc/default/prepper
+# Listens on 127.0.0.1 only (KOLIBRI_LISTEN_ADDRESS etc. in /etc/default/prepper): phones go through nginx.
 ExecStart=$OPT/venv/bin/kolibri start --foreground --port 8080
 Restart=on-failure
 RestartSec=10
@@ -314,6 +365,15 @@ grep -q '^server ' /etc/chrony/chrony.conf || true
 for u in "$OPT"/os/systemd/*.service "$OPT"/os/systemd/*.timer "$OPT"/os/systemd/*.path; do
   [ -f "$u" ] || continue                     # (a pattern with no match stays literal)
   install -m 644 "$u" /etc/systemd/system/
+done
+# Drop-ins for packaged units (nginx, dnsmasq, chrony, gpsd: restart after a crash) and ours:
+# os/systemd/<unit>.d/*.conf → /etc/systemd/system/<unit>.d/.
+for d in "$OPT"/os/systemd/*.d; do
+  [ -d "$d" ] || continue
+  install -d -m 755 "/etc/systemd/system/$(basename "$d")"
+  for f in "$d"/*.conf; do
+    [ -f "$f" ] && install -m 644 "$f" "/etc/systemd/system/$(basename "$d")/"
+  done
 done
 # The front panel's key (root-only) and its hash for the portal (root:prepper 0640): how the
 # portal tells the Badger's own screen from any other local process (see docs/SECURITY.md).

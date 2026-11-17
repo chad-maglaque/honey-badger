@@ -25,6 +25,7 @@ It is a superset of [Prepper Disk Premium](https://www.prepperdisk.com/pages/pre
 | Works without a phone | — | OLED + knob: QR to join, status, power modes, updates, shutdown |
 | Radio | RepeaterBook data | two SDRs: NOAA SAME alerts and the forecast as text; aircraft (ADS-B) and Meteor-M weather-satellite pictures. Meshtastic mesh bridge, GPS time and position |
 | AI | — | "Ask the Library": local model answers only from the Badger's articles, with citations; also by voice |
+| Problem solver | — | works out power, water, structure, heat, radio and survival problems step by step with calculators (and a sandboxed Python), showing its working ([solver](docs/features/solver.md)) |
 | Family & neighbours | — | family board, supplies and rationing, encrypted document vault, missing & found, skills directory, aid-station log, flood/freeze/radiation sensors ([FEATURES](docs/FEATURES.md)) |
 | Phones, iPads, laptops | browser | browser + installable app (PWA), offline tools, Android app depot |
 

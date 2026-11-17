@@ -1,0 +1,67 @@
+[Unit]
+Description=Problem solver: one sandboxed Python run
+Documentation=file:///opt/prepper/docs/features/solver.md
+CollectMode=inactive-or-failed
+
+[Service]
+# One request on stdin, one reply on stdout (the connection), then exit. The portal uses the runner
+# only after a probe run here proves the family's files and the network are out of reach.
+Type=simple
+ExecStart=/usr/bin/python3 -I -S -B /opt/prepper/software/solver/sandbox_child.py
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+Environment=PYTHONDONTWRITEBYTECODE=1 LANG=C.UTF-8
+
+# A throw-away unprivileged user that owns nothing on the Badger.
+DynamicUser=yes
+User=prepper-sbx
+PrivateUsers=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+
+# No network at all: own empty network namespace, no IP traffic, only local (AF_UNIX) sockets.
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+
+# The family's data, keys and settings don't exist from in here; the rest of the system is read-only.
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=-/etc/prepper -/var/lib/prepper -/srv -/media -/mnt -/run/prepper -/run/user -/home -/root -/var/log -/var/backups -/var/mail -/opt/prepper-speech -/boot
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @debug @module @reboot @swap @clock @cpu-emulation @obsolete @raw-io
+SystemCallErrorNumber=EPERM
+
+# Small and short-lived: a fork bomb hits TasksMax, a memory hog MemoryMax, a busy loop RuntimeMaxSec.
+MemoryMax=320M
+MemorySwapMax=0
+TasksMax=16
+CPUQuota=100%
+Nice=10
+RuntimeMaxSec=25
+TimeoutStopSec=2
+KillMode=control-group
+LimitCORE=0
+LimitNOFILE=64
+LimitFSIZE=1M

@@ -19,7 +19,12 @@ sensors_on=1
 command -v gpioget >/dev/null 2>&1 || apt-get install -y -q --no-install-recommends gpiod >/dev/null 2>&1 \
   || echo "warning: could not install gpiod — a float switch can't be read"
 
+# prepper-sensord.service names these in SupplementaryGroups=: a group that doesn't exist (gpio and
+# i2c exist only on Raspberry Pi OS) stops the unit from starting at all, and it restart-loops. So
+# create any that are missing (system group; -f: no error if it appeared meanwhile).
 for g in i2c dialout gpio; do
+  getent group "$g" >/dev/null 2>&1 || groupadd -rf "$g" 2>/dev/null \
+    || echo "warning: could not create group $g — prepper-sensord may not start"
   if getent group "$g" >/dev/null 2>&1; then
     usermod -aG "$g" prepper 2>/dev/null || echo "warning: could not add prepper to group $g"
   fi

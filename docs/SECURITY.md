@@ -312,6 +312,10 @@ they may still know:
 - **The admin PIN:** change it at the Badger (`sudo prepperctl set-pin`), then *Log out all admin
   sessions* (Settings → Badger administration).
 
+## The problem solver's Python sandbox
+
+The problem solver can run short Python programs the AI wrote. Each run is its own systemd unit, started on demand through a socket (`prepper-solver-sandbox`), as a throw-away user (`DynamicUser`) with no network, no access to the family data, keys or settings, and tight time and memory limits. The portal checks that these properties really hold (a probe) before every use; if it can't prove them, the Python tool stays off and there is **no unsandboxed fallback**. Invariant: the solver's tools (calculators, library search, the read-only supplies lookup, the sandbox) have no side effects outside the sandbox. They can't post, send over the radio, change settings or write files, so a confused or manipulated model can only produce a wrong answer, not an action.
+
 ## Disk
 
 - **Logs:** nginx keeps no access log (visitor addresses, phone models, one-time download links) and

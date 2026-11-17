@@ -364,6 +364,15 @@ LOCK_KEYS = ("invite", "radio", "services", "wifi_off", "usb_import", "shutdown"
 DEFAULT_PROTECT = LOCK_KEYS[:6]
 LOCK_KDF = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32, "maxmem": 64 * 1024 * 1024}
 LOCK_FREE_TRIES, LOCK_BASE_WAIT, LOCK_MAX_WAIT = 3, 30.0, 3600.0
+BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
+
+
+def _boot_id() -> str:
+    """This boot's id: a monotonic deadline is only meaningful within the boot that wrote it."""
+    try:
+        return BOOT_ID.read_text().strip()[:64]
+    except OSError:
+        return ""
 UNLOCK_FOR = 300.0                      # an unlocked panel locks again after 5 min (or when it sleeps)
 CODE_MIN, CODE_MAX, RECOVERY_LEN = 4, 8, 12
 
@@ -377,8 +386,8 @@ class PanelLock:
     of a recovery code, and the wrong-try counter (so a restart doesn't reset the slow-down). The portal
     only sees whether the file exists. A damaged file locks (fail closed): the console reset clears it."""
 
-    def __init__(self, path: Path = PANEL_LOCK, clock=time.time):
-        self.path, self.clock = Path(path), clock
+    def __init__(self, path: Path = PANEL_LOCK, clock=time.time, mono=None):
+        self.path, self.clock, self._mono = Path(path), clock, mono   # a test's own clock drives mono() too
 
     def _read(self) -> dict | None:
         """The lock record; None = no lock; {"damaged": True} = there but unreadable."""
@@ -418,11 +427,26 @@ class PanelLock:
     def damaged(self) -> bool:
         return bool((self._read() or {}).get("damaged"))
 
+    def mono(self) -> float:
+        if self._mono is not None:
+            return self._mono()
+        return time.monotonic() if self.clock is time.time else self.clock()
+
     def wait(self) -> float:
+        """Seconds before the next try. The back-off is kept three ways so a wall-clock jump (GPS fix
+        after a flat RTC battery, someone setting the time) can neither stretch a 30 s wait to an hour
+        nor end it: within the same boot the monotonic deadline counts; after a reboot the wall-clock
+        one, but never longer than the delay that was set ("delay"); older records: at most an hour."""
         d = self._read() or {}
         until = finite(d.get("until")) or 0.0
-        now = self.clock()
-        return max(0.0, min(until, now + LOCK_MAX_WAIT) - now)
+        delay = finite(d.get("delay"))
+        cap = LOCK_MAX_WAIT if delay is None else min(max(delay, 0.0), LOCK_MAX_WAIT)
+        mono_until, boot = finite(d.get("mono_until")), d.get("boot")
+        if mono_until is not None and isinstance(boot, str) and boot and boot == _boot_id():
+            left = mono_until - self.mono()
+        else:
+            left = until - self.clock()
+        return max(0.0, min(left, cap))
 
     @staticmethod
     def valid_code(code: str) -> bool:
@@ -452,13 +476,14 @@ class PanelLock:
             and hmac.compare_digest(_lock_hash(code, salt), want)
         if good:
             if d.get("fails"):
-                d.update(fails=0, until=0)
+                d.update(fails=0, until=0, delay=0, mono_until=0)
                 self._write(d)
             return "ok", 0.0
         n = int(finite(d.get("fails")) or 0) + 1
         d["fails"] = n
         if n >= LOCK_FREE_TRIES:
-            d["until"] = self.clock() + min(LOCK_MAX_WAIT, LOCK_BASE_WAIT * 2 ** (n - LOCK_FREE_TRIES))
+            delay = min(LOCK_MAX_WAIT, LOCK_BASE_WAIT * 2 ** min(n - LOCK_FREE_TRIES, 20))
+            d.update(until=self.clock() + delay, delay=delay, mono_until=self.mono() + delay, boot=_boot_id())
         self._write(d)
         return "bad", self.wait()
 

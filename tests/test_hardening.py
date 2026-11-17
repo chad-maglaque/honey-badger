@@ -103,7 +103,7 @@ class HotspotModes(unittest.TestCase):
         self.assertIn("dhcp-leasefile=/run/prepper-dnsmasq/leases", d)
         self.assertIn("quiet-dhcp", d)
         n = render.nginx(EXAMPLE, tls_ready=True)
-        self.assertEqual(n.count("access_log off;"), 2)          # launcher + apps origin
+        self.assertEqual(n.count("access_log off;"), 3)  # launcher + apps origin + Kolibri HTML5-app origin
         self.assertNotIn("autoindex on; add_header X-Content-Type-Options nosniff always; location ~*", n)
 
     def test_apps_origin(self):

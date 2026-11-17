@@ -224,7 +224,7 @@ usage() {
   sed -n '2,3p' "$0"
   echo "verbs: apply-config net-up rebuild-library service power-mode power-restore update-{check,apply,import,export}"
   echo "       add-peer uplink-wifi uplink-forget usb-eject shutdown reboot wifi-{on,off,rotate,confirm,revert,status,apply,rearm} set-pin upgrade-pin gen-tls gen-key"
-  echo "       trust [--code] trust-maintainer self-update-hook build-status first-pull finish-provisioning auto-apply-enabled"
+  echo "       ai-model trust [--code] trust-maintainer self-update-hook build-status first-pull finish-provisioning auto-apply-enabled"
 }
 cmd=${1:-help}; shift || true
 # Every argument reaches system tools: no control characters (newlines would
@@ -342,15 +342,23 @@ case "$cmd" in
     # Optional uplink on the *other* radio for updates (never on the AP radio).
     # (nm_wifi writes a 0600 NetworkManager profile: no password in any command line.)
     if [ "$AP_IFACE" != wlan0 ]; then nm_wifi from-config "$CONF" || true; fi
-    # Firewall: no SSH from the hotspot (the admin account may have a password
-    # and passwordless sudo) — Ethernet and the uplink keep it. NAT to the
-    # uplink only with share_uplink. add + delete + define replaces the table,
-    # so re-running net-up never stacks duplicate rules.
+    # Firewall: phones on the hotspot reach only what they need — DNS (53),
+    # DHCP (67), time (123, chrony serves the AP subnet), nginx (80/443, the
+    # apps origin 8088/8443, Kolibri's HTML5-app origin 8089; render.py's
+    # listen ports — tests/test_os_render.py keeps the two lists in step) and
+    # ICMP. Everything else from the hotspot is dropped: no SSH (the admin
+    # account may have a password and passwordless sudo — Ethernet and the
+    # uplink keep it), and no service that happens to listen on 0.0.0.0
+    # (Kolibri, llama-server, kiwix-serve, the portal are all localhost-only
+    # anyway). NAT to the uplink only with share_uplink. add + delete + define
+    # replaces the table, so re-running net-up never stacks duplicate rules.
     nat=""
     if [ "$(toml network.share_uplink)" = "True" ]; then
       sysctl -qw net.ipv4.ip_forward=1
       nat="chain post { type nat hook postrouting priority 100; ip saddr $AP_SUBNET oifname != \"${AP_LINK_IFACE:-$AP_IFACE}\" masquerade; }"
     fi
+    HOTSPOT_UDP="53, 67, 123"
+    HOTSPOT_TCP="53, 80, 443, 8088, 8443, 8089"
     ap_if="\"$AP_IFACE\""
     [ "${AP_LINK_IFACE:-$AP_IFACE}" = "$AP_IFACE" ] || ap_if="{ \"$AP_IFACE\", \"$AP_LINK_IFACE\" }"
     nft delete table ip prepper 2>/dev/null || true      # (older releases used an ip-family table)
@@ -358,7 +366,15 @@ case "$cmd" in
 add table inet prepper
 delete table inet prepper
 table inet prepper {
-  chain input { type filter hook input priority 0; policy accept; iifname $ap_if tcp dport 22 drop; }
+  chain input {
+    type filter hook input priority 0; policy accept;
+    iifname $ap_if ct state established,related accept
+    iifname $ap_if tcp dport 22 drop
+    iifname $ap_if meta l4proto { icmp, ipv6-icmp } accept
+    iifname $ap_if udp dport { $HOTSPOT_UDP } accept
+    iifname $ap_if tcp dport { $HOTSPOT_TCP } accept
+    iifname $ap_if drop
+  }
   $nat
 }
 EOF
@@ -445,6 +461,28 @@ EOF
     case "$mode" in endurance|balanced|full) ;; *) mode=$(toml power.default_mode) ;; esac
     case "$mode" in endurance|balanced|full) ;; *) mode=balanced ;; esac
     exec "$0" power-mode "$mode"
+    ;;
+
+  ai-model)
+    # ai-model CATALOG-ID — the problem solver's model swap. Writes /run/prepper/llama-model (line 1: the
+    # id; then ctx=N and flash=1 from the catalog entry, if any) and restarts llama-server, which
+    # llama-start reads. Cleared by a reboot, so the default model always comes back. Not in endurance.
+    id=${1:?catalog-id}
+    [[ "$id" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] || die "bad model id"
+    [ -e "$DATA_ROOT/models/$id.current" ] || die "model $id is not downloaded"
+    [ "$(cat "$R/run/prepper/llama-variant" 2>/dev/null || true)" != endurance ] || die "battery-saving mode keeps the small model"
+    extra=$("$PY" -c 'import sys,tomllib
+try:
+    for i in tomllib.load(open(sys.argv[1], "rb")).get("item", []):
+        if i.get("id") == sys.argv[2] and i.get("kind") == "model":
+            c = i.get("ctx")
+            if isinstance(c, int) and not isinstance(c, bool) and 256 <= c <= 1 << 20: print("ctx=%d" % c)
+            if i.get("flash_attn") is True: print("flash=1")
+except Exception: pass' "$OPT/content/catalog.toml" "$id" 2>/dev/null || true)
+    mkdir -p "$R/run/prepper"
+    atomic_write "$R/run/prepper/llama-model" "$id${extra:+$'\n'$extra}"
+    systemctl try-restart --no-block llama-server 2>/dev/null || true
+    echo "AI model: $id"
     ;;
 
   update-check)  systemctl start --no-block upd-check.service; echo "update check started" ;;

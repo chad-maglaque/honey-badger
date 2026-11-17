@@ -6,14 +6,16 @@ No root, no network.   python3.11 tests/test_os_render.py -v
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 import sys
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from os_helpers import PY, REPO, TempDirCase, example_config, run  # noqa: E402
+from os_helpers import BASH, PY, REPO, TempDirCase, example_config, run  # noqa: E402
 
 sys.path.insert(0, str(REPO / "os"))
 import render  # noqa: E402
@@ -305,6 +307,65 @@ class RenderCLI(TempDirCase):
         self.assertIn("proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;", api)
         self.assertIn("client_body_timeout 10s;", n)
 
+    def test_api_limits_per_phone(self):
+        n = self.render(example_config())["nginx"]
+        head = n.split("server {", 1)[0]                      # http context (the site file is included there)
+        self.assertIn("limit_conn_zone $binary_remote_addr zone=prepper_api_conn:1m;", head)
+        self.assertIn('map $request_method $prepper_post_key { POST $binary_remote_addr; default ""; }', head)
+        self.assertIn("limit_req_zone $prepper_post_key zone=prepper_api_post:1m rate=10r/s;", head)
+        api = n.split("location /api/ {", 1)[1].split("\n    }", 1)[0]
+        self.assertIn("limit_conn prepper_api_conn 20;", api)
+        self.assertIn("limit_req zone=prepper_api_post burst=20 nodelay;", api)
+        self.assertIn("limit_conn_status 429;", api)
+        self.assertIn("limit_req_status 429;", api)
+        self.assertIn("client_body_timeout 20s;", api)
+        self.assertNotIn("client_body_timeout 60s", n)
+        # the limits apply to /api/ only: static files, the library and the captive probes are untouched
+        self.assertEqual(n.count("limit_conn prepper_api_conn"), 1)
+        self.assertEqual(n.count("limit_req zone="), 1)
+
+    def test_api_refusals_are_json(self):
+        # nginx's own 413/429 (too big, too many) reach the launcher as JSON with plain words
+        n = self.render(example_config())["nginx"]
+        api = n.split("location /api/ {", 1)[1].split("\n    }", 1)[0]
+        self.assertIn("error_page 413 = @api_too_large;", api)
+        self.assertIn("error_page 429 = @api_busy;", api)
+        for name, code in (("@api_too_large", "413"), ("@api_busy", "429")):
+            loc = n.split(f"location {name} {{", 1)[1].split("\n    }", 1)[0]
+            self.assertIn("default_type application/json;", loc)
+            body = loc.split(f"return {code} '", 1)[1].rsplit("'", 1)[0]
+            self.assertIn("error", json.loads(body))
+        self.assertNotIn("proxy_intercept_errors", n)      # the portal's own JSON errors pass through untouched
+
+    def test_kolibri_localhost_only(self):
+        f = self.render(example_config())
+        env = kv(f["env"])
+        self.assertEqual(env["KOLIBRI_LISTEN_ADDRESS"], ["127.0.0.1"])
+        self.assertEqual(env["KOLIBRI_HTTP_PORT"], ["8080"])
+        self.assertEqual(env["KOLIBRI_ZIP_CONTENT_PORT"], ["8091"])
+        self.assertEqual(env["KOLIBRI_ZIP_CONTENT_ORIGIN"], ["8089"])
+        n = f["nginx"]
+        self.assertIn("location /learn/ { proxy_pass http://127.0.0.1:8080;", n)
+        zip_server = n.split("listen 8089;", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("proxy_pass http://127.0.0.1:8091;", zip_server)
+        self.assertNotIn("listen 8080", n)
+        self.assertNotIn("listen 8091", n)
+
+    def test_hotspot_firewall_allows_exactly_nginx_ports(self):
+        """prepperctl's hotspot allow-list must open every port nginx listens on, and nothing else on TCP
+        but DNS."""
+        tls = self.tmp / "root/etc/prepper/tls"
+        tls.mkdir(parents=True)
+        (tls / "server.crt").write_text("x"); (tls / "server.key").write_text("x")
+        n = self.render(example_config(network={"https": True}))["nginx"]
+        listen = {int(m) for m in re.findall(r"^\s*listen (?:\[::\]:)?(\d+)", n, re.M)}
+        ctl = (REPO / "os/bin/prepperctl").read_text()
+        tcp = {int(x) for x in re.search(r'HOTSPOT_TCP="([^"]*)"', ctl).group(1).split(",")}
+        udp = {int(x) for x in re.search(r'HOTSPOT_UDP="([^"]*)"', ctl).group(1).split(",")}
+        self.assertEqual(tcp - {53}, listen)
+        self.assertEqual(udp, {53, 67, 123})
+        self.assertNotIn(22, tcp)
+
     def test_upload_size_only_raised_for_the_api(self):
         n = self.render(example_config())["nginx"]
         api = n.split("location /api/ {", 1)[1].split("\n    }", 1)[0]
@@ -387,6 +448,45 @@ class RenderCLI(TempDirCase):
             self.assertNotIn("uplinksecret", body, name)
 
     # — upd timer drop-in —
+    # — /etc/hosts: only our marked block is ours —
+    def test_hosts_keeps_other_lines(self):
+        hosts = self.tmp / "root/etc/hosts"
+        hosts.parent.mkdir(parents=True)
+        hosts.write_text("127.0.0.1\tlocalhost\n127.0.1.1\tdebian\n192.168.1.5\tnas.home nas\n"
+                         "10.0.0.9\tbadger.lan\n# my note\n::1\tlocalhost ip6-localhost\n")
+        h = self.render(example_config())["hosts"]
+        self.assertIn("192.168.1.5\tnas.home nas\n", h)
+        self.assertIn("# my note\n", h)
+        self.assertIn("127.0.0.1\tlocalhost\n", h)
+        self.assertIn("::1\tlocalhost ip6-localhost\n", h)
+        self.assertNotIn("debian", h)                      # the image's old hostname on 127.0.1.1
+        self.assertNotIn("10.0.0.9", h)                    # a stale line for one of our names
+        block = h.split(render.HOSTS_BEGIN + "\n", 1)[1].split(render.HOSTS_END, 1)[0]
+        self.assertEqual(block, "127.0.1.1\tbadger\n10.10.10.10\tbadger.lan badger.local box.lan\n")
+        # re-rendering (and a hostname change) replaces only the block
+        hosts.write_text(h + "172.16.0.1\tadded.later\n")
+        h2 = self.render(example_config(network={"hostname": "cabin"}))["hosts"]
+        self.assertEqual(h2.count(render.HOSTS_BEGIN), 1)
+        self.assertIn("172.16.0.1\tadded.later\n", h2)
+        self.assertIn("10.10.10.10\tcabin.lan cabin.local box.lan\n", h2)
+        self.assertNotIn("badger", h2)
+        self.assertEqual(self.render(example_config(network={"hostname": "cabin"}))["hosts"], h2)
+
+    def test_hosts_migrates_the_old_fully_owned_file(self):
+        hosts = self.tmp / "root/etc/hosts"
+        hosts.parent.mkdir(parents=True)
+        hosts.write_text("127.0.0.1\tlocalhost\n127.0.1.1\tbadger\n10.10.10.10\tbadger.lan badger.local box.lan\n"
+                         "::1\t\tlocalhost ip6-localhost ip6-loopback\n")
+        h = self.render(example_config())["hosts"]
+        self.assertEqual(h.count("127.0.1.1"), 1)
+        self.assertEqual(h.count("box.lan"), 1)
+        self.assertTrue(h.startswith("127.0.0.1\tlocalhost\n::1"))
+
+    def test_hosts_from_nothing(self):
+        h = self.render(example_config())["hosts"]
+        self.assertTrue(h.startswith("127.0.0.1\tlocalhost\n"))
+        self.assertIn(render.HOSTS_BEGIN, h)
+
     def test_window(self):
         t = self.render(example_config(upd={"window": "01:00-06:00"}))["timer"]
         self.assertIn("[Timer]\nOnCalendar=\nOnCalendar=Sun 01:00\nRandomizedDelaySec=120min\n", t)
@@ -427,6 +527,152 @@ class RenderUnits(unittest.TestCase):
 
     def test_nginx_str(self):
         self.assertEqual(render._nginx_str('a"b\\c\n'), '"a\\"b\\\\c\\n"')
+
+
+def unit_ini(path: Path) -> dict[str, dict[str, list[str]]]:
+    """A systemd unit / drop-in as {section: {key: [values…]}} (repeated keys kept in order)."""
+    out: dict[str, dict[str, list[str]]] = {}
+    sec = ""
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith(("#", ";")):
+            continue
+        if s.startswith("["):
+            sec = s.strip("[]")
+            out.setdefault(sec, {})
+        elif "=" in s:
+            k, v = s.split("=", 1)
+            out.setdefault(sec, {}).setdefault(k.strip(), []).append(v.strip())
+    return out
+
+
+class SystemdUnits(unittest.TestCase):
+    """The unit files and drop-ins install.sh puts in /etc/systemd/system (VM pressure-test findings)."""
+    SYSTEMD = REPO / "os/systemd"
+
+    def test_packaged_services_restart_after_a_crash(self):
+        for unit in ("nginx", "dnsmasq", "chrony", "gpsd"):
+            d = self.SYSTEMD / f"{unit}.service.d"
+            confs = sorted(d.glob("*.conf"))
+            self.assertTrue(confs, f"no drop-in for {unit}")
+            svc = unit_ini(confs[0])["Service"]
+            self.assertEqual(svc["Restart"], ["on-failure"], unit)
+            self.assertEqual(svc["RestartSec"], ["2"], unit)
+
+    def test_no_start_limit_for_launcher_services(self):
+        self.assertEqual(unit_ini(self.SYSTEMD / "nginx.service.d/prepper-restart.conf")["Unit"]["StartLimitIntervalSec"],
+                         ["0"])
+        portal = unit_ini(self.SYSTEMD / "prepper-portal.service")
+        self.assertEqual(portal["Unit"]["StartLimitIntervalSec"], ["0"])
+        self.assertEqual(portal["Service"]["Restart"], ["always"])
+
+    def test_installer_copies_drop_in_folders(self):
+        sh = (REPO / "os/install.sh").read_text()
+        self.assertIn('for d in "$OPT"/os/systemd/*.d; do', sh)
+        self.assertIn('install -d -m 755 "/etc/systemd/system/$(basename "$d")"', sh)
+        # the unit-file loop's globs must not pick up the drop-in folders
+        for d in self.SYSTEMD.glob("*.d"):
+            self.assertFalse(d.name.endswith((".service", ".timer", ".path")))
+
+    def test_upd_auto_exit_75_is_not_a_failure_but_retried(self):
+        u = unit_ini(self.SYSTEMD / "upd-auto.service")
+        svc = u["Service"]
+        self.assertEqual(svc["SuccessExitStatus"], ["75"])
+        self.assertEqual(svc["RestartForceExitStatus"], ["75"])
+        # systemd refuses RestartForceExitStatus= on Type=oneshot units
+        self.assertNotEqual(svc.get("Type"), ["oneshot"])
+        self.assertEqual(svc["RestartPreventExitStatus"], ["1"])
+        self.assertIn("upd-check.service", u["Unit"]["After"])          # never together after a clock jump
+        self.assertNotIn("upd-check.service", " ".join(u["Unit"].get("Wants", []) + u["Unit"].get("Requires", [])))
+        for t in ("upd-check.timer", "upd-apply.timer"):
+            self.assertTrue(unit_ini(self.SYSTEMD / t)["Timer"].get("RandomizedDelaySec"), t)
+
+    def test_supplementary_groups_are_created(self):
+        """A unit naming a group that doesn't exist (gpio on plain Debian) can't start at all."""
+        sh = (REPO / "os/install.sh").read_text()
+        m = re.search(r"^for g in ([a-z0-9 ]+); do\n  getent group \"\$g\" >/dev/null \|\| groupadd -rf", sh, re.M)
+        self.assertTrue(m, "install.sh must create missing device groups")
+        created = set(m.group(1).split())
+        for unit in self.SYSTEMD.glob("*.service"):
+            for groups in unit_ini(unit).get("Service", {}).get("SupplementaryGroups", []):
+                for g in groups.split():
+                    self.assertIn(g, created, f"{unit.name}: group {g} is not created by install.sh")
+        self.assertIn('groupadd -rf "$g"', (REPO / "os/install.d/sensors.sh").read_text())
+
+
+class InstallerChecks(unittest.TestCase):
+    """install.sh / install.d details that can be checked without a Pi."""
+
+    def test_llama_server_is_static_and_checked(self):
+        sh = (REPO / "os/install.sh").read_text()
+        self.assertIn("-DBUILD_SHARED_LIBS=OFF", sh)
+        self.assertIn('"$OPT/llama/bin/llama-server" --version', sh)
+        self.assertIn('ldd "$OPT/llama/bin/llama-server"', sh)
+        self.assertIn('stamp llama "$LLAMA_CPP_REF-static"', sh)        # older (shared) builds are rebuilt
+        self.assertIn("https_proxy=http://127.0.0.1:9", sh)              # no build-time UI download
+
+    def test_llama_ui_option_filter(self):
+        """Only whole-word UI options are switched off — never LLAMA_BUILD_SERVER ("BUILD" contains "UI")."""
+        sh = (REPO / "os/install.sh").read_text()
+        loop = sh[sh.index("    ui_off=()"):sh.index('    echo "llama.cpp: web UI options')]
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "l"
+            (src / "tools/ui").mkdir(parents=True)
+            (src / "scripts").mkdir()
+            (src / "CMakeLists.txt").write_text('option(LLAMA_BUILD_SERVER "x" ON)\noption(LLAMA_BUILD_TOOLS "x" ON)\n')
+            (src / "tools/ui/CMakeLists.txt").write_text(
+                'option(LLAMA_BUILD_UI "b" ON)\noption( LLAMA_UI_DOWNLOAD "d" ON)\n'
+                'option(LLAMA_UI_OFFLINE "o" OFF)\noption(LLAMA_SERVER_WEBUI "w" ON)\n')
+            r = run([BASH, "-c", f'set -euo pipefail\nt={d}\n{loop}\necho "${{ui_off[*]}}"'])
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.split(),
+                             ["-DLLAMA_BUILD_UI=OFF", "-DLLAMA_SERVER_WEBUI=OFF", "-DLLAMA_UI_DOWNLOAD=OFF"])
+
+    def test_meshtastic_is_pinned(self):
+        sh = (REPO / "os/install.sh").read_text()
+        self.assertRegex(sh, r"(?m)^MESHTASTIC_PY=2\.7\.\d+$")
+        self.assertIn('"meshtastic==$MESHTASTIC_PY"', sh)
+        self.assertNotRegex(sh, r"pip\" install[^\n]* meshtastic( |$)")
+
+    def apt_some(self, available: dict[str, str], *args: str):
+        """Run sdr.sh's apt_some with a fake apt-cache (policy per package) and apt-get."""
+        frag = (REPO / "os/install.d/sdr.sh").read_text()
+        funcs = frag[frag.index("apt_candidate() {"):frag.index("sdr_dirs() {")]
+        with tempfile.TemporaryDirectory() as d:
+            b = Path(d)
+            (b / "apt-cache").write_text(
+                "#!/bin/bash\n[ \"$1\" = policy ] || exit 2\n"
+                "case \"$2\" in\n" + "".join(
+                    f"  {p}) printf '%s:\\n  Installed: (none)\\n  Candidate: {c}\\n' \"$2\" ;;\n"
+                    for p, c in available.items()) + "  *) ;;\nesac\nexit 0\n")
+            (b / "apt-get").write_text(f'#!/bin/bash\necho "$*" > {d}/installed\n')
+            for f in ("apt-cache", "apt-get"):
+                (b / f).chmod(0o755)
+            script = (f'set -euo pipefail\nPATH={d}:$PATH\nsdr_warn() {{ echo "!! sdr: $*"; }}\n{funcs}\n'
+                      f'apt_some {" ".join(repr(a) for a in args)}\n'
+                      'echo "missing=${APT_MISSING[*]:-}"\n'
+                      'if apt_missing_any libvolk-dev libvolk2-dev; then echo volk-missing; fi\n')
+            r = run([BASH, "-c", script])
+            inst = (b / "installed").read_text().split() if (b / "installed").exists() else None
+            return r, inst
+
+    def test_apt_some_needs_a_real_candidate(self):
+        # Debian 13: libvolk2-dev is only "referred to" (Candidate: (none)); libvolk-dev is real.
+        r, inst = self.apt_some({"libvolk2-dev": "(none)", "libvolk-dev": "3.1.2-1", "cmake": "3.31.6-2"},
+                                "cmake", "libvolk-dev|libvolk2-dev", "libnope-dev")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual(inst, ["install", "-y", "-q", "--no-install-recommends", "cmake", "libvolk-dev"])
+        self.assertIn("missing=libnope-dev", r.stdout)
+        self.assertIn("not in this system's package archive (skipped): libnope-dev", r.stdout)
+        self.assertNotIn("volk-missing", r.stdout)
+        # Debian 12: the other name
+        r, inst = self.apt_some({"libvolk2-dev": "2.5.2-1"}, "libvolk-dev|libvolk2-dev")
+        self.assertEqual(inst[-1], "libvolk2-dev")
+        # neither: reported, and SatDump's essentials check sees it
+        r, inst = self.apt_some({"libvolk2-dev": "(none)", "cmake": "3"}, "cmake", "libvolk-dev|libvolk2-dev")
+        self.assertIn("missing=libvolk-dev|libvolk2-dev", r.stdout)
+        self.assertIn("volk-missing", r.stdout)
+        self.assertEqual(inst[-1], "cmake")
 
 
 if __name__ == "__main__":

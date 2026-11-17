@@ -65,15 +65,17 @@ The Badger has **two radio receivers**. SDR 1 is the weather radio and always li
 
 **🎙️ Voice** (visitor; admin can limit it to family). Ask a question out loud on your phone and hear the answer. It uses the same offline AI as *Ask the Library*. Useful when your hands are busy or reading is hard. On plain `http://` your phone's recorder is used; over `https://` it's one tap. English only. Your recording is deleted once it's turned into text. Details: [features/voice.md](features/voice.md).
 
+**🧮 Problem solver** (visitor; admin chooses AI models). Works out real problems — power and solar, water and pipes, structures and ropes, heat and fuel, radio, maths, games and decisions, simple code, survival planning — step by step with calculators and the library, and shows its working. Not for writing letters. Details: [features/solver.md](features/solver.md)
+
 ## Turning features on and off
 
-Each feature has a `[<name>]` section in `/etc/prepper/prepper.toml` (the example files are in `os/prepper.toml.d/`), and any of them can be switched off there with `[features] <name> = false`, for example `[features] skills = false`. Most also have an admin box at the bottom of their own page.
+Each feature has a `[<name>]` section in `/etc/prepper/prepper.toml` (documented in `os/prepper.toml.example`), and any of them can be switched off there with `[features] <name> = false`, for example `[features] skills = false`. Most also have an admin box at the bottom of their own page.
 
 ## Extra hardware
 
 | Feature | Needs |
 |---|---|
-| Library, AI, maps, boards, Supplies, Vault, Missing & found, Skills, Aid station, Voice | nothing extra |
+| Library, AI, maps, boards, Supplies, Vault, Missing & found, Skills, Aid station, Voice, Problem solver | nothing extra |
 | Weather alerts, NOAA forecast | SDR 1 and its folding whip (every Badger) |
 | Aircraft, Weather satellites | SDR 2, the 1090 MHz whip and the dipole kit (every Badger) |
 | Mesh radio, radio announcements | the built-in Meshtastic node (every Badger) |

@@ -90,6 +90,7 @@ standalone = false
 # panel_lock_arm = "/var/lib/prepper/portal/panel-lock-arm.json"   # "arm the panel lock" request from the launcher (default shown)
 # mesh_peers = "/var/lib/prepper/portal/mesh-peers.json"           # Badgers nearby, written by the mesh bridge (default shown)
 # mesh_silent_file = "/var/lib/prepper/portal/mesh-silent"         # radio-silence flag: the file existing means silence (default shown)
+# max_threads = 128                # requests served at once (16–1024); more wait in a 256-deep queue, then get "busy" (503)
 
 [ai]
 enabled = true
@@ -511,3 +512,25 @@ remote_untrusted = false         # true: also accept readings sent on the public
 # mesh = true
 # level = "danger"
 # note = "creek rising — move vehicles"
+
+[solver]                         # Problem solver (docs/features/solver.md); turn it off with solver = false in the features section
+enabled = true                   # the admin can also switch it on/off on its page
+access = "public"                # "public" (like Ask: anyone on the Wi-Fi) or "member" (family and admin only)
+per_ip_per_hour = 6              # deep-solve submissions per phone per hour
+max_queue = 6                    # problems waiting at once (one is solved at a time)
+max_steps = 10                   # tool calls the model may make before it must answer
+context_tokens = 0               # 0 = ask llama-server (its per-slot context); otherwise a fixed budget
+idle_minutes = 10                # swap back to the fast model after this long without deep work
+job_ttl_hours = 12               # finished problems are kept this long (survive reloads and restarts)
+job_timeout_minutes = 45         # a problem still running after this is stopped
+token_timeout = 300              # seconds without a token from llama-server before giving up
+calc_per_10min = 60              # direct calculator uses per phone per 10 minutes
+reserve_mb = 1000                # RAM kept free for the rest of the Badger when deciding whether a model fits
+python = true                    # the sandboxed Python tool (only ever used when its isolation is proven)
+sandbox_socket = "/run/prepper-solver/sandbox.sock"
+
+[solver.models]                  # optional: default model per role (catalog ids); the admin page overrides these
+# fast = "model_qwen3_4b"        # default: the ai section's model
+# reasoning = "model_qwen3_8b"
+# coder = "model_qwen25_coder_1_5b"
+# endurance = "model_qwen25_1_5b" # default: the ai section's endurance_model

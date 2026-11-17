@@ -205,9 +205,10 @@ def send_test(req, ctx, args):
     if board not in ("community", "family"):
         return 400, {"error": "board must be community or family"}
     with _test_lock:
-        if time.time() - _last_test[0] < 60:
+        now = time.monotonic()                      # a clock set back must not block tests for hours
+        if _last_test[0] and now - _last_test[0] < 60:
             return 429, {"error": "one test a minute"}
-        _last_test[0] = time.time()
+        _last_test[0] = now
     text = "Test from the Badger's sensor station — no action needed."
     ok, msg = ctx.board_post("sensors", SYSTEM_NAME, text, False, board, SYSTEM_MEMBER if board == "family" else None)
     mesh = bool(data.get("mesh") is True and ctx.mesh_send(sl.MESH_PREFIX + text, board))

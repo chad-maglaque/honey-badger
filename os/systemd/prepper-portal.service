@@ -1,6 +1,9 @@
 [Unit]
 Description=Honey Badger launcher API
 After=network.target
+# No start limit: repeated restarts (the admin's "restart service", power-mode changes, a crash
+# loop while the disk is full) must never leave the launcher API failed for good.
+StartLimitIntervalSec=0
 
 [Service]
 User=prepper

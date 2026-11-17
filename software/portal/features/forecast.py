@@ -112,10 +112,10 @@ def get_item(req, ctx, args):
 
 def update_now(req, ctx, args):
     with _lock:
-        t = time.time()
-        if t - _last_update_req[0] < 120:
+        t, mono = time.time(), time.monotonic()     # the window on the monotonic clock: jumps can't stretch it
+        if _last_update_req[0] and mono - _last_update_req[0] < 120:
             return 429, {"error": "A capture was asked for a moment ago. It takes about 10 minutes."}
-        _last_update_req[0] = t
+        _last_update_req[0] = mono
     ctx.atomic_write(ctx.data_dir() / "update-now.request", json.dumps({"at": t}))
     return {"ok": True, "message": "Recording the weather broadcast now. The written forecast appears here in "
                                    "about 10 minutes."}

@@ -41,6 +41,7 @@ a CORS preflight, which this server never grants for POST, nor read the reply.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import hmac
 import importlib.util
@@ -189,6 +190,11 @@ class PortalConfig:
         self.edition = p.get("edition", "disk")
         self.ask_books = list(p.get("ask_books", []))
         self.ask_timeout = float(p.get("ask_timeout", 300))     # seconds without a token from llama-server
+        # requests served at once (each holds a thread); more wait in the accept queue, then get a 503
+        try:
+            self.max_threads = min(1024, max(16, int(p.get("max_threads", 128))))
+        except (TypeError, ValueError):
+            self.max_threads = 128
         self.ask_concurrency = max(1, int(p.get("ask_concurrency", 2)))
         # Extra host[:port] names a browser may POST from (Origin), beyond the Host it asked for.
         self.allowed_origins = {str(h).lower() for h in p.get("allowed_origins", [])}
@@ -266,15 +272,74 @@ _cache: dict[str, tuple[float, object]] = {}
 _lock = threading.Lock()
 
 
+_inflight: dict[str, threading.Event] = {}
+
+
 def cached(key: str, ttl: float, fn):
+    """fn()'s value, kept ttl seconds. Single-flight: when it runs out, one thread recomputes it while
+    the others keep using the old value (or, the very first time, wait for that one result) — before,
+    every request arriving in that moment ran the same slow probe at once."""
+    for _ in range(3):
+        with _lock:
+            hit = _cache.get(key)
+            if hit and time.monotonic() - hit[0] < ttl:
+                return hit[1]
+            ev = _inflight.get(key)
+            mine = ev is None
+            if mine:
+                ev = _inflight[key] = threading.Event()
+            elif hit:
+                return hit[1]                          # stale, but someone is already refreshing it
+        if mine:
+            try:
+                val = fn()
+                with _lock:
+                    _cache[key] = (time.monotonic(), val)
+                return val
+            finally:
+                with _lock:
+                    _inflight.pop(key, None)
+                ev.set()
+        ev.wait(30)
+        with _lock:
+            hit = _cache.get(key)
+        if hit:
+            return hit[1]
+    return fn()
+
+
+def cached_background(key: str, ttl: float, fn, wait: float = 0.3, default=None):
+    """Like cached(), but a request never waits for a slow refresh: a stale value is returned at once
+    while one background thread refreshes it; with nothing cached yet, the request that started the
+    refresh waits at most `wait` s for it, and the others get `default` straight away."""
     with _lock:
         hit = _cache.get(key)
         if hit and time.monotonic() - hit[0] < ttl:
             return hit[1]
-    val = fn()
+        ev = _inflight.get(key)
+        if ev is not None and not hit:
+            return default
+        if ev is None:
+            ev = _inflight[key] = threading.Event()
+
+            def refresh():
+                try:
+                    val = fn()
+                    with _lock:
+                        _cache[key] = (time.monotonic(), val)
+                except Exception as e:  # noqa: BLE001 — a probe must never take the portal down
+                    print(f"[portal] {key} refresh failed: {type(e).__name__}", file=sys.stderr)
+                finally:
+                    with _lock:
+                        _inflight.pop(key, None)
+                    ev.set()
+            threading.Thread(target=refresh, daemon=True, name=f"refresh-{key}").start()
+    if hit:
+        return hit[1]
+    ev.wait(wait)
     with _lock:
-        _cache[key] = (time.monotonic(), val)
-    return val
+        hit = _cache.get(key)
+    return hit[1] if hit else default
 
 
 # ─────────────────────────────── helpers ─────────────────────────────────────
@@ -352,7 +417,7 @@ _fail_recent: list[float] = []         # times of recent misses from anywhere (s
 _trusted: dict[str, float] = {}        # ip → last successful login: exempt from the global brake
 GLOBAL_WINDOW, GLOBAL_FREE, GLOBAL_CAP = 900.0, 20, 60.0
 TRUST_FOR = 30 * 86400
-_now = time.time                       # (tests swap the clock)
+_now = time.monotonic                  # lockouts are in-memory: immune to wall-clock jumps (tests swap it)
 
 
 def reset_login_limits() -> None:
@@ -549,8 +614,9 @@ def services_up() -> dict[str, bool]:
             t = threading.Thread(target=one, args=(name, url)); t.start(); threads.append(t)
         for t in threads:
             t.join(3)
-        return out
-    return cached("services", 15, run)
+        return dict(out)
+    # a hung service makes its probe wait 1.5 s: refresh in the background, never in a phone's request
+    return cached_background("services", 15, run, wait=3.5, default={})
 
 
 def load_renderers() -> dict:
@@ -643,11 +709,16 @@ def uplink() -> dict | None:
     return cached("uplink", 15, run)
 
 
+GPSD_ADDR = ("127.0.0.1", 2947)
+
+
 def gps_fix() -> dict | None:
-    """One TPV report from gpsd (localhost:2947), cached 10 s. None if no fix/gpsd."""
+    """One TPV report from gpsd (localhost:2947), cached 10 s. None if no fix/gpsd.
+    Asked in the background: gpsd with no receiver (or no fix yet) answers nothing for seconds, and
+    /api/status must not wait for that (it took 1.5 s whenever the cache ran out)."""
     def run():
         try:
-            with socket.create_connection(("127.0.0.1", 2947), timeout=1.0) as s:
+            with socket.create_connection(GPSD_ADDR, timeout=1.0) as s:
                 s.sendall(b'?WATCH={"enable":true,"json":true}\n')
                 s.settimeout(1.5)
                 buf, deadline = b"", time.monotonic() + 2.5
@@ -667,7 +738,7 @@ def gps_fix() -> dict | None:
         except OSError:
             return None
         return None
-    return cached("gps", 10, run)
+    return cached_background("gps", 10, run, wait=0.3)
 
 
 def time_sync() -> dict:
@@ -953,13 +1024,40 @@ def tail_lines(path: Path, limit: int, max_bytes: int = TAIL_BYTES) -> list[byte
     return [ln for ln in lines if ln.strip()][-limit:]
 
 
+STORAGE_FULL_MSG = "The Badger's storage is full, so this wasn't saved. Ask the Badger's owner to free some space."
+
+
+def is_storage_full(e: BaseException) -> bool:
+    return isinstance(e, OSError) and e.errno in (errno.ENOSPC, errno.EDQUOT)
+
+
+PRIVATE_MODE = 0o640      # portal data (boards, mesh outbox, feature files): user + group prepper only
+
+
+def private_write(path: Path, text: str) -> None:
+    """atomic_write for portal data: created 0640, never world-readable whatever the umask."""
+    upd.atomic_write(path, text, PRIVATE_MODE)
+
+
+def open_private_append(path: Path):
+    """Open a JSON-lines file for appending, creating it 0640 (a plain open() gives 0644 under the
+    usual umask). An existing file that is still world-readable from an older release is tightened."""
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, PRIVATE_MODE)
+    try:
+        if os.fstat(fd).st_mode & 0o007:
+            os.fchmod(fd, PRIVATE_MODE)
+    except OSError:
+        pass
+    return os.fdopen(fd, "a", encoding="utf-8")
+
+
 def trim_jsonl(path: Path, max_bytes: int) -> None:
     """Keep a JSON-lines file under max_bytes by dropping its oldest half (atomic replace)."""
     try:
         if path.stat().st_size <= max_bytes:
             return
         keep = b"\n".join(tail_lines(path, 10 ** 9, max_bytes // 2)) + b"\n"
-        upd.atomic_write(path, keep.decode("utf-8", "replace"))
+        private_write(path, keep.decode("utf-8", "replace"))
     except OSError as e:
         print(f"[portal] could not trim {path.name}: {e}", file=sys.stderr)
 
@@ -1029,7 +1127,7 @@ def _mesh_pending_save(items: list[dict]) -> None:
     for i in waiting[:-MESH_PENDING_MAX]:
         i["status"] = "expired"                      # too many waiting: the oldest lapse
     CFG.mesh_pending.parent.mkdir(parents=True, exist_ok=True)
-    upd.atomic_write(CFG.mesh_pending, json.dumps({"items": items[-200:]}))
+    private_write(CFG.mesh_pending, json.dumps({"items": items[-200:]}))
 
 
 def mesh_pending_list() -> list[dict]:
@@ -1085,7 +1183,7 @@ def outbox_append(rec: dict) -> bool:
             return False
     except FileNotFoundError:
         pass
-    with open(CFG.mesh_outbox, "a") as fh:
+    with open_private_append(CFG.mesh_outbox) as fh:
         try:
             import fcntl
             fcntl.flock(fh, fcntl.LOCK_EX)              # the bridge empties the file under the same lock
@@ -1127,8 +1225,8 @@ def board_post(ip: str, name: str, text: str, mesh: bool, board: str = "communit
         return False, "mesh messages are limited to 200 bytes, including your name"
     text = text[:2000]
     with _board_lock:                                  # check-and-set, or two posts race through
-        now = time.time()
-        if now - _last_post.get(ip, 0) < 5:
+        now = time.monotonic()                         # a wall-clock jump must not block (or free) posting
+        if now - _last_post.get(ip, -1e18) < 5:
             return False, "slow down — one message every 5 seconds"
         _last_post[ip] = now
         if len(_last_post) > 1000:
@@ -1147,22 +1245,31 @@ def board_post(ip: str, name: str, text: str, mesh: bool, board: str = "communit
         rec.update(member=member["id"], verified=True)
     path = board_file(board)
     queued = True
-    with _board_lock:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if ask:
-            pid = secrets.token_urlsafe(9)
-            items = mesh_pending_load()
-            items.append({"id": pid, "at": int(time.time()), "name": name, "text": text, "status": "pending"})
-            _mesh_pending_save(items)
-            rec["pid"] = pid
-        if mesh:
-            queued = outbox_append(outbox_record(f"{name}: {text}", board, board,
-                                                 member=bool(member) and not sys_post))
-            if not queued:
-                rec["via"] = "local"
-        with open(path, "a") as fh:
-            fh.write(json.dumps(rec) + "\n")
-        trim_jsonl(path, BOARD_MAX_BYTES)
+    try:
+        with _board_lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if ask:
+                pid = secrets.token_urlsafe(9)
+                items = mesh_pending_load()
+                items.append({"id": pid, "at": int(time.time()), "name": name, "text": text, "status": "pending"})
+                _mesh_pending_save(items)
+                rec["pid"] = pid
+            if mesh:
+                queued = outbox_append(outbox_record(f"{name}: {text}", board, board,
+                                                     member=bool(member) and not sys_post))
+                if not queued:
+                    rec["via"] = "local"
+            with open_private_append(path) as fh:
+                fh.write(json.dumps(rec) + "\n")
+                fh.flush()                             # a full disk shows here, not as a silent "posted"
+            trim_jsonl(path, BOARD_MAX_BYTES)
+    except OSError as e:
+        with _board_lock:
+            _last_post.pop(ip, None)                   # nothing was posted: don't make them wait
+        if is_storage_full(e):
+            return False, STORAGE_FULL_MSG
+        print(f"[portal] board post not saved: {type(e).__name__}: {e.strerror or e}", file=sys.stderr)
+        return False, "The message could not be saved on the Badger. Try again in a moment."
     if not queued:
         return True, "posted here — but the radio queue is full, so it was not sent over the mesh"
     if ask:
@@ -1492,6 +1599,10 @@ FEATURES: list[dict] = []
 FEATURE_LIMIT = 25_000_000
 
 
+def human_mb(n: int) -> str:
+    return f"{n / 1_000_000:.0f} MB" if n >= 1_000_000 else f"{max(1, n // 1000)} kB"
+
+
 def _feature_send_bytes(req, data: bytes, ctype: str, headers: dict | None = None, status: int = 200) -> None:
     req.send_response(status)
     req.send_header("Content-Type", ctype)
@@ -1549,7 +1660,7 @@ def feature_ctx(fid: str) -> types.SimpleNamespace:
         cfg=lambda section=None: (CFG.raw.get(section or fid, {}) or {}),
         raw_config=lambda: CFG.raw,
         data_dir=lambda: _feature_data_dir(fid),
-        read_json=read_json, atomic_write=upd.atomic_write, members=members_db,
+        read_json=read_json, atomic_write=private_write, members=members_db,
         board_post=board_post, mesh_send=_feature_mesh_send, alerts=active_alerts, status=status,
         send_bytes=_feature_send_bytes, send_file=_feature_send_file, ctl=ctl, kiwix_search=kiwix_search,
         ask_stream=ask_stream,   # ask_stream(q, write(event, data), brief=False): the library-grounded AI answer
@@ -1655,6 +1766,131 @@ def parse_range(header: str, size: int):
     return max(0, size - n), size - 1
 
 
+class BodyTimeout(TimeoutError):
+    """The whole request body took longer than its deadline."""
+
+
+BODY_DEADLINE = 120.0          # seconds for a whole request body, however slowly it trickles in …
+BODY_RATE = 100_000            # … plus 1 s per 100 kB past the first MB (a 25 MB upload on weak Wi-Fi)
+DRAIN_MAX = 32 * 1024 * 1024   # a refused body up to this size is read and thrown away …
+DRAIN_SECONDS = 30.0           # … for at most this long, so nginx gets our answer instead of a reset (502)
+
+
+class _BodyReader:
+    """Stands in for the request's rfile while a POST is handled. It counts the bytes taken (a refusal
+    then knows how much is left to drain) and holds the whole body to one deadline: the socket timeout
+    alone starts again on every byte, so a phone sending 1 byte every 5 s kept a thread for ever.
+    Handlers just call .read(n) as before; the next request on the connection reads the real rfile."""
+
+    def __init__(self, raw, sock, length: int):
+        self.raw, self.sock, self.taken = raw, sock, 0
+        self.deadline = time.monotonic() + BODY_DEADLINE + max(0, length - 1_000_000) / BODY_RATE
+
+    def _arm(self) -> None:
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise BodyTimeout("request body took too long")
+        try:
+            if self.sock is not None:
+                self.sock.settimeout(min(Handler.timeout, left))
+        except OSError:
+            pass
+
+    def read(self, n: int = -1) -> bytes:
+        if n is None or n < 0:
+            raise ValueError("read the body with an exact length")
+        out = []
+        while n > 0:
+            self._arm()
+            chunk = self.raw.read1(min(n, 1 << 16))
+            if not chunk:
+                break
+            out.append(chunk)
+            self.taken += len(chunk)
+            n -= len(chunk)
+        try:
+            if self.sock is not None:
+                self.sock.settimeout(Handler.timeout)   # replies (a streamed AI answer) get the usual timeout
+        except OSError:
+            pass
+        return b"".join(out)
+
+    def readline(self, limit: int = -1) -> bytes:       # (not used for bodies; kept file-like)
+        self._arm()
+        line = self.raw.readline(limit)
+        self.taken += len(line)
+        return line
+
+    def __getattr__(self, name):
+        return getattr(self.raw, name)
+
+
+class PortalServer(ThreadingHTTPServer):
+    """The portal's HTTP server: a deep accept queue and a bounded number of worker threads.
+
+    The stock server listens with a backlog of 5 (a burst of phones got resets → nginx 502s) and starts
+    one thread per connection without limit (a flood of slow clients grew to ~500 threads). Here at most
+    max_threads connections are served at once; a connection that finds every slot busy for
+    slot_wait seconds gets a short 503 instead of a thread."""
+    request_queue_size = 256
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, addr, handler, max_threads: int = 128, slot_wait: float = 5.0):
+        self.max_threads, self.slot_wait = max(4, int(max_threads)), slot_wait
+        self._slots = threading.BoundedSemaphore(self.max_threads)
+        self._quiet_until, self._quiet_count = 0.0, 0
+        super().__init__(addr, handler)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(timeout=self.slot_wait):
+            self._busy(request)
+            return
+        try:
+            threading.Thread(target=self._serve, args=(request, client_address), daemon=True).start()
+        except RuntimeError:                           # can't start a thread (memory): refuse, don't die
+            self._slots.release()
+            self._busy(request)
+
+    def _serve(self, request, client_address):
+        try:
+            self.process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+    def _busy(self, request) -> None:
+        body = b'{"error": "The Badger is very busy right now. Try again in a few seconds."}'
+        try:
+            request.settimeout(1.0)
+            request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n"
+                            b"Retry-After: 5\r\nConnection: close\r\nContent-Length: " +
+                            str(len(body)).encode() + b"\r\n\r\n" + body)
+        except OSError:
+            pass
+        self.shutdown_request(request)
+        self.note("all worker threads busy: refused a connection")
+
+    def note(self, msg: str) -> None:
+        """One log line for a burst of the same thing, not one per connection (a flood would fill the journal)."""
+        now = time.monotonic()
+        if now < self._quiet_until:
+            self._quiet_count += 1
+            return
+        more = f" (+{self._quiet_count} more in the last minute)" if self._quiet_count else ""
+        self._quiet_until, self._quiet_count = now + 60, 0
+        sys.stderr.write(f"[portal] {msg}{more}\n")
+
+    def handle_error(self, request, client_address):
+        """A phone that hangs up or stalls mid-request is normal on Wi-Fi: one quiet line, no traceback."""
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionError, TimeoutError)) or (
+                isinstance(exc, OSError) and exc.errno in (errno.EPIPE, errno.ECONNRESET, errno.ECONNABORTED,
+                                                           errno.ENOTCONN, errno.ETIMEDOUT)):
+            self.note(f"client went away: {type(exc).__name__}")
+            return
+        super().handle_error(request, client_address)
+
+
 class Handler(SimpleHTTPRequestHandler):
     server_version = "PrepperPortal/1.0"
     protocol_version = "HTTP/1.1"
@@ -1690,30 +1926,104 @@ class Handler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def guarded(self, fn):
+    def guarded(self, fn, body: bool = False):
         """Every request ends with a response: an unexpected error becomes a JSON 500
-        instead of a dropped connection."""
+        instead of a dropped connection. body=True (POST): the body is read through a
+        _BodyReader (one deadline for the whole body), and a body we refuse or leave unread
+        is drained before the connection closes — closing on unread bytes makes the kernel
+        send a reset, and nginx then shows the phone a 502 instead of our answer."""
         self._responded = False
+        raw_rfile, self._body = self.rfile, None
+        if body:
+            self._body = self.rfile = _BodyReader(raw_rfile, getattr(self, "connection", None), self._declared_length())
         try:
-            fn()
-        except (BrokenPipeError, ConnectionResetError):
-            self.close_connection = True
-        except BadRequest as e:
-            if e.close:
+            try:
+                fn()
+            except BadRequest as e:
+                if e.close:
+                    self.close_connection = True
+                if not self._responded:
+                    self.drain_body()
+                    self.send_json({"error": e.message}, e.status)
+            except TimeoutError:
+                # The body stalled or trickled past its deadline: say so if we can, and hang up.
                 self.close_connection = True
-            if not self._responded:
-                self.send_json({"error": e.message}, e.status)
+                if not self._responded:
+                    self.send_json({"error": "The upload was too slow and was stopped. Check the Wi-Fi "
+                                             "signal and try again."}, 408)
+            except (ConnectionError, BrokenPipeError):
+                raise
+            except OSError as e:
+                if not is_storage_full(e):
+                    raise
+                sys.stderr.write(f"[portal] storage full handling {self.command} {self.path.split('?')[0]}\n")
+                self.close_connection = True
+                if not self._responded:
+                    self.drain_body()
+                    self.send_json({"error": STORAGE_FULL_MSG, "storage_full": True}, 507)
+            if body and self._body_left() > 0:
+                # The handler answered without reading the whole body (an early refusal): the rest
+                # must never be parsed as the next request, and must not turn into a reset either.
+                self.close_connection = True
+                self.drain_body(seconds=5.0)
+        except (ConnectionError, BrokenPipeError):
+            self.close_connection = True                 # the phone went away: nothing to answer
         except Exception:  # noqa: BLE001
             import traceback
             sys.stderr.write("[portal] error handling %s %s\n%s" % (self.command, self.path, traceback.format_exc()))
             self.close_connection = True
             if not self._responded:
                 try:
+                    self.drain_body(seconds=5.0)
                     # No exception text: it can name paths, users and data (it is in the journal for the admin).
                     self.send_json({"error": "Something went wrong on the Badger. Try again; if it keeps "
                                              "happening, the admin can look at the Badger's log."}, 500)
                 except OSError:
                     pass
+        finally:
+            if body:
+                self.rfile = raw_rfile
+                try:
+                    if getattr(self, "connection", None) is not None:
+                        self.connection.settimeout(self.timeout)
+                except OSError:
+                    pass
+
+    def _declared_length(self) -> int:
+        """Content-Length if it is one clean number (body_length() refuses everything else), else 0."""
+        lens = self.headers.get_all("Content-Length") or []
+        if self.headers.get("Transfer-Encoding") or len(set(v.strip() for v in lens)) != 1:
+            return 0
+        v = lens[0].strip()
+        return int(v) if re.fullmatch(r"[0-9]{1,12}", v) else 0
+
+    def _body_left(self) -> int:
+        b = getattr(self, "_body", None)
+        return max(0, self._declared_length() - b.taken) if b is not None else 0
+
+    def drain_body(self, seconds: float = DRAIN_SECONDS) -> None:
+        """Read and throw away what is left of a body we are refusing (up to DRAIN_MAX, for at most
+        `seconds`), so the answer reaches the phone: hanging up on unread bytes resets the connection
+        and nginx turns that into a 502 (or a cut-off reply) instead of our friendly message."""
+        b = getattr(self, "_body", None)
+        left = self._body_left()
+        if b is None or left <= 0 or left > DRAIN_MAX:
+            return
+        end, sock = time.monotonic() + seconds, getattr(self, "connection", None)
+        try:
+            while left > 0:
+                t = end - time.monotonic()
+                if t <= 0:
+                    break
+                if sock is not None:
+                    sock.settimeout(min(5.0, t))
+                chunk = b.raw.read1(min(left, 1 << 16))
+                if not chunk:
+                    break
+                b.taken += len(chunk)
+                left -= len(chunk)
+        except OSError:
+            self.close_connection = True
 
     def body_length(self) -> int:
         """Declared body size; anything we can't frame exactly closes the connection
@@ -1731,8 +2041,9 @@ class Handler(SimpleHTTPRequestHandler):
     def body_json(self) -> dict:
         n = self.body_length()
         if n > 1_000_000:
-            # Don't read (or wait for) a megabyte we'll throw away: answer and hang up.
-            raise BadRequest(413, "request body too large", close=True)
+            # guarded() drains what was sent (bounded) before answering, so the phone sees this, not a 502
+            raise BadRequest(413, "That's more than the Badger takes in one message (1 MB). Make it shorter.",
+                             close=True)
         raw = self.rfile.read(n) if n else b""
         if len(raw) < n:
             raise BadRequest(400, "request body ended early", close=True)
@@ -1795,16 +2106,19 @@ class Handler(SimpleHTTPRequestHandler):
         if not ok:
             if route.get("raw"):
                 # The (unread) upload body would otherwise be parsed as the next request on this
-                # keep-alive connection: hang up after the refusal instead.
+                # keep-alive connection: drain it (bounded) and hang up after the refusal.
                 self.close_connection = True
+                self.drain_body()
             return self.send_json({"error": "family members only" if access in ("member", "member_or_admin")
                                    else "not allowed"}, 401 if access != "local" else 403)
         if route.get("raw"):
             n = self.headers.get("Content-Length")
             if not (n and n.isdigit()):
                 raise BadRequest(411, "Content-Length required", close=True)
-            if int(n) > int(route.get("max_bytes", FEATURE_LIMIT)):
-                raise BadRequest(413, "file too large", close=True)
+            limit = int(route.get("max_bytes", FEATURE_LIMIT))
+            if int(n) > limit:
+                raise BadRequest(413, f"That file is too big for the Badger (the limit is {human_mb(limit)}). "
+                                      "Try a smaller one.", close=True)
         res = route["handler"](self, ctx, {"qs": qs or {}, "data": data, "path": path, "member": me,
                                            "admin": admin, "ip": self.client_ip()})
         if res is None:
@@ -2112,7 +2426,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.guarded(run)
 
     def do_POST(self):
-        self.guarded(self.route_post)
+        self.guarded(self.route_post, body=True)
 
     def route_post(self):
         u = urllib.parse.urlparse(self.path)
@@ -2133,7 +2447,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.member_refusal("the family board is for family members")
             ok, msg = board_post(self.client_ip(), str(data.get("name", "")), str(data.get("text", "")),
                                  data.get("mesh") is True, board, me, approved=self.is_admin())
-            return self.send_json({"ok": ok, "message": msg}, 200 if ok else 400)
+            return self.send_json({"ok": ok, "message": msg}, 200 if ok else (507 if msg == STORAGE_FULL_MSG else 400))
         if u.path == "/api/board/mesh":
             # a family member (or the admin) sends — or turns down — a visitor's "send over mesh"
             me = self.member()
@@ -2833,8 +3147,7 @@ def main() -> None:
     CFG = PortalConfig(cfg_path)
     load_features()
     host, port = CFG.listen.rsplit(":", 1)
-    srv = ThreadingHTTPServer((host, int(port)), Handler)
-    srv.daemon_threads = True
+    srv = PortalServer((host, int(port)), Handler, max_threads=CFG.max_threads)
     print(f"[portal] {CFG.edition} edition on http://{CFG.listen} "
           f"({'standalone' if CFG.standalone else 'behind nginx'})", file=sys.stderr)
     try:

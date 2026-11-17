@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import errno
 import datetime as dt
 import fcntl
 import hashlib
@@ -545,17 +546,18 @@ def log(msg: str) -> None:
     print(f"[upd {dt.datetime.now():%H:%M:%S}] {msg}", file=sys.stderr, flush=True)
 
 
-def atomic_write(path: Path, text: str) -> None:
+def atomic_write(path: Path, text: str, mode: int = 0o666) -> None:
     """Write-then-rename. The scratch name is unique per process and thread
     (two portal threads saving settings at once used to share one .tmp and
     trip over each other), is created O_EXCL (never follows a planted
     symlink), respects the umask like a plain open(), and is removed if the
-    write fails (e.g. ENOSPC) so the old file stays exactly as it was."""
+    write fails (e.g. ENOSPC) so the old file stays exactly as it was.
+    mode: e.g. 0o640 for private data (the umask can only narrow it further)."""
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     with contextlib.suppress(FileNotFoundError):
         tmp.unlink()
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
             fh.flush()
@@ -873,6 +875,13 @@ def resolve_hf(item: Item, cfg: Config) -> Remote:
     except _net_errors() as e:
         raise Offline(str(e)) from e
     sha = etag if re.fullmatch(r"[0-9a-f]{64}", etag) else None
+    pin = src.get("sha256")
+    if pin is not None:
+        if not (isinstance(pin, str) and re.fullmatch(r"[0-9a-f]{64}", pin)):
+            raise ValueError(f"catalog: {item.id} sha256 must be 64 lowercase hex characters")
+        if sha != pin:
+            raise ValueError(f"{item.id}: Hugging Face's file checksum is {(sha or 'missing')[:12]}, not the pinned "
+                             f"{pin[:12]} — not downloaded (update the catalog pin after checking the model)")
     return Remote(version=etag[:16], filename=src["file"].rsplit("/", 1)[-1], url=url,
                   size=size, sha256=sha, comparable=False)
 
@@ -2241,8 +2250,19 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status"); sub.add_parser("gc"); sub.add_parser("manifest")
     args = ap.parse_args(argv)
     cfg = Config.load(args.config)
-    return {"check": cmd_check, "apply": cmd_apply, "import": cmd_import, "export": cmd_export,
-            "status": cmd_status, "gc": cmd_gc, "manifest": cmd_manifest, "adopt": cmd_adopt}[args.cmd](cfg, args)
+    try:
+        return {"check": cmd_check, "apply": cmd_apply, "import": cmd_import, "export": cmd_export,
+                "status": cmd_status, "gc": cmd_gc, "manifest": cmd_manifest, "adopt": cmd_adopt}[args.cmd](cfg, args)
+    except OSError as e:
+        # A full disk (or a read-only / vanished one) is a state, not a bug: one clear line, no traceback.
+        # Every write goes through atomic_write/temp files, so nothing half-written is left behind.
+        if e.errno in (errno.ENOSPC, errno.EDQUOT):
+            log(f"error: the disk is full ({e.filename or 'no space left'}). Free some space and run it again.")
+            return 3
+        if e.errno == errno.EROFS:
+            log(f"error: the disk is read-only ({e.filename or e}). Check the drive and run it again.")
+            return 3
+        raise
 
 
 if __name__ == "__main__":

@@ -62,10 +62,42 @@ git_at_commit() {
   [ "$(git -C "$dir" rev-parse HEAD)" = "$commit" ] || { sdr_warn "$repo: fetched commit does not match"; return 1; }
 }
 
-apt_some() {   # install whichever of these packages this archive has
-  local p have=()
-  for p in "$@"; do apt-cache show "$p" >/dev/null 2>&1 && have+=("$p"); done
+# apt_candidate PKG — true if the archive can actually install PKG. `apt-cache show` is not enough:
+# it also succeeds for a name that is only referred to by other packages (libvolk2-dev on Debian 13,
+# which has libvolk-dev instead), and apt-get then refuses the whole list.
+apt_candidate() {
+  local c
+  c=$(apt-cache policy "$1" 2>/dev/null | awk '$1 == "Candidate:" { print $2; exit }')
+  [ -n "$c" ] && [ "$c" != "(none)" ]
+}
+
+# apt_some PKG|ALT … — install whichever of these the archive has. An argument "a|b" means
+# "a, or else b" (package names differ between Debian releases). Names with no candidate at all
+# are skipped and listed in APT_MISSING (one entry per argument, as written).
+APT_MISSING=()
+apt_some() {
+  local arg p pick have=()
+  APT_MISSING=()
+  for arg in "$@"; do
+    pick=""
+    for p in ${arg//|/ }; do
+      if apt_candidate "$p"; then pick=$p; break; fi
+    done
+    if [ -n "$pick" ]; then have+=("$pick"); else APT_MISSING+=("$arg"); fi
+  done
+  [ "${#APT_MISSING[@]}" -eq 0 ] || sdr_warn "not in this system's package archive (skipped): ${APT_MISSING[*]}"
   [ "${#have[@]}" -gt 0 ] && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends "${have[@]}"
+}
+
+# apt_missing_any NAME… — true if any of these (as written in an apt_some argument) was missing.
+apt_missing_any() {
+  local m n
+  for n in "$@"; do
+    for m in ${APT_MISSING[@]+"${APT_MISSING[@]}"}; do
+      case "|$m|" in *"|$n|"*) return 0 ;; esac
+    done
+  done
+  return 1
 }
 
 sdr_dirs() {
@@ -82,7 +114,8 @@ sdr_readsb() {
     return 1
   fi
   if sdr_stamp readsb "$READSB_COMMIT" && [ -x /usr/local/bin/readsb ]; then return 0; fi
-  apt_some git build-essential pkg-config librtlsdr-dev libusb-1.0-0-dev libncurses-dev zlib1g-dev libzstd-dev || return 1
+  apt_some git build-essential pkg-config librtlsdr-dev libusb-1.0-0-dev libncurses-dev zlib1g-dev libzstd-dev \
+    || { sdr_warn "readsb not built: its build packages did not install"; return 1; }
   git_at_commit "$READSB_REPO" "$READSB_COMMIT" "$SRC/readsb" || return 1
   make -C "$SRC/readsb" -j3 RTLSDR=yes >/dev/null || { sdr_warn "readsb build failed"; return 1; }
   install -m 755 "$SRC/readsb/readsb" /usr/local/bin/readsb && sdr_setstamp readsb "$READSB_COMMIT"
@@ -96,14 +129,24 @@ sdr_satdump() {
     return 1
   fi
   if sdr_stamp satdump "$SATDUMP_COMMIT" && [ -x /usr/local/bin/satdump ]; then return 0; fi
-  apt_some git cmake g++ pkg-config libfftw3-dev libpng-dev libtiff-dev libjemalloc-dev libcurl4-openssl-dev \
-    libvolk-dev libvolk2-dev libnng-dev librtlsdr-dev libzstd-dev libhdf5-dev libomp-dev ocl-icd-opencl-dev \
-    libsqlite3-dev libarmadillo-dev || return 1
+  # libvolk-dev on Debian 13 (trixie), libvolk2-dev on Debian 12 (bookworm).
+  if ! apt_some git cmake g++ pkg-config libfftw3-dev libpng-dev libtiff-dev libjemalloc-dev libcurl4-openssl-dev \
+    "libvolk-dev|libvolk2-dev" libnng-dev librtlsdr-dev libzstd-dev libhdf5-dev libomp-dev ocl-icd-opencl-dev \
+    libsqlite3-dev libarmadillo-dev; then
+    sdr_warn "SatDump not built: its build packages did not install (weather-satellite pictures stay off; aircraft still work)."
+    return 1
+  fi
+  # Without these SatDump can't be built at all: say so now rather than after a 45-minute build.
+  if apt_missing_any git cmake g++ libfftw3-dev libpng-dev libcurl4-openssl-dev libvolk-dev libvolk2-dev; then
+    sdr_warn "SatDump not built: required packages are missing from this system's archive (${APT_MISSING[*]})."
+    sdr_warn "Weather-satellite pictures stay off; everything else works. Re-run this script after an OS upgrade."
+    return 1
+  fi
   git_at_commit "$SATDUMP_REPO" "$SATDUMP_COMMIT" "$SRC/satdump" || return 1
   cmake -S "$SRC/satdump" -B "$SRC/satdump/build" -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF \
-    -DCMAKE_INSTALL_PREFIX=/usr/local >/dev/null || { sdr_warn "SatDump configure failed"; return 1; }
+    -DCMAKE_INSTALL_PREFIX=/usr/local >/dev/null || { sdr_warn "SatDump configure failed (weather-satellite pictures stay off; re-run to retry)"; return 1; }
   # 3 jobs: a 4 GB Pi runs out of memory with more
-  cmake --build "$SRC/satdump/build" -j3 >/dev/null || { sdr_warn "SatDump build failed"; return 1; }
+  cmake --build "$SRC/satdump/build" -j3 >/dev/null || { sdr_warn "SatDump build failed (weather-satellite pictures stay off; re-run to retry)"; return 1; }
   cmake --install "$SRC/satdump/build" >/dev/null && ldconfig && sdr_setstamp satdump "$SATDUMP_COMMIT"
 }
 

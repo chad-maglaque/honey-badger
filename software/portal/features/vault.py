@@ -154,9 +154,9 @@ class _BodyReader:
 
 
 class Vault:
-    def __init__(self, folder: Path, cfg: dict | None = None, clock=time.time):
+    def __init__(self, folder: Path, cfg: dict | None = None, clock=time.time, mono=None):
         cfg = cfg or {}
-        self.dir, self.clock = Path(folder), clock
+        self.dir, self.clock, self._mono = Path(folder), clock, mono
         self.meta_path, self.index_path, self.blobs = self.dir / "vault.json", self.dir / "index.bin", self.dir / "blobs"
         self.quota = _num(cfg.get("quota_mb"), 2048, 1, 1_000_000) * MIB
         self.max_files = _num(cfg.get("max_files"), 1000, 1, 20000)
@@ -177,13 +177,22 @@ class Vault:
         self._cleaned = False
         self._openssl_ok = None
 
+    def mono(self) -> float:
+        """The clock for idle/session timers, pending uploads and wrong-passphrase lockouts: monotonic, so
+        the wall clock jumping (GPS fix after a dead RTC, an admin fixing the time) can't stretch or cut
+        them. Wall-clock self.clock() stays for what is stored (added/edited dates, file ages). A test
+        that passes its own clock drives both."""
+        if self._mono is not None:
+            return self._mono()
+        return time.monotonic() if self.clock is time.time else self.clock()
+
     # ── sessions ──
     @staticmethod
     def sid(member: dict) -> tuple:
         return (str(member.get("id", "")), str(member.get("device", "")))
 
     def expire(self) -> None:
-        now = self.clock()
+        now = self.mono()
         with self.lock:
             for sid, s in list(self.sessions.items()):
                 if now - s["last"] > self.idle or now - s["start"] > self.max_session:
@@ -203,7 +212,7 @@ class Vault:
                 k[i] = 0
 
     def _start(self, member: dict, vk: bytes) -> None:
-        now = self.clock()
+        now = self.mono()
         with self.lock:
             self._drop(self.sid(member))
             self.sessions[self.sid(member)] = {"key": bytearray(vk), "start": now, "last": now,
@@ -233,13 +242,13 @@ class Vault:
             s = self.sessions.get(self.sid(member))
             if not s:
                 raise Refused(423, "The vault is locked.", locked=True)
-            s["last"] = self.clock()
+            s["last"] = self.mono()
             vk = bytes(s["key"])
         return vc.Cipher(vk, self.openssl)
 
     # ── wrong-passphrase limits ──
     def wait(self, ip: str, member: dict) -> float:
-        now = self.clock()
+        now = self.mono()
         recs = [self.fails.get("ip:" + ip), self.fails.get("dev:" + "/".join(self.sid(member))), self.gfail]
         return max([0.0] + [r[2] - now for r in recs if r])
 
@@ -251,7 +260,7 @@ class Vault:
             rec[2] = now + lock
 
     def _failed(self, ip: str, member: dict) -> None:
-        now = self.clock()
+        now = self.mono()
         with self.lock:
             for k in ("ip:" + ip, "dev:" + "/".join(self.sid(member))):
                 self._bump(self.fails.setdefault(k, [0, now, 0.0]), now, FAIL_WINDOW, FAILS, FAIL_LOCK)
@@ -449,7 +458,7 @@ class Vault:
         with self.lock:
             s = self.sessions.get(self.sid(member))
             out = {"setup": self.meta() is not None, "unlocked": bool(s),
-                   "idle_left": int(self.idle - (self.clock() - s["last"])) if s else 0,
+                   "idle_left": int(self.idle - (self.mono() - s["last"])) if s else 0,
                    "idle_minutes": self.idle // 60, "wait": int(self.wait(ip, member) + 0.999),
                    "quota": self.quota, "max_files": self.max_files, "max_file": self.max_file,
                    "min_passphrase": self.min_pass,
@@ -513,7 +522,7 @@ class Vault:
                 raise Refused(429, "Too many uploads at once. Try again in a minute.")
             self._check_room(idx, size, len(self.pending), sum(p["size"] for p in self.pending.values()))
             tok = secrets.token_urlsafe(18)
-            self.pending[tok] = {"sid": self.sid(member), "size": size, "exp": self.clock() + 900, **fields}
+            self.pending[tok] = {"sid": self.sid(member), "size": size, "exp": self.mono() + 900, **fields}
         return {"upload": tok}
 
     def receive_upload(self, req, member: dict, tok: str) -> dict:
@@ -681,7 +690,7 @@ class Vault:
         self.cipher(member)
         tok = secrets.token_urlsafe(24)
         with self.lock:
-            self.exports[tok] = {"sid": self.sid(member), "exp": self.clock() + 120}
+            self.exports[tok] = {"sid": self.sid(member), "exp": self.mono() + 120}
         return {"url": f"/api/vault/export/{tok}"}
 
     def send_export(self, req, tok: str):

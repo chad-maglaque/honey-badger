@@ -1,13 +1,21 @@
 [Unit]
 Description=Scheduled content update download (honours [upd] auto_apply and window)
 After=network-online.target
-# Exit 75 (offline, or another download holds the lock) is retried every
-# 30 minutes, at most 12 times per 6 h; next week's timer starts afresh.
+# After a forward clock jump (or a long power-off) both Persistent= timers fire at once: let the
+# metadata check finish first instead of colliding on upd's lock (exit 75, "another update is
+# running"). Ordering only — the check is not pulled in.
+After=upd-check.service
+# Exit 75 (offline, or another download holds the lock) is not a failure, but it is retried
+# every 30 minutes, at most 12 times per 6 h; next week's timer starts afresh.
 StartLimitIntervalSec=6h
 StartLimitBurst=12
 
 [Service]
-Type=oneshot
+# exec, not oneshot: systemd refuses RestartForceExitStatus= on oneshot units. Nothing waits for
+# this unit to finish (only its timer starts it).
+Type=exec
+SuccessExitStatus=75
+RestartForceExitStatus=75
 EnvironmentFile=-/etc/prepper/proxy.env
 # auto_apply = false → skipped (not failed).
 ExecCondition=/opt/prepper/os/bin/prepperctl auto-apply-enabled

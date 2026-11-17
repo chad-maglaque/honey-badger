@@ -378,6 +378,7 @@ class FakeChannel:
 class FakeLocalNode:
     def __init__(self):
         self.channels = [FakeChannel(1), FakeChannel(2), FakeChannel(2), FakeChannel(0)]
+        self.nodeNum = 0x0badfeed                      # a configured node (the library sets it from myInfo)
 
     def writeChannel(self, i):
         pass
@@ -388,6 +389,7 @@ class FakeLocalNode:
 
 class FakeIface:
     def __init__(self, nodes=None):
+        self.devPath = "/dev/ttyACM0"                  # a real radio on a serial port (meshbridge.radio_ready)
         self.nodes = nodes or {}
         self.sent = []
         self.data_sent = []

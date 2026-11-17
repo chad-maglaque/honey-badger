@@ -152,6 +152,27 @@ def snapshot(ctx, precise: bool = False) -> dict:
     return data
 
 
+# The radio service reports why the decoder stopped with the last line of readsb's log ("[2026-…]
+# Abnormal exit. uptime: 0d 0h 0m 0.005s", "usb_open error -3", …). Phones get plain words instead;
+# the raw line stays in the system log for the admin.
+_DECODER_PREFIXES = ("The aircraft decoder stopped early:", "The aircraft decoder stopped (", "SDR 2 isn't working (")
+_NO_DONGLE = re.compile(r"no (supported )?devices? found|usb_open|usb_claim|no such device|abnormal exit|"
+                        r"rtlsdr|rtl-sdr|failed to open|uptime:|libusb|device not found", re.I)
+
+
+def plain_message(msg: str) -> str:
+    msg = str(msg or "")
+    if not msg.startswith(_DECODER_PREFIXES):
+        return msg[:300]
+    retrying = "trying again" in msg
+    if _NO_DONGLE.search(msg):
+        text = ("The aircraft receiver couldn't find its radio dongle. Check that the SDR stick is plugged in "
+                "(and its antenna attached)")
+    else:
+        text = "The aircraft receiver stopped unexpectedly"
+    return text + ("; it will try again shortly." if retrying else ", then try again.")
+
+
 def radio(ctx, family: bool = False) -> dict:
     st = C.read_status()
     air = st.get("aircraft") if isinstance(st.get("aircraft"), dict) else {}
@@ -159,7 +180,7 @@ def radio(ctx, family: bool = False) -> dict:
     return {"running": bool(st.get("running")), "weather_radio": st.get("weather_radio"),
             "paused_by": st.get("by") if paused else None, "paused_until": st.get("until") if paused else None,
             "state": air.get("state", "off"), "device": air.get("device"), "until": air.get("until"),
-            "by": air.get("by") if family else None, "message": str(air.get("message") or "")[:300], "request": air.get("request"),
+            "by": air.get("by") if family else None, "message": plain_message(air.get("message")), "request": air.get("request"),
             "installed": air.get("installed"), "always_on": bool(air.get("always_on")),
             "scans_left": air.get("scans_left"), "scan_minutes": air.get("scan_minutes", 15),
             "dedicated": bool(air.get("dedicated")), **C.sdr2_info(st)}

@@ -3,12 +3,48 @@
 # --api-prefix /ai: every route (web UI, /ai/v1/chat/completions, /ai/health)
 # lives under /ai, so nginx passes /ai/ through unchanged (proxy_pass without a
 # trailing slash) and the portal talks to http://127.0.0.1:8090/ai.
+# The problem solver can pick another model with `prepperctl ai-model ID`, which writes
+# /run/prepper/llama-model (line 1: catalog id; then optional "ctx=N" and "flash=1" lines taken
+# from the catalog entry). It is honoured only if that model file exists and not in endurance mode.
+# --jinja (the model's own chat template, needed for tool calls) and --kv-unified (one shared KV
+# buffer for both slots) are assumed to exist in the pinned llama.cpp (LLAMA_CPP_REF in
+# os/versions.env; its source is not available on the build Mac, so this is unverified until the
+# first build on the Pi). --flash-attn on takes a value in current llama.cpp.
 # shellcheck source=/dev/null
 . /etc/default/prepper
 variant=$(cat /run/prepper/llama-variant 2>/dev/null || echo default)
-model=$LLAMA_MODEL; threads=$LLAMA_THREADS
+model=$LLAMA_MODEL; threads=$LLAMA_THREADS; ctx=$LLAMA_CTX; extra=()
 if [ "$variant" = endurance ] || [ ! -e "$model" ]; then model=$LLAMA_ENDURANCE_MODEL; threads=2; fi
+if [ "$variant" != endurance ] && [ -r /run/prepper/llama-model ]; then
+  { read -r pick; } < /run/prepper/llama-model || true
+  if [[ "$pick" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] && [ -e "${LLAMA_MODEL%/*}/$pick.current" ]; then
+    model=${LLAMA_MODEL%/*}/$pick.current
+    while IFS='=' read -r k v; do
+      case "$k=$v" in
+        ctx=[0-9]*) [[ "$v" =~ ^[0-9]{3,7}$ ]] && ctx=$v ;;
+        flash=1) extra=(--flash-attn on --cache-type-k q8_0 --cache-type-v q8_0) ;;
+      esac
+    done < <(tail -n +2 /run/prepper/llama-model)
+  fi
+fi
 [ -e "$model" ] || { echo "no model downloaded yet"; exit 0; }
-exec /opt/prepper/llama/bin/llama-server --model "$model" --host 127.0.0.1 --port 8090 \
-  --threads "$threads" --ctx-size "$LLAMA_CTX" --api-prefix /ai --parallel 2 \
+BIN=/opt/prepper/llama/bin/llama-server
+# Optional options are passed only if this build lists them in --help, so an unknown option can
+# never stop the AI from starting (llama-server refuses to run with an option it doesn't know).
+help=$("$BIN" --help 2>&1 || true)
+has() { grep -q -- "$1" <<<"$help"; }
+opt=()
+has '--jinja' && opt+=(--jinja)
+has '--kv-unified' && opt+=(--kv-unified)
+if [ ${#extra[@]} -gt 0 ]; then
+  extra=()
+  if has '--flash-attn'; then
+    # newer builds: "--flash-attn [on|off|auto]" (takes a value); older: a bare switch
+    if grep -Eq -- '--flash-attn[[:space:]]+[[<{]?(on|off|auto)' <<<"$help"; then extra+=(--flash-attn on); else extra+=(--flash-attn); fi
+    has '--cache-type-k' && has '--cache-type-v' && extra+=(--cache-type-k q8_0 --cache-type-v q8_0)
+  fi
+fi
+exec "$BIN" --model "$model" --host 127.0.0.1 --port 8090 \
+  --threads "$threads" --ctx-size "$ctx" --api-prefix /ai --parallel 2 \
+  "${opt[@]}" "${extra[@]}" \
   --alias prepper-assistant
