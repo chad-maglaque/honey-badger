@@ -1,6 +1,6 @@
 # Bill of materials and sourcing
 
-Every part, how many, what to search for, and where to buy it. The same list is in [bom.csv](bom.csv) for a spreadsheet. [HARDWARE.md](HARDWARE.md) explains why each part was chosen.
+Every part, how many, what to search for, and where to buy it. To print the enclosure, see [PRINTING.md](PRINTING.md). The same list is in [bom.csv](bom.csv) for a spreadsheet. [HARDWARE.md](HARDWARE.md) explains why each part was chosen.
 
 Prices are rough US street prices in November 2026. RAM and SSD prices are moving quickly this year, so check before you order.
 

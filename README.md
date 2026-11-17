@@ -12,6 +12,7 @@ It also helps a family and its neighbours get through an emergency together:
 - **Voice:** ask a question out loud and hear the answer.
 
 Everything it does, and who can use each part: [docs/FEATURES.md](docs/FEATURES.md).
+Build one: parts in [docs/BOM.md](docs/BOM.md), printing in [docs/PRINTING.md](docs/PRINTING.md), assembly in [docs/HARDWARE.md](docs/HARDWARE.md).
 
 It is a superset of [Prepper Disk Premium](https://www.prepperdisk.com/pages/prepper-disk-premium-contents), redesigned after surveying Kiwix Hotspot, Project N.O.M.A.D., PrepperPi, Doom Box, RACHEL and others. [docs/DESIGN.md](docs/DESIGN.md) has the survey and lists what each gap closes.
 

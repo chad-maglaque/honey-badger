@@ -395,6 +395,8 @@ GPIO 25 is spare for a second float switch. UART0 (GPIO 14/15) is optional, for 
 
 ## Printing the case
 
+**One-page print sheet:** [PRINTING.md](PRINTING.md) (print list, settings, inserts, kit checklist).
+
 The model is `case/honey_badger_case.scad`; every cutout is a parameter.
 
 - **Outside:** 204 × 168 × 82.5 mm with the lid on (79 mm base + 3.5 mm lid), and 216 × 180 × ~91 mm with the bumpers. Interior 196 × 160 × 76 mm, walls 4 mm. Each part fits a 220 × 220 mm bed.
