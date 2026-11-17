@@ -17,7 +17,7 @@ sys.path.insert(0, str(REPO / "software" / "common"))
 class Version(unittest.TestCase):
     def test_version_file_is_semver(self):
         v = (REPO / "VERSION").read_text().strip()
-        self.assertRegex(v, r"^[0-9]+(?:\.[0-9]+){2,3}(?:[-+][0-9A-Za-z.-]+)?$")   # 3 numbers, or 4 for follow-ups
+        self.assertRegex(v, r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
 
     def test_server_reads_it(self):
         import server
