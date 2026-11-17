@@ -8,7 +8,7 @@ different licences, chosen so that improvements stay open while the name stays o
 | **Software**: services, launcher, front panel, installer, builder, tools, tests | `software/`, `os/`, `builder/`, `tools/`, `tests/`, `content/*.toml` | **AGPL-3.0-only**: [LICENSE](LICENSE) |
 | **Hardware**: enclosure design (OpenSCAD source, STL exports, print and fit notes) | `case/` except the brand files below | **CERN-OHL-S-2.0**: [LICENSES/CERN-OHL-S-2.0.txt](LICENSES/CERN-OHL-S-2.0.txt) |
 | **Documentation** | `docs/`, `README.md` and the other `*.md` files | **CC BY-SA 4.0**: [LICENSES/CC-BY-SA-4.0.txt](LICENSES/CC-BY-SA-4.0.txt) |
-| **Brand**: the name "Honey Badger", the badger logo and artwork, product renders, and the name "Nu:Time™" | `case/badger_*.svg`, `case/renders/`, `software/portal/static/icon*`, `software/portal/static/apple-touch-icon.png` | **All rights reserved.** See [TRADEMARKS.md](TRADEMARKS.md) |
+| **Brand**: the names "Honey Badger™" and its short form "Badger", the badger logo, artwork and icons, product renders, and the name "Nu:Time™" (trademarks; logos, artwork and renders also © Chad Maglaque) | `case/badger_*.svg`, `case/renders/`, `software/portal/static/icon*`, `software/portal/static/apple-touch-icon.png` | **All rights reserved.** See [TRADEMARKS.md](TRADEMARKS.md) |
 | **Library content** (encyclopedias, books, courses, maps, models) | not in this repository; downloaded by the updater | each item's own licence, recorded in `content/catalog.toml` |
 
 Copyright © 2026 Chad Maglaque and the Honey Badger contributors.
@@ -23,8 +23,8 @@ Copyright © 2026 Chad Maglaque and the Honey Badger contributors.
 - **Change the case design and make or sell cases:** share your changed design files under
   CERN-OHL-S-2.0 and keep the licence notices.
 - **Use the docs:** credit Honey Badger and share your changes under CC BY-SA 4.0.
-- **The name and logo are not licensed** by any of the above. A changed or rebuilt version must
-  use a different name and no badger logo. Saying it is "compatible with Honey Badger" or
+- **The names and logos are not licensed** by any of the above. A changed or rebuilt version must
+  use a name other than "Honey Badger" or "Badger", and no badger logo or artwork. Saying it is "compatible with Honey Badger" or
   "based on Honey Badger" is fine. See [TRADEMARKS.md](TRADEMARKS.md).
 
 ## Commercial licences

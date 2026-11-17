@@ -92,5 +92,5 @@ Honey Badger helps in emergencies, but it is not a substitute for professional h
 ## Licence
 
 Software: **AGPL-3.0-only** ([LICENSE](LICENSE)). Case design: **CERN-OHL-S-2.0**. Docs: **CC BY-SA 4.0**.
-The name "Honey Badger", the badger logo and "Nu:Time™" are trademarks and are not covered by these licences.
+"Honey Badger™" (short form "Badger"), the badger logo and artwork, and "Nu:Time™" are trademarks of Chad Maglaque; the logos and artwork are also © Chad Maglaque. None of them are covered by these licences.
 Details: [LICENSING.md](LICENSING.md) · [TRADEMARKS.md](TRADEMARKS.md) · [CONTRIBUTING.md](CONTRIBUTING.md)
