@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Map</title>
+<link rel="stylesheet" href="/vendor/maplibre-gl/maplibre-gl.css">
+<style>
+html,body,#map{margin:0;height:100%}body{font:15px/1.4 -apple-system,Segoe UI,Roboto,sans-serif}
+.panel{position:absolute;top:10px;left:10px;right:56px;z-index:2;display:flex;gap:6px;flex-wrap:wrap}
+.panel a,.panel select,.panel button{font:inherit;background:#fff;color:#111;border:1px solid #bbb;border-radius:8px;padding:8px 10px;min-height:40px;text-decoration:none}
+.plane{width:26px;height:26px;cursor:pointer}.plane svg{display:block;width:26px;height:26px;filter:drop-shadow(0 0 2px #fff)}
+#info{position:absolute;bottom:24px;left:10px;z-index:2;background:rgba(255,255,255,.9);padding:6px 10px;border-radius:8px;font-size:13px}
+</style></head>
+<body>
+<div class="panel"><a href="/#/">← Home</a><select id="pick" aria-label="Map"></select><button id="locate">📍 My position</button><button id="mark">⚑ Mark here</button><button id="mesh" aria-pressed="false">📡 Mesh radios</button><button id="air" aria-pressed="false">✈️ Aircraft</button></div>
+<div id="map"></div><div id="info">Tap the map for coordinates.</div>
+<script src="/vendor/maplibre-gl/maplibre-gl.js"></script>
+<script src="/vendor/pmtiles/pmtiles.js"></script>
+<script src="/vendor/basemaps/basemaps.js"></script>
+<script>
+/* Vector maps straight from PMTiles files on the Badger (HTTP range requests —
+   no tile server). Fonts and sprites are vendored locally, so nothing leaves the LAN.
+   GPS position: from the phone's own GPS (needs HTTPS) or the Badger's GPS via /api/status. */
+(function () {
+  var protocol = new pmtiles.Protocol(); maplibregl.addProtocol("pmtiles", protocol.tile);
+  var qs = new URLSearchParams(location.search), want = qs.get("map");
+  fetch("/api/library").then(function (r) { return r.json(); }).then(function (lib) {
+    var maps = lib.items.filter(function (i) { return i.kind === "pmtiles" && i.installed; });
+    if (!maps.length) { document.getElementById("info").textContent = "No maps downloaded yet."; return; }
+    var sel = document.getElementById("pick");
+    maps.forEach(function (m) { var o = document.createElement("option"); o.value = m.id; o.textContent = m.title; sel.appendChild(o); });
+    var cur = maps.filter(function (m) { return m.id === want; })[0] || maps[0]; sel.value = cur.id;
+    var style = { version: 8, glyphs: "/vendor/basemaps/fonts/{fontstack}/{range}.pbf", sprite: location.origin + "/vendor/basemaps/sprites/v4/light",
+      sources: { protomaps: { type: "vector", url: "pmtiles://" + location.origin + "/content/maps/" + cur.id + ".current", attribution: "© OpenStreetMap contributors" } },
+      layers: basemaps.layers("protomaps", basemaps.namedFlavor("light"), { lang: "en" }) };
+    var saved = {}; try { saved = JSON.parse(localStorage.getItem("mapView") || "{}"); } catch (e) {}
+    var map = new maplibregl.Map({ container: "map", style: style, center: saved.c || [-98, 39], zoom: saved.z || 3.5, hash: true });
+    map.addControl(new maplibregl.NavigationControl(), "top-right");
+    map.addControl(new maplibregl.ScaleControl({ unit: "imperial" }));
+    map.on("moveend", function () { try { localStorage.setItem("mapView", JSON.stringify({ c: map.getCenter().toArray(), z: map.getZoom() })); } catch (e) {} });
+    map.on("click", function (e) { var p = e.lngLat; document.getElementById("info").textContent = p.lat.toFixed(5) + ", " + p.lng.toFixed(5); });
+    sel.onchange = function () { location.search = "?map=" + encodeURIComponent(sel.value); };
+    var markers = []; try { markers = JSON.parse(localStorage.getItem("mapMarks") || "[]"); } catch (e) {}
+    function drawMark(m) { new maplibregl.Marker({ color: "#c0392b" }).setLngLat(m.ll).setPopup(new maplibregl.Popup().setText(m.name)).addTo(map); }
+    markers.forEach(drawMark);
+    document.getElementById("mark").onclick = function () {
+      var name = prompt("Name this point (rally point, water source…)"); if (!name) return;
+      var m = { ll: map.getCenter().toArray(), name: name }; markers.push(m); drawMark(m);
+      try { localStorage.setItem("mapMarks", JSON.stringify(markers)); } catch (e) {}
+    };
+    /* Mesh radios that share their position (Meshtastic), via the Badger's LoRa node.
+       Green: heard within the hour · amber: within a day · grey: older. Refreshed every 30 s while shown. */
+    var meshOn = false, meshTimer = null, meshMarks = {}, meshFitted = false, meshBtn = document.getElementById("mesh");
+    function ago(s) { if (s == null) return "time unknown"; if (s < 90) return "just now"; if (s < 5400) return Math.round(s / 60) + " min ago";
+      if (s < 172800) return Math.round(s / 3600) + " h ago"; return Math.round(s / 86400) + " days ago"; }
+    function meshColor(n) { if (n.self) return "#141414"; if (n.age_s != null && n.age_s < 3600) return "#1f8a4c"; if (n.age_s != null && n.age_s < 86400) return "#d48806"; return "#8a8a8a"; }
+    function popupFor(n) { var d = document.createElement("div"), b = document.createElement("strong"), p = document.createElement("div");
+      b.textContent = n.name + (n.short ? " (" + n.short + ")" : "") + (n.self ? " · this Badger" : ""); d.appendChild(b);
+      p.textContent = "Heard " + ago(n.age_s) + (n.battery != null ? " · battery " + Math.round(n.battery) + "%" : "") + " · " + n.lat.toFixed(5) + ", " + n.lon.toFixed(5);
+      d.appendChild(p); return new maplibregl.Popup({ offset: 18 }).setDOMContent(d); }
+    function meshRefresh() {
+      // family membership / admin travel as HttpOnly cookies now (nothing secret in page storage)
+      fetch("/api/mesh/nodes", { credentials: "same-origin" }).then(function (r) { return r.json().then(function (j) { j._status = r.status; return j; }); }).then(function (res) {
+        if (res._status === 401) { document.getElementById("info").textContent = "Radio positions are for family members. Join on the Check-in board → Family."; return; }
+        var seen = {}, nodes = res.nodes || [];
+        nodes.forEach(function (n) { seen[n.id] = true; var m = meshMarks[n.id];
+          if (m) m.remove();
+          meshMarks[n.id] = new maplibregl.Marker({ color: meshColor(n) }).setLngLat([n.lon, n.lat]).setPopup(popupFor(n)).addTo(map); });
+        Object.keys(meshMarks).forEach(function (id) { if (!seen[id]) { meshMarks[id].remove(); delete meshMarks[id]; } });
+        document.getElementById("info").textContent = nodes.length ? nodes.length + " radio" + (nodes.length > 1 ? "s" : "") + " sharing a position. Tap one for details."
+          : "No radios have shared a position yet. In the Meshtastic app: Settings › Position › share.";
+        if (nodes.length && !meshFitted) { meshFitted = true; var b = new maplibregl.LngLatBounds();
+          nodes.forEach(function (n) { b.extend([n.lon, n.lat]); }); map.fitBounds(b, { padding: 80, maxZoom: 14, duration: 600 }); }
+      }).catch(function () { document.getElementById("info").textContent = "Mesh positions unavailable."; });
+    }
+    meshBtn.onclick = function () {
+      meshOn = !meshOn; meshBtn.setAttribute("aria-pressed", String(meshOn));
+      if (meshOn) { meshFitted = false; meshRefresh(); meshTimer = setInterval(meshRefresh, 30000); }
+      else { clearInterval(meshTimer); Object.keys(meshMarks).forEach(function (id) { meshMarks[id].remove(); }); meshMarks = {}; }
+    };
+    if (qs.get("mesh") === "1") meshBtn.onclick();
+    /* Aircraft heard by the Badger's radio (ADS-B, via /api/aircraft — public broadcast data).
+       Each plane is an arrow pointing where it is flying; refreshed every 5 s while shown. SDR 2 listens
+       all the time while the aircraft whip is fitted; otherwise only during a scan (Aircraft page). */
+    var airOn = false, airTimer = null, airMarks = {}, airBtn = document.getElementById("air");
+    var PLANE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#1f5fbf" stroke="#fff" stroke-width="1" d="M12 1.5c.8 0 1.4 1 1.4 2.3v5.4l8.1 4.6v2.1l-8.1-2.4v4.6l2.4 1.8v1.7L12 20.6l-3.8 1v-1.7l2.4-1.8v-4.6l-8.1 2.4v-2.1l8.1-4.6V3.8c0-1.3.6-2.3 1.4-2.3z"/></svg>';
+    function airText(a) {
+      var name = a.flight || ("#" + String(a.hex).toUpperCase()), bits = [];
+      if (a.alt_ft === "ground") bits.push("on the ground"); else if (a.alt_ft != null) bits.push(Math.round(a.alt_ft / 100) * 100 + " ft");
+      if (a.speed_kt != null) bits.push(Math.round(a.speed_kt * 1.15078) + " mph");
+      if (a.dist_km != null) bits.push(Math.round(a.dist_km * 0.621371) + " mi away");
+      if (a.emergency) bits.push("EMERGENCY (" + a.emergency + ")");
+      return { name: name, line: bits.join(" · ") };
+    }
+    function airNew(a) { var d = document.createElement("div"), b = document.createElement("strong"), p = document.createElement("div"), el = document.createElement("div");
+      d.appendChild(b); d.appendChild(p); el.className = "plane"; el.innerHTML = PLANE;
+      var m = new maplibregl.Marker({ element: el, rotationAlignment: "map" }).setLngLat([a.lon, a.lat])
+        .setPopup(new maplibregl.Popup({ offset: 14 }).setDOMContent(d)).addTo(map);
+      return { m: m, b: b, p: p, remove: function () { m.remove(); } }; }
+    function airRefresh() {
+      fetch("/api/aircraft").then(function (r) { return r.json().then(function (j) { j._status = r.status; return j; }); }).then(function (res) {
+        if (res._status === 429) return;
+        var seen = {}, list = (res.aircraft || []).filter(function (a) { return a.lat != null && a.lon != null; }), radio = res.radio || {};
+        list.forEach(function (a) { seen[a.hex] = true; var x = airMarks[a.hex] || (airMarks[a.hex] = airNew(a)), t = airText(a);
+          x.m.setLngLat([a.lon, a.lat]); x.m.setRotation(a.track != null ? a.track : 0); x.b.textContent = t.name; x.p.textContent = t.line; });
+        Object.keys(airMarks).forEach(function (id) { if (!seen[id]) { airMarks[id].remove(); delete airMarks[id]; } });
+        var listening = radio.state === "scanning" || radio.state === "always_on" || radio.state === "starting";
+        document.getElementById("info").textContent = list.length ? list.length + " aircraft with a position. Tap one for details." :
+          listening ? "Listening for aircraft… none with a position yet." : "The Badger isn't listening for aircraft right now. See Home → Aircraft (a scan, or the aircraft whip on SDR 2).";
+      }).catch(function () { document.getElementById("info").textContent = "Aircraft unavailable."; });
+    }
+    airBtn.onclick = function () {
+      airOn = !airOn; airBtn.setAttribute("aria-pressed", String(airOn));
+      if (airOn) { airRefresh(); airTimer = setInterval(airRefresh, 5000); }
+      else { clearInterval(airTimer); Object.keys(airMarks).forEach(function (id) { airMarks[id].remove(); }); airMarks = {}; }
+    };
+    if (qs.get("aircraft") === "1") airBtn.onclick();
+    var dot = null;
+    document.getElementById("locate").onclick = function () {
+      function show(lat, lon, src) { if (!dot) dot = new maplibregl.Marker({ color: "#2f6bd8" }); dot.setLngLat([lon, lat]).addTo(map); map.flyTo({ center: [lon, lat], zoom: 14 });
+        document.getElementById("info").textContent = "You (" + src + "): " + lat.toFixed(5) + ", " + lon.toFixed(5); }
+      function fromDisk() { fetch("/api/status").then(function (r) { return r.json(); }).then(function (s) {
+        if (s.gps && s.gps.lat != null) show(s.gps.lat, s.gps.lon, "Badger GPS"); else alert("No GPS fix available."); }); }
+      if (navigator.geolocation && window.isSecureContext) navigator.geolocation.getCurrentPosition(function (p) { show(p.coords.latitude, p.coords.longitude, "phone GPS"); }, fromDisk, { enableHighAccuracy: true, timeout: 15000 });
+      else fromDisk();
+    };
+  });
+})();
+</script></body></html>

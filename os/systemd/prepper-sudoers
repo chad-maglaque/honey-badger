@@ -1,0 +1,2 @@
+# /etc/sudoers.d/prepper — the portal may run only the whitelisted helper.
+prepper ALL=(root) NOPASSWD: /opt/prepper/bin/prepperctl

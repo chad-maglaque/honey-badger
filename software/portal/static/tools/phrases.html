@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emergency phrasebook</title><link rel="stylesheet" href="/tools/tools.css">
+<style>.ph{padding:12px 0;border-bottom:1px solid var(--line)}.ph .en{color:var(--muted);font-size:.85rem}.ph .tr{font-size:1.25rem;font-weight:600}.show{position:fixed;inset:0;background:var(--bg);display:none;align-items:center;justify-content:center;padding:24px;text-align:center;font-size:2.4rem;font-weight:700;z-index:50}</style></head>
+<body><header class="top"><a class="brand" href="/#/tools">← Tools</a><b>Emergency phrasebook</b></header><main>
+<script>try{var t=localStorage.getItem("theme");if(t&&t!=="auto")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+<div class="row2"><div><label for="lang">Language</label><select id="lang"><option value="es">Español (Spanish)</option><option value="fr">Français (French)</option><option value="de">Deutsch (German)</option><option value="pt">Português (Portuguese)</option></select></div>
+<div><label for="f">Filter</label><input type="text" id="f" placeholder="water, doctor, hurt…"></div></div>
+<p class="small muted">Tap a phrase to show it full-screen to the other person. Tap again to close. Speak button uses this device's built-in voices if any are installed.</p>
+<div id="list"></div><div class="show" id="show"></div>
+<script>
+(function(){
+var P=[
+["Help!","¡Ayuda! / ¡Socorro!","Au secours ! / À l'aide !","Hilfe!","Socorro! / Ajuda!"],
+["I need a doctor.","Necesito un médico.","J'ai besoin d'un médecin.","Ich brauche einen Arzt.","Preciso de um médico."],
+["Call an ambulance.","Llame a una ambulancia.","Appelez une ambulance.","Rufen Sie einen Krankenwagen.","Chame uma ambulância."],
+["Is anyone hurt?","¿Hay alguien herido?","Y a-t-il des blessés ?","Ist jemand verletzt?","Alguém está ferido?"],
+["I am hurt.","Estoy herido.","Je suis blessé.","Ich bin verletzt.","Estou ferido."],
+["Where does it hurt?","¿Dónde le duele?","Où avez-vous mal ?","Wo tut es weh?","Onde dói?"],
+["He / she is not breathing.","No respira.","Il / elle ne respire pas.","Er / sie atmet nicht.","Ele / ela não está respirando."],
+["Bleeding","Sangrado","Saignement","Blutung","Sangramento"],
+["Press here hard.","Presione aquí con fuerza.","Appuyez fort ici.","Hier fest drücken.","Pressione aqui com força."],
+["Are you allergic to any medicine?","¿Es alérgico a algún medicamento?","Êtes-vous allergique à un médicament ?","Sind Sie gegen ein Medikament allergisch?","Você é alérgico a algum remédio?"],
+["Do you take any medicine?","¿Toma algún medicamento?","Prenez-vous des médicaments ?","Nehmen Sie Medikamente?","Você toma algum remédio?"],
+["I am diabetic.","Soy diabético.","Je suis diabétique.","Ich bin Diabetiker.","Sou diabético."],
+["Pregnant","Embarazada","Enceinte","Schwanger","Grávida"],
+["Water","Agua","Eau","Wasser","Água"],
+["Is this water safe to drink?","¿Es potable esta agua?","Cette eau est-elle potable ?","Ist dieses Wasser trinkbar?","Esta água é potável?"],
+["Food","Comida","Nourriture","Essen","Comida"],
+["We need food and water.","Necesitamos comida y agua.","Nous avons besoin de nourriture et d'eau.","Wir brauchen Essen und Wasser.","Precisamos de comida e água."],
+["Where is the shelter?","¿Dónde está el refugio?","Où est l'abri ?","Wo ist die Notunterkunft?","Onde fica o abrigo?"],
+["Where is the hospital?","¿Dónde está el hospital?","Où est l'hôpital ?","Wo ist das Krankenhaus?","Onde fica o hospital?"],
+["Fire!","¡Fuego!","Au feu !","Feuer!","Fogo!"],
+["Get out now!","¡Salga ahora!","Sortez maintenant !","Sofort raus!","Saia agora!"],
+["Danger — do not enter.","Peligro, no entre.","Danger, n'entrez pas.","Gefahr — nicht betreten.","Perigo — não entre."],
+["Gas leak","Fuga de gas","Fuite de gaz","Gasleck","Vazamento de gás"],
+["Flood","Inundación","Inondation","Überschwemmung","Enchente"],
+["I am lost.","Estoy perdido.","Je suis perdu.","Ich habe mich verirrt.","Estou perdido."],
+["I am looking for my family.","Busco a mi familia.","Je cherche ma famille.","Ich suche meine Familie.","Estou procurando minha família."],
+["My child is missing.","Mi hijo / hija ha desaparecido.","Mon enfant a disparu.","Mein Kind wird vermisst.","Meu filho / minha filha desapareceu."],
+["How many people?","¿Cuántas personas?","Combien de personnes ?","Wie viele Personen?","Quantas pessoas?"],
+["We are friendly. We can help.","Somos amigos. Podemos ayudar.","Nous sommes amicaux. Nous pouvons aider.","Wir sind freundlich. Wir können helfen.","Somos amigos. Podemos ajudar."],
+["Do you speak English?","¿Habla inglés?","Parlez-vous anglais ?","Sprechen Sie Englisch?","Você fala inglês?"],
+["Please speak slowly.","Hable despacio, por favor.","Parlez lentement, s'il vous plaît.","Bitte sprechen Sie langsam.","Fale devagar, por favor."],
+["Yes","Sí","Oui","Ja","Sim"],["No","No","Non","Nein","Não"],
+["Thank you","Gracias","Merci","Danke","Obrigado / Obrigada"],
+["Wait here.","Espere aquí.","Attendez ici.","Warten Sie hier.","Espere aqui."],
+["Follow me.","Sígame.","Suivez-moi.","Folgen Sie mir.","Siga-me."],
+["Stop!","¡Alto!","Arrêtez !","Halt!","Pare!"],
+["Cold","Frío","Froid","Kalt","Frio"],["Hot","Calor / caliente","Chaud","Heiß","Quente"],
+["Toilet","Baño","Toilettes","Toilette","Banheiro"],
+["Electricity","Electricidad","Électricité","Strom","Eletricidade"],
+["Radio","Radio","Radio","Funkgerät / Radio","Rádio"],
+["Write it down, please.","Escríbalo, por favor.","Écrivez-le, s'il vous plaît.","Bitte schreiben Sie es auf.","Escreva, por favor."]];
+var L={es:1,fr:2,de:3,pt:4},BCP={es:"es-ES",fr:"fr-FR",de:"de-DE",pt:"pt-BR"};
+function $(i){return document.getElementById(i);}
+try{var s=localStorage.getItem("phraseLang");if(s)$("lang").value=s;}catch(e){}
+function esc(s){return String(s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
+function draw(){var l=$("lang").value,col=L[l],q=$("f").value.toLowerCase();try{localStorage.setItem("phraseLang",l);}catch(e){}
+ $("list").innerHTML=P.filter(function(p){return!q||p[0].toLowerCase().indexOf(q)>=0||p[col].toLowerCase().indexOf(q)>=0;}).map(function(p){
+  return'<div class="ph" data-t="'+esc(p[col])+'"><div class="en">'+esc(p[0])+'</div><div class="tr" lang="'+l+'">'+esc(p[col])+'</div>'+("speechSynthesis" in window?'<button class="btn ghost say" style="min-height:36px;margin-top:6px">🔊 Speak</button>':"")+"</div>";}).join("");}
+$("lang").onchange=draw;$("f").oninput=draw;draw();
+$("list").onclick=function(e){var ph=e.target.closest(".ph");if(!ph)return;var t=ph.getAttribute("data-t");
+ if(e.target.classList.contains("say")){var u=new SpeechSynthesisUtterance(t);u.lang=BCP[$("lang").value];u.rate=.85;speechSynthesis.speak(u);return;}
+ $("show").textContent=t;$("show").style.display="flex";};
+$("show").onclick=function(){this.style.display="none";};
+})();
+</script></main></body></html>

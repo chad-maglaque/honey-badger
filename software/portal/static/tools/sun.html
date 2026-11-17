@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sun, moon & time</title><link rel="stylesheet" href="/tools/tools.css"><script src="/tools/nutime.js"></script></head>
+<body><header class="top"><a class="brand" href="/#/tools">← Tools</a><b>Sun, moon & time</b></header><main>
+<script>try{var t=localStorage.getItem("theme");if(t&&t!=="auto")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+<div class="card"><div class="row2">
+<div><label for="lat">Latitude</label><input type="number" id="lat" step="any" value="39.0"></div>
+<div><label for="lon">Longitude</label><input type="number" id="lon" step="any" value="-98.0"></div>
+<div><label for="date">Date</label><input type="text" id="date" placeholder="YYYY-MM-DD"></div></div>
+<div class="btns" style="margin-top:10px"><button class="btn ghost" id="gps">Use Badger/phone position</button></div>
+<dl class="kv section" id="out"></dl></div>
+<div class="card section"><h2>Find direction without a compass</h2><ul class="small">
+<li>At <b>solar noon</b> (shown above) the sun is due south in the northern hemisphere, due north in the southern.</li>
+<li>Northern hemisphere at night: Polaris sits almost exactly over true north, about as high above the horizon as your latitude.</li>
+<li>Shadow-stick: mark a shadow tip, wait 15 min, mark again; the line from first to second mark points roughly east.</li></ul></div>
+<script>
+(function(){
+function $(i){return document.getElementById(i);}
+var N=window.NuTime;
+try{var s=JSON.parse(localStorage.getItem("sunPos")||"null");if(s){$("lat").value=s[0];$("lon").value=s[1];}}catch(e){}
+var d=new Date();$("date").value=d.getFullYear()+"-"+("0"+(d.getMonth()+1)).slice(-2)+"-"+("0"+d.getDate()).slice(-2);
+// One solar model for the whole Badger: the NOAA general solar position in nutime.js
+// (same equations as software/nutime/nutime.py and the Nu:Time™ clock). y-m-d is the
+// calendar date at the place; civil twilight is the Sun 6° below the horizon (zenith 96°).
+function sunTimes(y,m,d,lat,lon){
+ var s=N.sunEventsOn(y,m,d,lat,lon),c=N.sunEventsOn(y,m,d,lat,lon,96);
+ function pair(e){return e.polar?null:[new Date(e.sunrise),new Date(e.sunset)];}
+ return{noon:new Date(s.solarNoon),sun:pair(s),civil:pair(c),polar:s.polar};}
+function moon(date){var syn=29.530588853,ref=Date.UTC(2000,0,6,18,14)/864e5,age=((date/864e5-ref)%syn+syn)%syn,f=(1-Math.cos(2*Math.PI*age/syn))/2;
+ var names=["New moon","Waxing crescent","First quarter","Waxing gibbous","Full moon","Waning gibbous","Last quarter","Waning crescent"];
+ return{age:age,illum:f,name:names[Math.floor((age/syn)*8+0.5)%8]};}
+function t(x){if(!x||isNaN(x))return "—";return window.NuTime?NuTime.fmt(x.getTime(),{short:true,tz:Intl.DateTimeFormat().resolvedOptions().timeZone}):x.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});}
+function calc(){var lat=parseFloat($("lat").value),lon=parseFloat($("lon").value),p=$("date").value.split("-"),date=new Date(+p[0],+p[1]-1,+p[2]);
+ if(isNaN(lat)||isNaN(lon)||isNaN(date))return;try{localStorage.setItem("sunPos",JSON.stringify([lat,lon]));}catch(e){}
+ var s=sunTimes(+p[0],+p[1],+p[2],lat,lon),m=moon(new Date(date.getTime()+12*36e5)),len=s.sun?(s.sun[1]-s.sun[0])/36e5:(s.polar==="day"?24:0);
+ $("out").innerHTML="<dt>First light (civil dawn)</dt><dd>"+t(s.civil&&s.civil[0])+"</dd><dt>Sunrise</dt><dd>"+t(s.sun&&s.sun[0])+"</dd><dt>Solar noon</dt><dd>"+t(s.noon)+"</dd><dt>Sunset</dt><dd>"+t(s.sun&&s.sun[1])+"</dd><dt>Last light (civil dusk)</dt><dd>"+t(s.civil&&s.civil[1])+"</dd><dt>Daylight</dt><dd>"+Math.floor(len)+" h "+Math.round((len%1)*60)+" min</dd><dt>Moon</dt><dd>"+m.name+" · "+Math.round(m.illum*100)+"% lit · day "+m.age.toFixed(1)+"</dd><dt>Times shown as</dt><dd>"+(window.NuTime?NuTime.LABEL[NuTime.pref()]:"local")+" — change in Settings → Show times as</dd>";}
+["lat","lon","date"].forEach(function(i){$(i).oninput=calc;});calc();
+$("gps").onclick=function(){function set(a,b){$("lat").value=a.toFixed(4);$("lon").value=b.toFixed(4);calc();}
+ fetch("/api/status").then(function(r){return r.json();}).then(function(s){if(s.gps&&s.gps.lat!=null)set(s.gps.lat,s.gps.lon);else throw 0;}).catch(function(){if(navigator.geolocation)navigator.geolocation.getCurrentPosition(function(p){set(p.coords.latitude,p.coords.longitude);});});};
+})();
+</script></main></body></html>

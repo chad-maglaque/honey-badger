@@ -1,0 +1,24 @@
+[Unit]
+Description=NOAA Weather Radio SAME alert decoder (RTL-SDR)
+
+[Service]
+User=prepper
+SupplementaryGroups=plugdev
+ExecStart=/usr/bin/python3 /opt/prepper/software/alertd/alertd.py
+# No RTL-SDR plugged in → it exits 0 and stays stopped; the udev rule
+# (99-prepper-sdr.rules) starts it when one is connected. Unplugging the
+# dongle mid-run is a failure → restart → finds none → exits 0.
+# Two dongles: alertd uses only its own ([radio] weather_sdr = "<serial>");
+# when that one is missing it exits 0 rather than take the second dongle.
+# It lends its dongle to prepper-sdr (aircraft scans, satellite passes)
+# through /run/prepper/sdr and listens again about a second after each loan.
+Restart=on-failure
+RestartSec=30
+ProtectSystem=strict
+ReadWritePaths=-/run/prepper
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

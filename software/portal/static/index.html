@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Honey Badger</title>
+<meta name="theme-color" content="#14171a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Honey Badger">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/" aria-label="Home">
+    <img src="/icon.svg" width="30" height="30" alt="" class="logo">
+    <span>Honey Badger</span>
+  </a>
+  <form class="search" id="searchForm" role="search">
+    <input id="q" type="search" placeholder="Search everything…" autocomplete="off" aria-label="Search">
+  </form>
+  <a class="iconbtn" href="#/settings" aria-label="Settings">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Zm7.4-2.5.1-1-.1-1 2.1-1.6-2-3.5-2.5 1a7.6 7.6 0 0 0-1.7-1L15 2.5h-4l-.4 2.6a7.6 7.6 0 0 0-1.7 1l-2.5-1-2 3.5L6.5 10l-.1 1 .1 1-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1l.4 2.6h4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5-2.1-1.6Z"/></svg>
+  </a>
+</header>
+<div id="alerts"></div>
+<main id="view" tabindex="-1"><p class="muted pad">Loading…</p></main>
+<footer class="status" id="statusbar" aria-live="polite"></footer>
+<script src="/tools/nutime.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

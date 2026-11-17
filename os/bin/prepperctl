@@ -1,0 +1,787 @@
+#!/bin/bash
+# prepperctl — the one privileged entry point. The portal (user "prepper") may
+# run exactly this via sudoers; every verb below is a fixed, validated action.
+set -euo pipefail
+
+
+# Test seam: PREPPER_TEST_ROOT prefixes every absolute path this script reads
+# or writes, and PREPPER_TEST_PY replaces /usr/bin/python3, so tests can run
+# it unprivileged against a scratch tree (system commands are stubbed on
+# PATH). Both are ignored when running as root, so they can never redirect a
+# real invocation (sudo also strips them from the environment).
+R=""; PY=/usr/bin/python3
+if [ -n "${PREPPER_TEST_ROOT:-}" ] && [ "$(id -u)" != 0 ]; then
+  R=$PREPPER_TEST_ROOT; PY=${PREPPER_TEST_PY:-$PY}
+fi
+
+CONF=${PREPPER_CONFIG:-$R/etc/prepper/prepper.toml}
+OPT=$R/opt/prepper
+STATE=$R/var/lib/prepper        # root-owned 0755: only root writes here (the portal has STATE/portal)
+GIT_SIGNERS=$R/etc/prepper/git_allowed_signers
+SIGNERS=$R/etc/prepper/allowed_signers
+DEFAULTS=$R/etc/default/prepper
+# shellcheck source=/dev/null
+[ -r "$DEFAULTS" ] && . "$DEFAULTS"
+DATA_ROOT=${DATA_ROOT:-/srv/prepper}
+DATA_ROOT=$R$DATA_ROOT
+
+die() { echo "prepperctl: $*" >&2; exit 2; }
+toml() { "$PY" -c 'import tomllib,sys;d=tomllib.load(open(sys.argv[1],"rb"))
+for k in sys.argv[2].split("."): d=d.get(k,{}) if isinstance(d,dict) else {}
+print(d if not isinstance(d,(dict,list)) else "")' "$CONF" "$1"; }
+# shellcheck disable=SC2120   # (called both with and without extra render.py options)
+render() { "$PY" "$OPT/os/render.py" --config "$CONF" --root "${R:-/}" "$@"; }
+load_defaults() {  # re-read what render just wrote
+  [ -r "$DEFAULTS" ] || die "$DEFAULTS is missing (render failed?)"
+  # shellcheck source=/dev/null
+  . "$DEFAULTS"
+}
+nm_wifi() { "$PY" "$OPT/os/nm_wifi.py" --dir "$R/etc/NetworkManager/system-connections" "$@"; }
+bytelen() { local LC_ALL=C; echo "${#1}"; }
+ssh_ed25519_line() {  # exactly one "ssh-ed25519 <base64> [comment]" line
+  [[ "$1" =~ ^ssh-ed25519\ [A-Za-z0-9+/]+={0,3}(\ [^[:cntrl:]]*)?$ ]]
+}
+set_governor() {  # every CPU policy; a missing cpufreq driver is not fatal
+  local f ok=0
+  for f in "$R"/sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do
+    [ -e "$f" ] || continue
+    echo "$1" > "$f" && ok=1 || echo "prepperctl: could not set $f to $1" >&2
+  done
+  [ "$ok" = 1 ] || echo "prepperctl: no cpufreq policy accepted governor $1" >&2
+}
+resolve() {  # realpath without GNU flags (also on a macOS test host)
+  "$PY" -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
+unit_for() {
+  case "$1" in
+    kiwix) echo kiwix-serve ;; llama) echo llama-server ;; kolibri) echo kolibri ;;
+    kavita) echo kavita ;; jellyfin) echo jellyfin ;; mesh) echo prepper-meshbridge ;;
+    alerts) echo prepper-alertd ;; sdr) echo prepper-sdr ;; sensors) echo prepper-sensord ;;
+    *) die "unknown service $1" ;;
+  esac
+}
+build_status() {  # phase pct message — shown in the launcher while provisioning
+  # Reachable from the portal through sudo, so every argument is checked and
+  # the JSON is built by Python, never by string pasting.
+  case "$1" in installing|content|done|error) ;; *) die "phase must be installing|content|done|error" ;; esac
+  [[ "$2" =~ ^[0-9]{1,3}$ ]] && [ "$2" -le 100 ] || die "pct must be an integer 0-100"
+  [ -d "$STATE" ] && [ ! -L "$STATE" ] || die "$STATE is missing or a symlink"
+  "$PY" - "$STATE" "$1" "$2" "${3:-}" <<'EOF'
+import datetime, json, os, re, sys, tempfile
+state, phase, pct, msg = sys.argv[1:5]
+msg = re.sub(r'["\\\x00-\x1f\x7f]', " ", msg).strip()[:160]   # no quotes, backslashes, newlines
+rec = {"phase": phase, "pct": int(pct), "message": msg,
+       "at": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
+# mkstemp opens O_CREAT|O_EXCL in the root-owned dir and rename replaces a
+# symlink rather than following it.
+fd, tmp = tempfile.mkstemp(dir=state, prefix=".build.")
+with os.fdopen(fd, "w") as fh:
+    fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
+os.chmod(tmp, 0o644)
+os.replace(tmp, os.path.join(state, "build.json"))
+EOF
+}
+provisioning() {  # the first content pull has not finished (firstboot.sh sets PREPPER_FIRSTBOOT for install.sh)
+  [ -e "$STATE/first-pull-pending" ] || [ -n "${PREPPER_FIRSTBOOT:-}" ]
+}
+wlan0_is_uplink() {  # may wlan0 be (or become) our download link?
+  # Not a snapshot of the default route: at boot NetworkManager may not have
+  # joined yet, and deciding "no uplink" then would hand wlan0 to the hotspot
+  # for good. Any configured Wi-Fi uplink counts.
+  ip route show default 2>/dev/null | grep -q "dev wlan0" && return 0
+  [ -n "$("$PY" -c 'import tomllib,sys; print("y" if tomllib.load(open(sys.argv[1],"rb")).get("network",{}).get("uplink_wifi") else "")' "$CONF" 2>/dev/null)" ] && return 0
+  nmcli -t -f TYPE,AUTOCONNECT con show 2>/dev/null | grep -q '^802-11-wireless:yes$' && return 0
+  return 1
+}
+atomic_write() {  # atomic_write FILE CONTENT — mkstemp + rename: never follows a planted symlink
+  "$PY" -c 'import os,sys,tempfile
+path, text = sys.argv[1], sys.argv[2]
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix="." + os.path.basename(path) + ".")
+with os.fdopen(fd, "w") as fh: fh.write(text + "\n")
+os.chmod(tmp, 0o644); os.replace(tmp, path)' "$1" "$2"
+}
+mounted_media() {  # the mountpoint holding PATH, if it is a mounted drive under /media
+  local mp
+  mp=$(findmnt -n -o TARGET -T "$1" 2>/dev/null | head -n 1) || true
+  case "$mp" in "$R"/media/?*) echo "$mp" ;; *) return 1 ;; esac
+}
+set_passphrase() {  # set_passphrase VALUE — [network] passphrase via conf_write ("" = open network)
+  "$PY" - "$CONF" "$1" <<'EOF' | conf_write
+import json, re, sys
+p, pw = sys.argv[1], sys.argv[2]
+t = open(p).read()
+line = f"passphrase = {json.dumps(pw)}"
+m = re.search(r'(?ms)^\[network\][ \t]*(?:#[^\n]*)?\n(.*?)(?=^\[|\Z)', t)   # only inside [network] (a comment may follow)
+if not m:
+    t = t.rstrip("\n") + "\n\n[network]\n" + line + "\n"
+else:
+    body, n = re.subn(r'(?m)^passphrase[ \t]*=.*$', lambda _: line, m.group(1), count=1)
+    if not n:
+        body = line + "\n" + body
+    t = t[:m.start(1)] + body + t[m.end(1):]
+sys.stdout.write(t)
+EOF
+}
+PENDING=$STATE/wifi-rotate-pending.json      # a Wi-Fi password change waiting to be confirmed (root, 0600)
+wifi_lock() {  # one Wi-Fi password verb at a time: re-run this script holding an flock on $STATE/.wifi.lock
+  # (Python's fcntl, not flock(1), so it also works on the test host; the lock is inherited by the
+  # re-run script and its inline children, which see PREPPER_WIFI_LOCK and don't lock again.)
+  [ -z "${PREPPER_WIFI_LOCK:-}" ] || return 0
+  exec "$PY" - "$STATE/.wifi.lock" "$BASH" "$0" "$cmd" <<'EOF'
+import fcntl, os, sys, time
+lock, argv = sys.argv[1], sys.argv[2:]
+fd = os.open(lock, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+deadline = time.time() + 60
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        if time.time() > deadline:
+            sys.exit("prepperctl: another Wi-Fi password change is in progress; try again in a minute")
+        time.sleep(0.2)
+os.set_inheritable(fd, True)
+os.environ["PREPPER_WIFI_LOCK"] = "1"
+os.execv(argv[0], argv)
+EOF
+}
+pending_old() {  # the saved old password, checked (a damaged record must never open the network)
+  "$PY" - "$PENDING" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+old = d.get("old") if isinstance(d, dict) else None
+if not isinstance(old, str) or (old and not (8 <= len(old) <= 63 and all(0x20 <= ord(c) <= 0x7E for c in old))):
+    sys.exit("prepperctl: the saved Wi-Fi password is missing or not valid")
+sys.stdout.write(old)
+EOF
+}
+save_old_password() {  # the current password into a new root-only temp file in $STATE; prints its name
+  "$PY" - "$CONF" "$STATE" "$1" <<'EOF'
+import json, os, sys, tempfile, time, tomllib
+conf, state, grace = sys.argv[1], sys.argv[2], int(sys.argv[3])
+old = tomllib.load(open(conf, "rb")).get("network", {}).get("passphrase", "")
+if not isinstance(old, str):
+    sys.exit("prepperctl: [network] passphrase is not text")
+fd, tmp = tempfile.mkstemp(dir=state, prefix=".wifi-rotate.")
+with os.fdopen(fd, "w") as fh:
+    json.dump({"old": old, "deadline": time.time() + grace + 10, "started": time.time(), "applied": False}, fh)
+os.chmod(tmp, 0o600)
+print(tmp)
+EOF
+}
+pending_rearm() {  # seconds left before the switch-back (at least 60); marks the change as applied
+  "$PY" - "$PENDING" <<'EOF'
+import json, os, sys, tempfile, time
+p = sys.argv[1]
+d = json.load(open(p))
+left = int(d["deadline"] - time.time())
+d["applied"] = True                         # the boot just brought the hotspot up with the new password
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix=".wifi-rotate.")
+with os.fdopen(fd, "w") as fh:
+    json.dump(d, fh)
+os.chmod(tmp, 0o600); os.replace(tmp, p)
+print(max(60, left))
+EOF
+}
+wifi_undo_unapplied() {  # wifi-rotate failed before anything was switched: old password back, nothing pending
+  local old
+  old=$(pending_old) || { echo "prepperctl: could not read the saved password back — the new one stays in prepper.toml" >&2; return 1; }
+  set_passphrase "$old" || return 1
+  rm -f "$PENDING"
+}
+wifi_apply_now() {  # from the portal: detached (its restart must not kill us half-way); else inline
+  if [ "${SUDO_USER:-}" = prepper ] && \
+      systemd-run --quiet --collect --unit="prepper-wifi-apply-$(date +%s)-$$" "$OPT/os/bin/prepperctl" wifi-apply; then
+    return 0
+  fi
+  "$0" wifi-apply
+}
+conf_write() {  # new prepper.toml on stdin → atomic replace that keeps owner + mode
+  # (0640 root:prepper); refuses empty or unparseable text. See os/conf_write.py.
+  "$PY" "$OPT/os/conf_write.py" "$CONF"
+}
+
+usage() {
+  sed -n '2,3p' "$0"
+  echo "verbs: apply-config net-up rebuild-library service power-mode power-restore update-{check,apply,import,export}"
+  echo "       add-peer uplink-wifi uplink-forget usb-eject shutdown reboot wifi-{on,off,rotate,confirm,revert,status,apply,rearm} set-pin gen-tls gen-key"
+  echo "       trust trust-maintainer self-update-hook build-status first-pull finish-provisioning auto-apply-enabled"
+}
+cmd=${1:-help}; shift || true
+# Every argument reaches system tools: no control characters (newlines would
+# split config lines), nothing absurdly long.
+for a in "$@"; do
+  case "$a" in *[[:cntrl:]]*) die "arguments must not contain control characters" ;; esac
+  [ "${#a}" -le 512 ] || die "argument too long"
+done
+# The portal reaches this script through sudo as user "prepper". Verbs that
+# change trust, secrets or provisioning state are for an administrator at the
+# console (or for root services) only — a compromised portal must not be able
+# to add a signing key and have its own "software update" installed as root.
+case "$cmd" in
+  trust|trust-maintainer|self-update-hook|finish-provisioning|first-pull|build-status|set-pin|gen-key|gen-tls)
+    [ "${SUDO_USER:-}" != prepper ] || die "$cmd is not available to the portal" ;;
+esac
+case "$cmd" in
+
+  apply-config)
+    render
+    hostnamectl set-hostname "$(toml network.hostname)" || true
+    tz=$(toml device.timezone); [ -n "$tz" ] && timedatectl set-timezone "$tz" || true
+    systemctl daemon-reload
+    "$0" net-up
+    systemctl reload nginx || systemctl restart nginx
+    systemctl restart prepper-portal kiwix-serve
+    ;;
+
+  net-up)
+    # Pick the AP interface (USB Wi-Fi 6 adapter if present), give it the
+    # Badger's address, start hostapd + dnsmasq. Runs at every boot.
+    # A config typo must not leave the Badger without its hotspot: keep the
+    # last good rendered files and carry on with those.
+    if ! render >/dev/null; then
+      [ -r "$DEFAULTS" ] || die "render failed and there is no earlier configuration to fall back on"
+      echo "net-up: prepper.toml has an error (see above) — using the last good configuration" >&2
+    fi
+    load_defaults
+    if [ "$AP_IFACE" = wlan0 ] && [ ! -e "$STATE/ap-wlan0" ]; then
+      # No USB Wi-Fi adapter and the onboard radio may be our only download
+      # link? Then hold the AP until provisioning finishes, or we'd cut our own
+      # uplink — but only for ap_defer_hours: a stalled download must not
+      # keep the hotspot off for ever.
+      if provisioning && wlan0_is_uplink; then
+        since="$STATE/ap-deferred-since"; [ -e "$since" ] || touch "$since"
+        limit=$(awk -v h="${AP_DEFER_HOURS:-12}" 'BEGIN { printf "%d", h * 3600 }')
+        mtime=$(stat -c %Y "$since" 2>/dev/null || stat -f %m "$since")   # GNU, else BSD (test host)
+        left=$(( limit - ($(date +%s) - mtime) ))
+        if [ "$left" -gt 0 ]; then
+          echo "net-up: wlan0 is the uplink during provisioning — AP deferred (at most $(( left / 60 )) more minutes)"
+          # Come back when the deferral runs out, in case provisioning never reports done.
+          systemd-run --quiet --unit=prepper-net-retry --on-active="${left}s" "$OPT/os/bin/prepperctl" net-up \
+            >/dev/null 2>&1 || true
+          exit 0
+        fi
+        echo "net-up: provisioning still running after ${AP_DEFER_HOURS:-12} h — bringing the hotspot up anyway"
+      fi
+      # From now on wlan0 is the hotspot: render releases it from NetworkManager.
+      touch "$STATE/ap-wlan0"
+      render >/dev/null || true
+    fi
+    systemctl stop prepper-net-retry.timer >/dev/null 2>&1 || true
+    rfkill unblock wlan || true
+    ap_up() {  # address the AP interface, start hostapd, and check it really serves an AP
+      local _
+      nmcli general reload conf 2>/dev/null || systemctl reload NetworkManager 2>/dev/null || true
+      ip link set "$AP_IFACE" down || true
+      ip addr flush dev "$AP_IFACE" || true
+      ip link set "$AP_IFACE" up && ip addr add "$AP_ADDRESS/24" dev "$AP_IFACE" \
+        && systemctl restart prepper-hostapd || return 1
+      for _ in 1 2 3 4 5 6 7 8 9 10; do   # "started" is not "serving": wait for the radio to be in AP mode
+        if systemctl is-active -q prepper-hostapd && iw dev "$AP_IFACE" info 2>/dev/null | grep -q "type AP"; then
+          return 0
+        fi
+        sleep 1
+      done
+      echo "net-up: hostapd is not serving an AP on $AP_IFACE" >&2
+      systemctl stop prepper-hostapd 2>/dev/null || true
+      return 1
+    }
+    if ! ap_up; then
+      # Fallbacks, so a fussy adapter or channel never leaves the Badger
+      # without Wi-Fi: the same adapter on 2.4 GHz, then the onboard radio.
+      echo "net-up: hotspot failed on $AP_IFACE — trying fallbacks" >&2
+      ok=0
+      if [ "$AP_IFACE" != wlan0 ]; then
+        if render --ap-iface "$AP_IFACE" --force-24ghz >/dev/null && load_defaults && ap_up; then
+          ok=1; echo "net-up: hotspot on $AP_IFACE at 2.4 GHz"
+        else
+          touch "$STATE/ap-wlan0"
+          if render --ap-iface wlan0 >/dev/null && load_defaults && ap_up; then
+            ok=1; echo "net-up: hotspot moved to the onboard radio (wlan0)"
+          fi
+        fi
+      fi
+      [ "$ok" = 1 ] || die "the Wi-Fi hotspot could not be started (systemd retries prepper-net)"
+    fi
+    systemctl restart dnsmasq
+    # Optional uplink on the *other* radio for updates (never on the AP radio).
+    # (nm_wifi writes a 0600 NetworkManager profile: no password in any command line.)
+    if [ "$AP_IFACE" != wlan0 ]; then nm_wifi from-config "$CONF" || true; fi
+    # Firewall: no SSH from the hotspot (the admin account may have a password
+    # and passwordless sudo) — Ethernet and the uplink keep it. NAT to the
+    # uplink only with share_uplink. add + delete + define replaces the table,
+    # so re-running net-up never stacks duplicate rules.
+    nat=""
+    if [ "$(toml network.share_uplink)" = "True" ]; then
+      sysctl -qw net.ipv4.ip_forward=1
+      nat="chain post { type nat hook postrouting priority 100; ip saddr $AP_SUBNET oifname != \"$AP_IFACE\" masquerade; }"
+    fi
+    nft delete table ip prepper 2>/dev/null || true      # (older releases used an ip-family table)
+    nft -f - <<EOF
+add table inet prepper
+delete table inet prepper
+table inet prepper {
+  chain input { type filter hook input priority 0; policy accept; iifname "$AP_IFACE" tcp dport 22 drop; }
+  $nat
+}
+EOF
+    ;;
+
+  rebuild-library)
+    # Fresh library.xml from every ZIM on disk, swapped in atomically.
+    # kiwix-serve watches it (--monitorLibrary) and picks up the change.
+    lib="$DATA_ROOT/zim/library.xml"; tmp="$DATA_ROOT/zim/.library.xml.tmp"
+    rm -f "$tmp"
+    shopt -s nullglob
+    for z in "$DATA_ROOT"/zim/*.zim; do   # one damaged ZIM must not cost the whole library
+      kiwix-manage "$tmp" add "$z" >/dev/null || echo "library: skipping unreadable $z" >&2
+    done
+    if [ -f "$tmp" ]; then
+      chmod 644 "$tmp"; mv "$tmp" "$lib"
+      # kiwix-serve skips starting (ExecCondition) until a library exists; start it with the first ZIM.
+      systemctl is-active -q kiwix-serve || systemctl start --no-block kiwix-serve 2>/dev/null || true
+    fi
+    zims=("$DATA_ROOT"/zim/*.zim); echo "library: ${#zims[@]} ZIMs"
+    ;;
+
+  service)
+    name=${1:?name}; act=${2:?action}
+    case "$act" in start|stop|restart) ;; *) die "bad action";; esac
+    # An assignment, so an unknown name stops here (inside "$(…)" as an
+    # argument, the failure would be ignored and systemctl run with "").
+    unit=$(unit_for "$name")
+    systemctl "$act" "$unit"
+    [ "$act" = stop ] && systemctl disable "$unit" 2>/dev/null || true
+    [ "$act" = start ] && systemctl enable "$unit" 2>/dev/null || true
+    ;;
+
+  power-mode)
+    # power-mode MODE [--auto]. --auto is powerd's low-battery switch: it is
+    # applied but not remembered as the user's choice, so power-restore (at
+    # boot, or when external power returns) goes back to what the user picked.
+    # --no-block: power-restore runs this at boot while these units' start jobs
+    # are still queued behind it; a blocking start would deadlock the boot.
+    # try-restart: switch the AI model only if the AI is running (never start a disabled one).
+    mode=${1:?mode}; auto=${2:-}
+    case "$auto" in ""|--auto) ;; *) die "usage: power-mode endurance|balanced|full [--auto]" ;; esac
+    [ -z "$auto" ] || [ "${SUDO_USER:-}" != prepper ] || die "--auto is for powerd only"
+    case "$mode" in endurance|balanced|full) ;; *) die "mode must be endurance|balanced|full" ;; esac
+    mkdir -p "$R/run/prepper"
+    case "$mode" in
+      endurance)
+        for u in kolibri kavita jellyfin; do systemctl stop --no-block "$u" 2>/dev/null || true; done
+        set_governor powersave
+        atomic_write "$R/run/prepper/llama-variant" endurance
+        systemctl try-restart --no-block llama-server 2>/dev/null || true
+        ;;
+      balanced)
+        set_governor ondemand
+        atomic_write "$R/run/prepper/llama-variant" default
+        systemctl try-restart --no-block llama-server 2>/dev/null || true
+        [ "$(toml features.kolibri)" = "True" ] && systemctl start --no-block kolibri 2>/dev/null || true
+        ;;
+      full)
+        set_governor performance
+        atomic_write "$R/run/prepper/llama-variant" default
+        systemctl try-restart --no-block llama-server 2>/dev/null || true
+        for f in kolibri kavita jellyfin; do
+          [ "$(toml "features.$f")" = "True" ] && systemctl start --no-block "$f" 2>/dev/null || true
+        done
+        ;;
+    esac
+    atomic_write "$STATE/power-mode" "$mode"                    # what is in effect (shown everywhere)
+    if [ -n "$auto" ]; then
+      atomic_write "$STATE/power-mode-auto" "$mode"             # powerd: "I switched; switch back later"
+    else
+      atomic_write "$STATE/power-mode-user" "$mode"
+      rm -f "$STATE/power-mode-auto"
+    fi
+    echo "power mode: $mode${auto:+ (automatic)}"
+    ;;
+  power-restore)
+    # At boot (prepper-power-restore.service) and when powerd sees external
+    # power again: reapply the user's last choice (never an automatic switch;
+    # powerd decides again from the battery). The governor and /run/prepper
+    # are reset by a reboot, so this runs before the AI starts.
+    mode=$(cat "$STATE/power-mode-user" 2>/dev/null || true)
+    [ -n "$mode" ] || [ -e "$STATE/power-mode-auto" ] || mode=$(cat "$STATE/power-mode" 2>/dev/null || true)  # older releases
+    case "$mode" in endurance|balanced|full) ;; *) mode=$(toml power.default_mode) ;; esac
+    case "$mode" in endurance|balanced|full) ;; *) mode=balanced ;; esac
+    exec "$0" power-mode "$mode"
+    ;;
+
+  update-check)  systemctl start --no-block upd-check.service; echo "update check started" ;;
+  auto-apply-enabled)   # ExecCondition of upd-auto.service (the weekly timer)
+    [ "$(toml upd.auto_apply)" = "True" ] || { echo "auto_apply is off — scheduled download skipped"; exit 1; }
+    ;;
+  update-apply)  systemctl start --no-block upd-apply.service; echo "download started — progress on the Status page" ;;
+  update-import)
+    src=$(resolve "${1:?bundle path}")
+    [ -e "$src" ] || die "no such bundle: $1"
+    case "$src" in "$R"/media/?*/*|"$R"/media/?*) ;; *) die "bundle must be on a USB drive under /media";; esac
+    # The resolved path is what runs, so a symlink cannot be swapped in after the check.
+    systemd-run --unit="upd-import-$(date +%s)" --collect "$PY" "$OPT/software/upd/upd.py" -c "$CONF" import "$src"
+    echo "import started from $src"
+    ;;
+  update-export)
+    dest=$(resolve "${1:?destination}")
+    case "$dest" in "$R"/media/?*) ;; *) die "export target must be a USB drive under /media";; esac
+    # A real, mounted drive — a bare folder under /media would fill the system disk.
+    parent=$(dirname "$dest")
+    [ -d "$parent" ] || die "export target folder $parent does not exist"
+    mounted_media "$parent" >/dev/null || die "no USB drive is mounted at $parent"
+    systemd-run --unit="upd-export-$(date +%s)" --collect "$PY" "$OPT/software/upd/upd.py" -c "$CONF" export "$dest"
+    echo "export started to $dest"
+    ;;
+  add-peer)
+    peer=${1:?url}
+    # "[]" first and "-" last in the bracket: in POSIX regex a backslash does not
+    # escape "]" there (the old pattern closed the bracket early and matched nothing).
+    peer_re='^https?://[][A-Za-z0-9.:-]+(/[A-Za-z0-9._/-]*)?$'
+    [[ "$peer" =~ $peer_re ]] || die "bad peer URL"
+    "$PY" - "$CONF" "$peer" <<'EOF' | conf_write
+import json, re, sys, tomllib
+path, peer = sys.argv[1], sys.argv[2]
+text = open(path).read()
+peers = tomllib.loads(text).get("upd", {}).get("peers", [])
+if peer not in peers:
+    peers.append(peer)
+    new = "peers = [" + ", ".join(json.dumps(p) for p in peers) + "]"
+    text, n = re.subn(r"(?m)^peers\s*=\s*\[[^\]]*\]", lambda m: new, text, count=1)
+    if not n:
+        text, n = re.subn(r"(?m)^\[upd\][ \t]*(?:#[^\n]*)?\n", lambda m: m.group(0) + new + "\n", text, count=1)
+    if not n:
+        sys.exit("prepperctl: prepper.toml has no [upd] section")
+sys.stdout.write(text)
+EOF
+    "$PY" -c 'import tomllib,sys;print("peers:", tomllib.load(open(sys.argv[1],"rb")).get("upd",{}).get("peers",[]))' "$CONF"
+    ;;
+
+  uplink-wifi)
+    # Join a Wi-Fi network on the onboard radio for updates, while the USB adapter keeps serving.
+    #   uplink-wifi SSID  < password      (one line on stdin; nothing = open network)
+    # The password is never an argument (visible to every local user in `ps`).
+    # A second argument is still accepted from older callers, but deprecated.
+    ssid=${1:?ssid}; psk=${2:-}
+    if [ -z "$psk" ] && [ ! -t 0 ]; then IFS= read -r psk || true; fi
+    [ "$(bytelen "$ssid")" -le 32 ] || die "SSID too long (32 bytes at most)"
+    if [ -n "$psk" ]; then
+      [[ "$psk" =~ ^[\ -~]{8,63}$ || "$psk" =~ ^[0-9A-Fa-f]{64}$ ]] || die "Wi-Fi password must be 8–63 characters"
+    fi
+    load_defaults
+    [ "$AP_IFACE" != wlan0 ] || die "the onboard radio is the hotspot (no USB Wi-Fi adapter) — use Ethernet for updates"
+    printf '%s\n' "$psk" | nm_wifi connect "$ssid" || die "could not join $ssid"
+    nmcli -t -f GENERAL.CONNECTION dev show wlan0
+    ;;
+  uplink-forget)
+    c=$(nmcli -t -f GENERAL.CONNECTION dev show wlan0 | cut -d: -f2)
+    if [ -n "$c" ] && nmcli con delete id "$c"; then echo "forgot $c"; else echo "no uplink"; fi
+    ;;
+
+  usb-eject)
+    dev=${1:?device}
+    # A mount name under /media (usb-sda1) or a device node (/dev/sda1) — never a path elsewhere.
+    if [[ "$dev" =~ ^/dev/[A-Za-z0-9]+$ ]]; then
+      [ -b "$dev" ] || die "$dev is not a block device"
+      mp=$(findmnt -n -o TARGET --source "$dev" 2>/dev/null || true)
+    elif [[ "$dev" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$ ]]; then
+      mp=$(findmnt -n -o TARGET -- "$R/media/$dev" 2>/dev/null || true)
+    else
+      die "bad device name"
+    fi
+    mp=${mp%%$'\n'*}
+    case "$mp" in "$R"/media/?*) sync; umount -- "$mp"; echo "safe to remove $dev" ;; *) die "not a USB mount" ;; esac
+    ;;
+
+  shutdown) systemctl poweroff ;;   # (no longer marks the build done: that would end the hotspot deferral mid-download)
+  reboot)   systemctl reboot ;;
+  wifi-off) systemctl stop prepper-hostapd; echo "Wi-Fi off (panel → Network → Wi-Fi on to restore)" ;;
+  wifi-on)  "$0" net-up; echo "Wi-Fi on" ;;
+
+  set-pin)
+    # Prefer stdin (`prepperctl set-pin < file`, or typed at the prompt): an
+    # argument is visible to every user in `ps` while this runs.
+    pin=${1:-}
+    if [ -z "$pin" ]; then
+      read -r -s -p "New admin PIN (6+ letters/digits): " pin || true   # no trailing newline is fine
+      [ -t 0 ] && echo
+    fi
+    [[ "$pin" =~ ^[0-9A-Za-z]{6,32}$ ]] || die "PIN must be 6–32 letters/digits"
+    hash=$("$PY" "$OPT/software/portal/server.py" hash-pin "$pin")
+    [[ "$hash" =~ ^[A-Za-z0-9\$._/+=-]+$ ]] || die "unexpected PIN hash from the portal"
+    "$PY" - "$CONF" "$hash" <<'EOF' | conf_write
+import json, re, sys
+p, h = sys.argv[1], sys.argv[2]
+t = open(p).read()
+line = f"admin_pin = {json.dumps(h)}"
+t, n = re.subn(r'(?m)^admin_pin[ \t]*=.*$', lambda m: line, t, count=1)
+if not n:                                  # no admin_pin line yet: add one under [portal]
+    t, n = re.subn(r'(?m)^\[portal\][ \t]*(?:#[^\n]*)?\n', lambda m: m.group(0) + line + "\n", t, count=1)
+if not n:
+    t = t.rstrip("\n") + "\n\n[portal]\n" + line + "\n"
+sys.stdout.write(t)
+EOF
+    systemctl restart prepper-portal 2>/dev/null || true
+    echo "admin PIN updated"
+    ;;
+
+  wifi-rotate)
+    # A new hotspot password, with a failsafe against locking everyone out:
+    #   * made here as root: 12 characters from an alphabet with no look-alikes (~59 bits)
+    #   * saved, and switched on ~10 s later (so the admin page can show it first)
+    #   * someone must rejoin with it and confirm (wifi-confirm) within WIFI_GRACE seconds,
+    #     or the Badger switches back to the old password by itself (wifi-revert) — and if that
+    #     automatic switch-back can't be scheduled, nothing is changed at all
+    #   * the switch-back timer is re-armed at boot (wifi-rearm), so a reboot can't lose it
+    #   * the front panel's "Join Wi-Fi" screen always shows the current password
+    #   * one change at a time (wifi_lock)
+    wifi_lock
+    [ ! -e "$PENDING" ] || die "a password change is waiting to be confirmed: confirm it (wifi-confirm) or undo it (wifi-revert) first"
+    grace=${WIFI_GRACE:-600}
+    new=$("$PY" -c 'import secrets; a="ABCDEFGHJKMNPQRSTVWXYZ23456789"; s="".join(secrets.choice(a) for _ in range(12)); print(s[:4] + "-" + s[4:8] + "-" + s[8:])')
+    [[ "$new" =~ ^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$ ]] || die "could not generate a password"
+    # 1. remember the old password (root-only file, not yet "pending")
+    saved=$(save_old_password "$grace") || die "could not save the current password; nothing changed"
+    # 2. the new password into prepper.toml; 3. only then is a change "pending"
+    if ! set_passphrase "$new"; then
+      rm -f "$saved"; die "could not write the new password into prepper.toml; nothing changed"
+    fi
+    "$PY" -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$saved" "$PENDING" \
+      || { rm -f "$saved"; wifi_undo_unapplied; die "could not record the change; nothing changed"; }
+    apply_unit="prepper-wifi-rotate-$(date +%s)-$$"
+    systemd-run --quiet --collect --unit="$apply_unit" --on-active=10s "$OPT/os/bin/prepperctl" wifi-apply \
+      || { wifi_undo_unapplied; die "could not schedule the switch; nothing changed"; }
+    systemctl stop prepper-wifi-revert.timer >/dev/null 2>&1 || true
+    if ! systemd-run --quiet --collect --unit=prepper-wifi-revert --on-active="$((grace + 10))s" "$OPT/os/bin/prepperctl" wifi-revert; then
+      # No automatic switch-back means no safety net: don't change the password at all.
+      systemctl stop "$apply_unit.timer" >/dev/null 2>&1 || true
+      wifi_undo_unapplied
+      die "the automatic switch-back could not be scheduled, so the password was not changed (nothing changed)"
+    fi
+    echo "passphrase: $new"
+    echo "confirm-within: $grace"
+    echo "The hotspot switches to the new password in about 10 seconds. Rejoin with it and confirm within $((grace / 60)) minutes, or it switches back."
+    ;;
+
+  wifi-confirm)
+    # someone got back in with the new password: keep it, cancel the automatic undo
+    wifi_lock
+    if [ -e "$PENDING" ]; then
+      rm -f "$PENDING"
+      systemctl stop prepper-wifi-revert.timer >/dev/null 2>&1 || true
+      echo "kept the new Wi-Fi password"
+    else
+      echo "no Wi-Fi password change is waiting"
+    fi
+    ;;
+
+  wifi-revert)
+    # the automatic undo (or the admin): go back to the password from before the change
+    wifi_lock
+    [ -e "$PENDING" ] || { echo "no Wi-Fi password change to undo"; exit 0; }
+    old=$(pending_old) || die "cannot read the saved password: keep the new one (wifi-confirm), or set one by hand in prepper.toml"
+    set_passphrase "$old"
+    rm -f "$PENDING"
+    systemctl stop prepper-wifi-revert.timer >/dev/null 2>&1 || true
+    wifi_apply_now
+    echo "switched back to the previous Wi-Fi password"
+    ;;
+
+  wifi-rearm)
+    # At boot (prepper-net.service): a change still waiting gets its automatic switch-back again
+    # (timers made with systemd-run don't survive a reboot). Past its deadline: in a minute.
+    wifi_lock
+    [ -e "$PENDING" ] || { echo "no Wi-Fi password change is waiting"; exit 0; }
+    left=$(pending_rearm) || left=60
+    [[ "$left" =~ ^[0-9]+$ ]] || left=60
+    systemctl stop prepper-wifi-revert.timer >/dev/null 2>&1 || true
+    systemd-run --quiet --collect --unit=prepper-wifi-revert --on-active="${left}s" "$OPT/os/bin/prepperctl" wifi-revert \
+      || die "could not re-arm the automatic switch-back: confirm (wifi-confirm) or undo (wifi-revert) by hand"
+    echo "the automatic switch-back is armed again: in $left s unless someone confirms"
+    ;;
+
+  wifi-status)
+    # for the admin page: is a change waiting, has the hotspot switched yet, until when (no secrets).
+    # "pending" follows the file's existence, like every other verb; a damaged file says so.
+    "$PY" - "$PENDING" <<'EOF'
+import json, math, os, sys, time
+p = sys.argv[1]
+if not os.path.exists(p):
+    print(json.dumps({"pending": False, "applied": None, "seconds_left": 0})); sys.exit(0)
+out = {"pending": True, "applied": None, "seconds_left": 0}
+try:
+    d = json.load(open(p))
+    if not isinstance(d, dict) or not isinstance(d.get("old"), str):
+        raise ValueError
+    dl = d.get("deadline")
+    if isinstance(dl, (int, float)) and not isinstance(dl, bool) and math.isfinite(dl):
+        out["seconds_left"] = max(0, int(dl - time.time()))
+    out["applied"] = d.get("applied") not in (False, None)
+except (OSError, ValueError, TypeError):
+    out["error"] = "the record of the waiting change is damaged: keep the new password or set one by hand"
+print(json.dumps(out))
+EOF
+    ;;
+
+  wifi-apply)
+    # The portal's own restart (apply-config restarts it) would kill a prepperctl it started, half-way:
+    # from the portal, the apply runs on its own as a transient systemd unit.
+    if [ "${SUDO_USER:-}" = prepper ] && [ -z "${PREPPER_WIFI_LOCK:-}" ] && \
+        systemd-run --quiet --collect --unit="prepper-wifi-apply-$(date +%s)-$$" "$OPT/os/bin/prepperctl" wifi-apply; then
+      echo "switching the hotspot over (in the background)"; exit 0
+    fi
+    wifi_lock
+    "$0" apply-config
+    [ ! -e "$PENDING" ] || "$PY" - "$PENDING" <<'EOF' || true
+import json, os, sys, tempfile, time
+p = sys.argv[1]
+d = json.load(open(p))
+if isinstance(d, dict):
+    d["applied"] = time.time()              # now someone can rejoin with it, and confirm
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix=".wifi-rotate.")
+    with os.fdopen(fd, "w") as fh:
+        json.dump(d, fh)
+    os.chmod(tmp, 0o600); os.replace(tmp, p)
+EOF
+    systemctl try-restart prepper-panel 2>/dev/null || true       # its Wi-Fi QR code shows the new password
+    ;;
+
+  gen-tls)
+    # Local CA (20 years) + server cert (825 days — the iOS maximum) for the Badger.
+    d=$R/etc/prepper/tls; mkdir -p "$d"; cd "$d"
+    host=$(toml network.hostname); addr=$(toml network.address)
+    if [ ! -f ca.key ]; then
+      openssl req -x509 -newkey rsa:3072 -nodes -days 7300 -keyout ca.key -out ca.crt \
+        -subj "/CN=Honey Badger local CA ($host)" -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign"
+    fi
+    openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj "/CN=$host.lan"
+    printf 'subjectAltName=DNS:%s.lan,DNS:%s.local,DNS:box.lan,IP:%s\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\n' \
+      "$host" "$host" "$addr" > ext.cnf
+    openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 825 -sha256 -extfile ext.cnf -out server.crt
+    chmod 600 ca.key server.key; rm -f server.csr ext.cnf
+    # nginx serves HTTPS only once a certificate exists: re-render and reload.
+    render >/dev/null && { systemctl reload nginx 2>/dev/null || true; }
+    echo "TLS ready: install $d/ca.crt on iPads/phones (served at /ca.crt)"
+    ;;
+
+  gen-key)
+    # This Badger's signing identity for bundles and peer manifests.
+    k=$R/etc/prepper/keys/disk_ed25519; mkdir -p "$(dirname "$k")"
+    [ -f "$k" ] || ssh-keygen -q -t ed25519 -N "" -C "$(toml device.disk_id)" -f "$k"
+    touch "$SIGNERS"
+    grep -qF "$(cut -d' ' -f2 "$k.pub")" "$SIGNERS" || \
+      echo "prepper-update namespaces=\"prepper-update\" $(cut -d' ' -f1,2 "$k.pub")" >> "$SIGNERS"
+    [ -f "$GIT_SIGNERS" ] || printf '%s\n' \
+      "# Keys allowed to sign Honey Badger software updates (git commits, namespace \"git\")." \
+      "# Add the maintainer key with:  sudo prepperctl trust-maintainer \"ssh-ed25519 AAAA… name\"" > "$GIT_SIGNERS"
+    echo "public key (give to other Badgers to trust this one):"; cat "$k.pub"
+    ;;
+  trust)
+    # prepperctl trust "ssh-ed25519 AAAA… other-disk"
+    key=${1:?public key line}
+    ssh_ed25519_line "$key" || die "expected an ssh-ed25519 public key"
+    k12=$(echo "$key" | cut -d' ' -f1,2)
+    touch "$SIGNERS"
+    grep -qF "$k12" "$SIGNERS" || echo "prepper-update namespaces=\"prepper-update\" $k12" >> "$SIGNERS"
+    echo "trusted"
+    ;;
+  trust-maintainer)
+    # prepperctl trust-maintainer "ssh-ed25519 AAAA… maintainer"
+    # Software updates are git commits; `git verify-commit` checks SSH
+    # signatures in the "git" namespace, so these keys live in their own file
+    # (allowed_signers is restricted to "prepper-update" for bundles/peers).
+    key=${1:?public key line}
+    ssh_ed25519_line "$key" || die "expected an ssh-ed25519 public key"
+    k12=$(echo "$key" | cut -d' ' -f1,2)
+    touch "$GIT_SIGNERS"; chmod 644 "$GIT_SIGNERS"
+    grep -qF "$k12" "$GIT_SIGNERS" || echo "maintainer namespaces=\"git\" $k12" >> "$GIT_SIGNERS"
+    echo "software updates signed by this key will be installed"
+    # A software update may already be waiting for this key.
+    systemd-run --quiet --collect --unit="prepper-self-update-$(date +%s)" "$OPT/os/bin/prepperctl" self-update-hook \
+      >/dev/null 2>&1 || true
+    ;;
+
+  self-update-hook)
+    # The prepper_software catalog item was just updated (git). Install it
+    # only if its commit is signed by a maintainer key and is not older than
+    # what is installed, then re-run the installer from a clean export.
+    # Never run git *inside* the received repository: its .git/config is
+    # untrusted (gpg.ssh.program, core.fsmonitor … would run as root). Its
+    # objects are fetched into a fresh root-owned repository instead, with
+    # every config file but the command line ignored.
+    src="$DATA_ROOT/apps/prepper_software"
+    grep -q '^[^#]' "$GIT_SIGNERS" 2>/dev/null || {
+      echo "software update NOT installed: no maintainer key in $GIT_SIGNERS (sudo prepperctl trust-maintainer \"<key>\")" >&2; exit 1; }
+    [ -d "$src" ] || die "no software checkout at $src"
+    work=$(mktemp -d "$STATE/.self-update.XXXXXX")
+    trap 'rm -rf "$work"' EXIT
+    export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HOME="$work" GIT_TERMINAL_PROMPT=0
+    g() { git -C "$work/repo.git" -c protocol.file.allow=always -c gpg.format=ssh -c gpg.ssh.program=ssh-keygen \
+            -c gpg.ssh.allowedSignersFile="$GIT_SIGNERS" -c core.hooksPath=/dev/null "$@"; }
+    git init -q --bare "$work/repo.git"
+    g fetch -q --no-tags --depth 1 "file://$src" HEAD || die "could not read the software update at $src"
+    commit=$(g rev-parse --verify 'FETCH_HEAD^{commit}')
+    if ! g verify-commit "$commit" 2>/dev/null; then
+      echo "software update NOT installed: $commit is not signed by a trusted key" >&2; exit 1
+    fi
+    when=$(g show -s --format=%ct "$commit")                  # inside the signed commit object
+    read -r cur_commit cur_when < "$STATE/software-commit" 2>/dev/null || true
+    if [ "${cur_commit:-}" = "$commit" ]; then
+      echo "software $commit is already installed"; exit 0
+    fi
+    if [ -n "${cur_when:-}" ] && [ "$when" -lt "$cur_when" ]; then
+      echo "software update NOT installed: $commit is older than the installed ${cur_commit:-version} (downgrade)" >&2; exit 1
+    fi
+    # Exactly the signed tree (no untracked or modified files), staged outside /opt.
+    mkdir "$work/tree"
+    g archive --format=tar "$commit" | tar -x -C "$work/tree"
+    # install.sh downloads first and only then syncs the staged tree into /opt/prepper.
+    bash "$work/tree/os/install.sh" --upgrade
+    atomic_write "$STATE/software-commit" "$commit $when"
+    echo "software $commit installed"
+    ;;
+
+  first-pull)
+    # prepper-firstpull.service: the first content download. Exit 75 = nothing
+    # was reachable (or another download holds the lock): systemd retries
+    # later and provisioning stays open. Anything else — even a few failed
+    # items — finishes provisioning, so the Badger never stays "building".
+    rc=0
+    "$PY" "$OPT/software/upd/upd.py" -c "$CONF" apply --now || rc=$?
+    if [ "$rc" = 75 ]; then
+      echo "first-pull: no source reachable yet — will retry" >&2
+      "$0" build-status content 10 "Waiting for internet to download content" || true
+      exit 75
+    fi
+    [ "$rc" = 0 ] || echo "first-pull: some items failed (exit $rc); they are retried by the weekly update" >&2
+    exec "$0" finish-provisioning
+    ;;
+
+  build-status)
+    build_status "${1:?phase}" "${2:-0}" "${3:-}"
+    # Provisioning finished: bring up the AP if it was deferred.
+    [ "$1" = "done" ] && ! systemctl is-active -q prepper-hostapd && "$0" net-up || true
+    ;;
+
+  finish-provisioning)
+    # Last step of prepper-firstpull.service, reached whether or not every
+    # item downloaded: a few failures must not hold the Badger in "building".
+    rm -f "$STATE/first-pull-pending" "$STATE/ap-deferred-since"
+    systemctl disable prepper-firstpull.service 2>/dev/null || true
+    # The laptop relay was only for provisioning; later updates use the Badger's own internet.
+    rm -f "$R/etc/prepper/proxy.env" "$R/etc/apt/apt.conf.d/99prepper-proxy"
+    git config --system --unset-all http.proxy 2>/dev/null || true
+    nmcli con delete prepper-relay >/dev/null 2>&1 || true
+    if [ -e "$STATE/firstboot.done" ]; then rm -rf "$R/boot/firmware/prepper"; fi
+    "$0" build-status "done" 100 "Ready"
+    ;;
+
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage >&2
+    die "unknown verb: $cmd"
+    ;;
+esac

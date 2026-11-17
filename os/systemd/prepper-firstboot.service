@@ -1,0 +1,18 @@
+[Unit]
+Description=Honey Badger first-boot provisioning
+After=network-online.target
+Wants=network-online.target
+# Retried at every boot until it succeeds (the script writes firstboot.done);
+# prepper.toml is copied to /etc/prepper first, so the boot-partition copy
+# can be scrubbed even when an attempt fails.
+ConditionPathExists=/boot/firmware/prepper/firstboot.sh
+ConditionPathExists=!/var/lib/prepper/firstboot.done
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /boot/firmware/prepper/firstboot.sh
+TimeoutStartSec=infinity
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

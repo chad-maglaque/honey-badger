@@ -1,0 +1,16 @@
+[Unit]
+Description=Download content updates now (resumable, smallest first)
+After=network-online.target
+
+[Service]
+# Started by hand ("Download now" in the launcher or panel): --now ignores
+# [upd] window. The weekly timer runs upd-auto.service instead, which
+# honours auto_apply and window.
+Type=oneshot
+# 75 = offline, or a download is already running (it carries on): not a failure.
+SuccessExitStatus=75
+EnvironmentFile=-/etc/prepper/proxy.env
+ExecStart=/usr/bin/python3 /opt/prepper/software/upd/upd.py apply --now
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=infinity

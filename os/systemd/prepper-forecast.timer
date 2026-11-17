@@ -1,0 +1,11 @@
+[Unit]
+Description=Check hourly whether a NOAA forecast capture is due
+
+[Timer]
+OnBootSec=10min
+OnCalendar=*-*-* *:20:00
+RandomizedDelaySec=5min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

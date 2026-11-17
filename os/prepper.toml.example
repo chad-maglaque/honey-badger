@@ -1,0 +1,453 @@
+# /etc/prepper/prepper.toml — one file configures the whole Badger.
+# The builder writes this for you (prepper-build flash … --tier … --ssid …).
+# After editing on the device:  sudo prepperctl apply-config
+
+[device]
+edition = "ultimate"             # field | base | ultimate — just a label; content follows [upd].tier
+disk_id = "prepper-disk-01"      # names this unit in peer-sync manifests
+timezone = "America/Denver"
+
+[network]
+hostname = "badger"             # → http://badger.lan and http://badger.local
+ssid = "HoneyBadger"
+passphrase = ""                  # empty = open network (easiest in a crisis); 8–63 chars = WPA2 (+WPA3 on the USB adapter)
+address = "10.10.10.10"
+dhcp_range = ["10.10.10.50", "10.10.10.250"]
+ap_iface = "auto"                # auto: USB Wi-Fi 6 adapter if present, else onboard wlan0
+country = "US"
+channel_5ghz = 36                # USB adapter AP; set 0 to use 2.4 GHz
+channel_24ghz = 6                # onboard AP / fallback
+max_clients = 64
+captive = "popup"                # popup: phones show the launcher on join · quiet: no popup
+share_uplink = false             # true: also route clients to the internet when the Badger has it
+uplink_wifi = []                 # e.g. [{ ssid = "Home", psk = "…" }] — onboard Wi-Fi joins for updates
+https = true                     # local CA + cert so iPads/phones can install the launcher as an app
+ap_defer_hours = 12              # no USB adapter: the onboard radio downloads first, then becomes the hotspot;
+                                 # after this many hours the hotspot comes up even if the download is not finished
+
+[upd]
+data_root = "/srv/prepper"
+catalog = "/opt/prepper/content/catalog.toml"
+state_file = "/var/lib/prepper/upd-state.json"
+report_dir = "/var/lib/prepper/reports"
+tier = "ultimate"                # field (512 GB) | base (1 TB) | ultimate (2 TB+)
+languages = ["eng", "spa"]       # ISO 639-3; mul/zxx items always included
+reserve_gb = 25                  # never fill the drive past this
+max_rate_kbps = 0                # 0 = unlimited
+window = ""                      # e.g. "01:00-06:00" for scheduled downloads
+auto_apply = true                # weekly timer downloads updates when internet is present
+keep_previous = false            # keep one old version for rollback / zimdiff (needs space)
+peers = []                       # other Badgers to pull from first, e.g. ["http://10.10.10.11/sync"]
+require_signed_peers = true
+allowed_signers = "/etc/prepper/allowed_signers"
+signing_key = "/etc/prepper/keys/disk_ed25519"
+disk_id = "prepper-disk-01"
+
+[upd.hooks]
+zim = "/opt/prepper/bin/prepperctl rebuild-library"
+model = "/opt/prepper/bin/prepperctl service llama restart"
+pmtiles = "true"
+prepper_software = "/opt/prepper/bin/prepperctl self-update-hook"   # by item id (upd tries the id, then the kind)
+
+[portal]
+listen = "127.0.0.1:8000"
+static = "/opt/prepper/software/portal/static"
+renderers = "/opt/prepper/content/renderers.toml"
+# The portal runs as user "prepper" and may write only under /var/lib/prepper/portal.
+settings_file = "/var/lib/prepper/portal/portal-settings.json"
+board_file = "/var/lib/prepper/portal/board.jsonl"
+mesh_outbox = "/var/lib/prepper/portal/mesh-outbox.jsonl"
+mesh_telemetry = "/var/lib/prepper/portal/mesh-telemetry.jsonl"   # telemetry radios send (sensors, batteries), one JSON line each
+mesh_bt_pin_file = "/var/lib/prepper/portal/mesh-bt-pin.json"     # the radio's Bluetooth PIN, if the bridge changed it (0600)
+panel_key_hash = "/etc/prepper/panel.key.sha256"                # how the portal recognises the front panel (made by the panel)
+admin_pin = ""                   # set with: sudo prepperctl set-pin
+kiwix = "http://127.0.0.1:8081/kiwix"
+llama = "http://127.0.0.1:8090/ai"     # llama-server runs with --api-prefix /ai
+search_langs = ["eng"]
+ask_books = []                   # empty = all; or list ZIM book names to ground answers in
+standalone = false
+
+[ai]
+enabled = true
+model = "model_qwen3_4b"         # catalog id; Endurance mode switches to model_qwen25_1_5b
+endurance_model = "model_qwen25_1_5b"
+threads = 4
+context = 8192
+
+[time]                           # Ke-Shi / Nu:Time (see docs/KE-SHI.md)
+display = "local"                # how every time on the Badger is shown by default: local | utc | nutime
+                                 # (each phone can toggle its own; the panel has a Time format menu)
+reference = "civil"              # Nu:Time reference: utc | civil | solar | apparent
+locale = "en"                    # zh | en | fr | es | de — labels only; numbers never change
+dst_policy = "wall"              # wall: fraction of 24 h wall-clock time · elapsed: fraction of the actual 23/25 h day
+timezone = ""                    # empty = [device].timezone
+# latitude = 39.74               # home location for sky colour and solar time until the GPS has a fix
+# longitude = -104.99
+
+[power]
+ups = "x120x"                    # x120x (Geekworm MAX1704x @0x36 + PLD on GPIO6) | ina219 | none
+i2c_bus = 1
+pack_wh = 50                     # internal pack energy, for runtime estimates
+shutdown_percent = 6             # clean shutdown below this on battery
+auto_endurance_percent = 30      # on battery below this → Endurance mode until power returns
+rtc_battery = "none"             # "ml2020" ONLY with the rechargeable SC1163 cell — enables trickle charging
+default_mode = "balanced"        # endurance | balanced | full
+pld_gpio = 6                     # x120x power-loss-detect pin: reads 1 while external power is present
+pld_cmd = ""                     # empty = read pld_gpio with gpioget (libgpiod v1 or v2, detected);
+                                 # or a command that prints 1 (external power) / 0 (battery)
+input_monitor = "none"           # optional meter on the SOLAR / DC IN line (8–30 V): "ina228" (85 V, recommended)
+                                 # | "ina226" (36 V) | "ina219" (26 V max: only if your input never exceeds it)
+input_i2c_address = 0x40
+input_shunt_ohms = 0.1           # the shunt on your meter board (R100 = 0.1, Adafruit INA228 = 0.015)
+case_fan = "auto"                # auto: switch the 40 mm fan with temperature · none: wired always-on
+case_fan_pin = 18                # GPIO driving the fan's MOSFET switch
+fan_on_c = 55                    # CPU °C to start the case fan (Full mode: always on)
+fan_off_c = 47                   # CPU °C to stop it
+fan_endurance_extra_c = 7        # Endurance mode: start at 62 °C, stop at 54 °C
+
+[panel]
+enabled = true
+display = "sh1106"               # sh1106 | ssd1306 | none
+i2c_address = 0x3C
+encoder_a = 17
+encoder_b = 27
+encoder_button = 22
+led_pin = 23                     # status LED: solid ready · slow blink building · medium low battery · fast alert
+sleep_after_s = 45
+
+[radio]
+mesh = "auto"                    # auto: start bridge if a Meshtastic node is on USB serial
+mesh_family_channel = 1          # the family's PRIVATE channel (its own key, set up in the Meshtastic app) ↔ family board.
+                                 # Must be set for family features; never 0 (the radio's primary, public channel); -1 = none
+mesh_public_channel = 0          # the public channel (LongFast) ↔ community board; -1 = don't bridge the community board
+mesh_alerts_public = true        # also broadcast NOAA alerts on the public channel, for everyone nearby
+mesh_alerts = true               # broadcast each new NOAA alert to the mesh once
+mesh_ai = true                   # answer "!ai <question>" with a short AI answer (false: library match instead)
+mesh_ai_cooldown_s = 120         # one !ai question per radio per this many seconds
+# who may use each radio command: "community" (anyone), "family" (sent on the family channel), "off".
+# The launcher's Settings → Radio commands overrides this.
+mesh_commands = { help = "community", q = "community", ai = "family", status = "family" }
+mesh_map = true                  # show radios that share their position on the offline map
+mesh_bt_pin = "secure"           # secure: a radio still on the default Bluetooth PIN (123456 / none) gets a random one,
+                                 # shown on the front panel (Family radio → Bluetooth PIN); "leave": don't touch it
+sdr_weather = "auto"             # auto: decode NOAA Weather Radio SAME alerts if an RTL-SDR is present
+weather_freq_mhz = 162.550       # your nearest NOAA transmitter (see Tools → Radio)
+same_fips = []                   # e.g. ["008031"] to only show alerts for your county; empty = all
+# The two RTL-SDR dongles (SDR 1 = weather radio, SDR 2 = aircraft + weather satellites):
+# Every Badger has two RTL-SDR dongles, told apart by the serial numbers set at build time
+# (rtl_eeprom -s BADGER-SDR1 / BADGER-SDR2; see docs/features/aircraft.md). Normally leave these alone.
+# weather_sdr = "auto"           # SDR 1, the weather radio: "auto" (serial BADGER-SDR1, else the first dongle),
+#                                # a serial ("BADGER-SDR1"), or a device index (an integer). A serial set here is
+#                                # strict: if that dongle is missing, alertd waits for it instead of taking SDR 2.
+# sdr2 = "auto"                  # SDR 2, aircraft + satellites: "auto" (serial BADGER-SDR2, else the other dongle),
+#                                # a serial, a device index, or "none" (use only the weather radio)
+# sdr2_antenna = "adsb"          # what is screwed onto the SDR 2 jack: "adsb" (the 1090 MHz whip, as shipped:
+#                                # aircraft all day), "satellite" (the 137 MHz V-dipole outdoors: passes recorded,
+#                                # aircraft on demand) or "both" (a wideband/discone). An admin can also change it
+#                                # on the Aircraft or Weather satellites page; that choice wins over this line.
+# sdr_lend = true                # may the weather radio lend SDR 1 when SDR 2 is missing/failing (the fallback)?
+#                                # false: never; aircraft and satellites then wait for SDR 2.
+# sdr_lend_gap_min = 10          # SDR 1 listens at least this long between loans (a SAME alert is sent once)
+# sdr_lend_max_min_per_day = 120 # alertd's own cap on SDR 1 loans in any 24 hours (backstop for every borrower)
+
+
+[features]                       # optional heavier services; each can be toggled from Settings
+kolibri = true
+kavita = false
+jellyfin = false
+# The built-in features (software/portal/features/*.py) are all on by default; set one to false to turn it off:
+# forecast = true      voice = true       aircraft = true    satellites = true   vault = true
+# supplies = true      aidstation = true  skills = true      missing = true      sensors = true
+
+# ═══════════════════════════ Feature settings ═══════════════════════════
+# Every key below is optional: each feature works with no config at all.
+# User guides: docs/features/<feature>.md
+
+[forecast]                       # NOAA Weather Radio forecast → written text (needs the weather SDR + speech.sh)
+# Turn the whole feature off with [features] forecast = false.
+interval_hours = 3               # listen this often (1–48); the launcher's admin box can change it
+record_minutes = 6               # how much of the broadcast loop to record (1–14); most loops are 3–7 min
+keep = 40                        # how many captures to keep in "Older versions"
+skip_on_endurance = true         # don't run on battery in Endurance mode (an admin's "Update now" still does)
+post_board = true                # post each NEW forecast on the community board…
+board_min_hours = 6              # …at most this often
+post_mesh = true                 # send the ≤200-byte short version to the mesh community channel…
+mesh_per_day = 2                 # …at most this many times in 24 h (LoRa airtime is shared; keep it low)
+post_max_age_hours = 12          # never post a capture older than this (e.g. after the Badger was off)
+short_ai = true                  # let the on-device AI write the short version (rules are the fallback)
+ai_timeout = 90                  # seconds to wait for the AI before using the rules
+whisper_threads = 2              # CPU cores for transcription (the AI and the launcher keep the rest)
+transcribe_timeout = 1800        # give up on one transcription after this many seconds
+# Speech program paths (defaults are where os/install.d/speech.sh puts them):
+# whisper = "/opt/prepper-speech/bin/whisper-cli"
+# whisper_model = "/opt/prepper-speech/models/ggml-base.en-q5_1.bin"
+# ffmpeg = "/usr/bin/ffmpeg"
+
+[voice]                          # Voice mode: ask out loud on a phone, hear the answer (needs speech.sh)
+# Turn it off with [features] voice = false, or at any time from the Voice page's admin box.
+access = "public"                # "public" (like the Ask page: anyone on the Wi-Fi) or "member" (family only)
+max_seconds = 30                 # longest question; longer recordings are cut (5–60)
+max_upload_mb = 4                # biggest upload accepted (nginx must allow it too, see docs/features/voice.md)
+per_ip_per_10min = 6             # questions per device per 10 minutes
+queue = 2                        # questions that may wait while one is being answered; more get "busy, try again"
+answer = "brief"                 # "brief" (two sentences, quick to say) or "full" (the Ask page's answer)
+allow_long = true                # show a "Longer answer" box on the page (when answer = "brief")
+answer_timeout = 120             # stop the AI after this many seconds and say what it has
+speak = true                     # read the answer aloud with piper (false: text only)
+whisper_threads = 4              # CPU cores for one transcription (questions are short; speed matters)
+stt_timeout = 90                 # seconds
+tts_timeout = 60                 # seconds
+tts_max_chars = 1200             # longest text read aloud (cut at a sentence end)
+# Speech program paths (defaults are where os/install.d/speech.sh puts them):
+# whisper = "/opt/prepper-speech/bin/whisper-cli"
+# whisper_model = "/opt/prepper-speech/models/ggml-base.en-q5_1.bin"
+# piper = "/opt/prepper-speech/piper/piper"
+# piper_voice = "/opt/prepper-speech/voices/en_US-lessac-low.onnx"
+# ffmpeg = "/usr/bin/ffmpeg"
+
+[aircraft]                       # planes overhead from their ADS-B broadcasts (readsb). Off: [features] aircraft = false
+scan_minutes = 15                # length of a "Scan aircraft" (1–30), used when SDR 2 has the satellite antenna
+                                 # or in the fallback
+scans_per_day = 4                # fallback only (scans borrow the weather radio): at most this many a day (0 = none)
+gain = "auto"                    # readsb tuner gain: "auto" or a number in dB (e.g. "42.1")
+max_range_km = 450               # positions farther than this are treated as garbled and dropped
+requests_per_min = 60            # per phone/laptop: the page polls every 5 s, the map every 5 s
+readsb = "/usr/local/bin/readsb" # where os/install.d/sdr.sh installs it
+
+[satellites]                     # Meteor-M weather-satellite passes and pictures. Off: [features] satellites = false
+# Recording uses SDR 2. Which antenna is on it is set by [radio] sdr2_antenna (or the admin buttons on the page).
+capture = "auto"                 # "auto": record when SDR 2 has the satellite (or a wideband) antenna;
+                                 # true: also record with the aircraft whip (poor pictures; aircraft pause per pass);
+                                 # false: never record, only show pass times
+min_elevation_dedicated = 15     # SDR 2: record passes whose highest point is at least this many degrees
+record_above = 10                # record only the part of a pass above this elevation (lower is mostly noise)
+keep_images = 30                 # pictures kept in the gallery (oldest deleted)
+board_post = false               # post "New weather satellite image" on the community board (never on the mesh)
+gain = 40                        # SatDump tuner gain in dB (0–50)
+samplerate = 1024000             # SatDump sample rate for LRPT
+# altitude_m = 1600              # the Badger's height, for pass prediction without a GPS fix (with [time] latitude/longitude)
+
+# Fallback — SDR 2 missing or failing: recording on the weather radio (SDR 1) pauses weather alerts, so it is opt-in.
+fallback_capture = false         # true: record high passes on the weather radio while SDR 2 is out
+min_elevation = 30               # fallback: only passes at least this high
+daily_max_min = 45               # fallback: at most this many minutes of recording a day
+
+# Orbit data (TLEs): refreshed daily from Celestrak when the Badger has internet (prepper-tle.timer).
+tle_url = "https://celestrak.org/NORAD/elements/gp.php?CATNR={norad}&FORMAT=TLE"
+tle_stale_days = 14              # older than this: pass times shown as approximate (recordings start/stop 2 min wider)
+tle_max_days = 60                # older than this: not used for recording at all
+prefer_image = ["221", "rgb", "corrected"]   # which SatDump picture to keep: first name containing these, in order
+
+# The satellites. Meteor-M frequencies change now and then (137.100 / 137.900 MHz): check a current status page.
+[[satellites.list]]
+name = "METEOR-M2 3"
+norad = 57166
+freq_mhz = 137.9
+pipeline = "meteor_m2-x_lrpt"    # the SatDump pipeline (meteor_m2-x_lrpt_80k for the 80k mode)
+
+[[satellites.list]]
+name = "METEOR-M2 4"
+norad = 59051
+freq_mhz = 137.9
+pipeline = "meteor_m2-x_lrpt"
+
+# Family document vault (Family → Document vault). Works with no settings at all.
+# Family members only; the admin PIN alone gives no access. Everything on disk is encrypted:
+# the family passphrase (chosen on the page, never stored) or the printed recovery key opens it.
+[vault]
+idle_minutes = 15          # each device locks itself after this long without use (1–1440)
+max_session_hours = 12     # …and after this long in any case, even while in use (1–72)
+quota_mb = 2048            # total size of everything in the vault, in MiB (counted before encryption)
+max_files = 1000           # most documents + notes it holds (1–20000)
+max_file_mb = 25           # largest single upload in MiB (1–25; nginx allows 26 MiB on /api/)
+min_passphrase = 10        # shortest family passphrase accepted when it is set or changed (8–64)
+scrypt_n = 65536           # passphrase hardening (power of two, 1024–1048576): 65536 ≈ 0.5 s and
+                           # 64 MiB per try on a Pi 5. Used when the passphrase is set or changed.
+openssl = "/usr/bin/openssl"   # does the AES encryption (the key is passed through a pipe, never argv)
+
+# Turn the feature off:  [features] vault = false   (the encrypted files stay where they are)
+
+# Supplies & rationing tracker (Family → Supplies). Works with no settings at all.
+# Family members only. Household size and daily needs are set on the page; these are first-run defaults.
+[supplies]
+people = 1                 # household size until someone sets it on the page
+pets = 0
+kcal_per_person = 2000     # daily food need per person (editable on the page)
+water_l_per_person = 3.8   # daily drinking + cooking water per person, litres (about 1 US gallon)
+expiring_days = 30         # "expiring soon" window (1–365)
+critical_days = 3          # water/food under this many days shows red and may alert (0–365)
+low_days = 14              # water/food under this many days shows "low" (0–365)
+max_items = 2000           # most items on the list (1–20000)
+board_notes = true         # post a note on the FAMILY board when something newly runs low, expires
+                           # or is about to (batched; at most one an hour, the same item again only
+                           # after 3 days)…
+digest_days = 7            # …and a reminder of what is still low/expired at most this often (0 = never)
+mesh_critical = false      # also send one short family-mesh message when water or food falls under
+                           # critical_days (LoRa airtime is shared; off by default)
+check_minutes = 30         # how often the background check runs (1–1440)
+
+# Turn the feature off:  [features] supplies = false
+
+# Aid-station log (Neighbourhood → Aid station). Works with no settings at all.
+# Records (names, health needs) are visible only to aid volunteers the admin appoints and to the admin.
+[aidstation]
+retention_days = 30        # records are deleted automatically after this many days (1–365);
+                           # the admin can change it on the page (that choice wins over this default)
+code_hours = 24            # how long a volunteer code stays valid before it is used (1–168)
+max_staff = 30             # volunteer devices signed in, plus unused codes (1–200)
+max_entries = 10000        # the log refuses new records past this (export, then lower the retention)
+status_hours = 12          # the public "Aid station open" line is marked out of date after this long
+
+# Turn the feature off:  [features] aidstation = false
+
+# Skills & resources directory (Neighbourhood → Skills & resources). Works with no settings at all.
+# Everything in it is visible to anyone on the Badger's Wi-Fi.
+[skills]
+max_entries = 500          # total entries (10–5000)
+per_ip = 10                # entries one device (address) can have at once (1–100)
+adds_per_10min = 5         # new entries one device can add per 10 minutes (1–100)
+expire_days = 90           # entries vanish this many days after their last edit/renew; 0 = never
+
+# Turn the feature off:  [features] skills = false
+
+# Missing persons and lost & found (Neighbourhood → Missing & found). Works with no settings at all.
+# Posts and photos are visible to anyone on the Badger's Wi-Fi.
+[missing]
+max_posts = 300            # total posts (10–5000)
+per_ip = 10                # open posts one device (address) can have at once (1–100)
+posts_per_10min = 3        # new posts one device can make per 10 minutes (1–100)
+max_photo_kb = 1200        # largest photo upload in KB (50–1200; the page shrinks photos to about 1 MB)
+max_photo_px = 2048        # largest photo side in pixels (the page sends at most 1600)
+photos_total_mb = 400      # disk space all photos together may use
+resolved_keep_days = 14    # "found safe", "closed" and "returned" posts are deleted this long after the change
+mesh = true                # allow short radio announcements on the community mesh channel (admin approves each one)
+mesh_per_hour = 3          # at most this many announcements per hour (LoRa airtime is shared and slow)
+board_copy = true          # also put each announcement on the community check-in board
+
+# Turn the feature off:  [features] missing = false
+
+# ── Sensor station (feature "sensors": software/sensors/sensord.py + the Sensors page) ─────────
+# Works with no config at all: it finds a BME280/BMP280 (I²C 0x76/0x77), an SHT3x/SHT4x
+# (0x44/0x45) and DS18B20 probes (1-Wire, GPIO 4) by itself, and shows Meshtastic sensor nodes
+# you pick on the Sensors page. Float switches, water-level sensors and Geiger counters must be
+# listed below (their pins/ports can't be probed safely). Thresholds, names, remote nodes and
+# mesh options can also be changed on the Sensors page (admin); those win over this file.
+# Wiring guide: docs/features/sensors.md.
+[sensors]
+enabled = true                   # false: sensord stays off (also [features] sensors = false)
+public = true                    # readings + alerts visible to everyone on the Wi-Fi; false: family + admin only
+units = "metric"                 # default display: "metric" (°C, cm, hPa) or "us" (°F, in, inHg); each phone can switch
+poll_s = 30                      # seconds between readings (float switches: 5 s unless their own poll_s says otherwise)
+auto_detect = true               # look for I²C sensors and 1-Wire probes every 10 minutes
+i2c_bus = 1                      # /dev/i2c-1 = header pins 3 (SDA) and 5 (SCL), shared with the UPS gauge and display
+onewire = true                   # installer adds dtoverlay=w1-gpio to config.txt (needs a reboot)
+onewire_gpio = 4                 # 1-Wire data pin (BCM numbering; header pin 7)
+max_db_mb = 64                   # hard cap for the readings database (raw 48 h, 10-min averages 30 d, hourly 1 y)
+
+# Alerts → boards: the portal posts sensord's alerts on the board each rule names.
+post_events = true               # false: alerts only on the Sensors page (and the mesh)
+post_interval_s = 6              # how often the portal checks for new alerts to post
+
+# Alerts → mesh radio (meshbridge sends the outbox). Rules choose which alerts go to the mesh.
+mesh_alerts = true               # false: never send sensor alerts over LoRa
+mesh_board = "community"         # channel: "community" (public) or "family"; family-board rules always use family
+mesh_min_interval_s = 600        # at least this long between sensor messages…
+mesh_min_interval_danger_s = 120 # …or this for danger alerts (flood, radiation)
+mesh_max_per_hour = 4            # hard cap on sensor messages per hour (shared airtime!)
+summary_every_h = 0              # 0 = off; else a short readings summary every N hours (1–24)
+summary_board = "community"      # channel for the summary
+
+# Remote readings: Meshtastic environment telemetry meshbridge writes to mesh-telemetry.jsonl.
+remote_nodes = []                # node ids to show, e.g. ["!a1b2c3d4"] (or tick them on the Sensors page)
+remote_untrusted = false         # true: also accept readings sent on the public channel (anyone can send those)
+
+# ── Sensors that can't be found automatically ──────────────────────────────────────────────
+# Each [[sensors.device]] has: type, id (letters/digits/-/_, ≤ 24, unique), name (shown),
+# poll_s (optional), alerts = false (leave it out of the standard alerts, e.g. a freezer probe),
+# and optional alert_above / alert_below (+ alert_hysteresis) for a quick alert on its main reading.
+
+# [[sensors.device]]             # flood / float switch between a GPIO and GND, 10 kΩ pull-up to 3.3 V
+# type = "float"
+# id = "basement"
+# name = "Basement floor"
+# gpio = 24                      # BCM number (header pin 18)
+# wet_when = "high"              # "high": switch OPENS when wet (a cut cable then alarms — recommended)
+#                                # "low": switch closes when wet
+
+# [[sensors.device]]             # ultrasonic water level, JSN-SR04T / A02YYUW in UART mode
+# type = "jsn_sr04t"
+# id = "tank"
+# name = "Rain tank"
+# port = "/dev/serial/by-id/usb-Silicon_Labs_CP2102_…-port0"   # or "/dev/ttyAMA0" (GPIO 14/15)
+# mount_height_cm = 180          # sensor face → zero mark (tank floor / creek bed marker)
+# alert_above = 150              # cm of water
+
+# [[sensors.device]]             # submersible pressure transducer on an ADS1115 ADC
+# type = "ads1115"
+# id = "well"
+# name = "Well level"
+# address = 0x48                 # 0x48–0x4B (ADDR pin)
+# channel = 0                    # AIN0–AIN3
+# range_v = 4.096                # ADC full scale: 6.144, 4.096, 2.048, 1.024, 0.512, 0.256
+# v_zero = 0.6                   # volts at 0 cm (4–20 mA across 150 Ω = 0.6–3.0 V)
+# v_full = 3.0                   # volts at full_scale_cm
+# full_scale_cm = 500            # the transducer's range (5 m water ≈ 0.5 bar ≈ 7 psi)
+# offset_cm = 0                  # how high the transducer sits above your zero mark
+# divider = 1.0                  # if a resistor divider scales the voltage down, its ratio (e.g. 1.5)
+
+# [[sensors.device]]             # GQ GMC-300/320/500/600 Geiger counter on USB
+# type = "gmc"
+# id = "geiger"
+# name = "Radiation"
+# port = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+# baud = 115200                  # GMC-320+ V5 / 500 / 600: 115200; GMC-300 and older 320: 57600
+# factor = 0.0065                # µSv/h per CPM (M4011 tube in the 300/320)
+
+# [[sensors.device]]             # any Geiger counter that prints text lines ("CPS, 0, CPM, 13, uSv/hr, 0.07, SLOW")
+# type = "geiger_text"
+# id = "geiger2"
+# port = "/dev/serial/by-id/usb-FTDI_…-port0"
+# baud = 9600
+# factor = 0.0057                # optional: compute µSv/h from CPM (SBM-20: 0.0057); else the device's own value
+# cpm_regex = ""                 # optional: a regex whose first group is the CPM, for other formats
+
+# [[sensors.device]]             # a specific DS18B20 (otherwise every probe is found automatically)
+# type = "ds18b20"
+# id = "freezer"
+# name = "Chest freezer"
+# serial = "28-0123456789ab"     # from ls /sys/bus/w1/devices
+# alerts = false                 # not "freezing" — it's a freezer
+# alert_above = -10              # but do warn if it thaws
+
+# [[sensors.device]]             # an I²C sensor at a non-default address or bus
+# type = "bme280"                # bme280 | bmp280 | sht3x | sht4x
+# id = "outside"
+# name = "Outside"
+# address = 0x77
+# altitude_m = 0                 # > 0: report sea-level pressure, like weather forecasts
+
+# ── Alert rules ─────────────────────────────────────────────────────────────────────────────
+# Without any [[sensors.alert]] the standard set applies to every local sensor (not mesh nodes):
+#   flood   flood switch wet (2 readings in a row)               → community board + mesh, danger
+#   freeze  temperature below 0 °C, clears above 1 °C            → community board, warning
+#   heat    temperature above 40 °C, clears below 38 °C          → community board, warning
+#   radiation above 1.0 µSv/h or 5× this Badger's normal level   → community board + mesh, danger
+# Writing any [[sensors.alert]] replaces that set. Keys:
+#   id, sensor ("*" = every local sensor, a device id, or "mesh-a1b2c3d4" for a remote node),
+#   metric (temperature humidity pressure water_level flood radiation cpm voltage battery …),
+#   above / below (metric units), above_background (× the 24-hour median, radiation),
+#   hysteresis (how far back it must come to clear), confirm (readings in a row, 1–10),
+#   cooldown_min (don't re-announce the same alert sooner), board (community | family | none),
+#   mesh (true/false), level (warning | danger), note (≤ 60 characters, added to the message).
+# [[sensors.alert]]
+# id = "creek"
+# sensor = "tank"
+# metric = "water_level"
+# above = 150
+# hysteresis = 10
+# confirm = 3
+# cooldown_min = 60
+# board = "community"
+# mesh = true
+# level = "danger"
+# note = "creek rising — move vehicles"

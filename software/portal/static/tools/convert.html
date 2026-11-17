@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unit converter</title><link rel="stylesheet" href="/tools/tools.css"></head>
+<body><header class="top"><a class="brand" href="/#/tools">← Tools</a><b>Unit converter</b></header><main>
+<script>try{var t=localStorage.getItem("theme");if(t&&t!=="auto")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+<div class="card"><div class="row2">
+<div><label for="cat">Type</label><select id="cat"></select></div>
+<div><label for="val">Value</label><input type="number" id="val" value="1" step="any"></div>
+<div><label for="from">From</label><select id="from"></select></div></div>
+<table class="t section" id="out"></table></div>
+<div class="card section"><h2>Battery & power quick math</h2><div class="row2">
+<div><label for="mah">Capacity (mAh)</label><input type="number" id="mah" value="20000"></div>
+<div><label for="v">Cell voltage (V)</label><input type="number" id="v" value="3.7" step="any"></div>
+<div><label for="w">Device draw (W)</label><input type="number" id="w" value="7" step="any"></div></div>
+<p id="bat" class="big" style="margin-top:12px"></p><p class="small muted">Assumes ~85% conversion efficiency. A Honey Badger in Balanced mode draws about 5–8 W.</p></div>
+<script>
+(function(){
+var U={
+ Length:{m:1,km:1000,cm:.01,mm:.001,"in":.0254,ft:.3048,yd:.9144,mi:1609.344,"nautical mi":1852},
+ Weight:{kg:1,g:.001,lb:.45359237,oz:.028349523,"ton (US)":907.18474,"tonne":1000},
+ Volume:{L:1,mL:.001,"gal (US)":3.785411784,"qt (US)":.946352946,"cup (US)":.2365882365,"fl oz (US)":.0295735296,tbsp:.0147867648,tsp:.00492892159,"m³":1000},
+ Area:{"m²":1,"km²":1e6,"ft²":.09290304,acre:4046.8564224,hectare:10000,"mi²":2589988.110336},
+ Speed:{"km/h":1,"mph":1.609344,"m/s":3.6,knot:1.852},
+ Energy:{Wh:1,kWh:1000,J:1/3600,kcal:1.16222,BTU:.29307107},
+ Pressure:{psi:1,bar:14.503773773,kPa:.14503773773,"inHg":.4911541,"mmHg":.0193367747},
+ Temperature:{"°C":"c","°F":"f",K:"k"}};
+function $(i){return document.getElementById(i);}
+Object.keys(U).forEach(function(c){var o=document.createElement("option");o.textContent=c;$("cat").appendChild(o);});
+function fill(){var u=U[$("cat").value];$("from").innerHTML=Object.keys(u).map(function(k){return"<option>"+k+"</option>";}).join("");calc();}
+function fmt(x){return Math.abs(x)>=1e6||Math.abs(x)<1e-3&&x!==0?x.toExponential(4):(+x.toPrecision(6)).toString();}
+function calc(){var c=$("cat").value,u=U[c],f=$("from").value,v=parseFloat($("val").value)||0,rows="";
+ if(c==="Temperature"){var C=f==="°C"?v:f==="°F"?(v-32)*5/9:v-273.15;rows="<tr><td>°C</td><td>"+fmt(C)+"</td></tr><tr><td>°F</td><td>"+fmt(C*9/5+32)+"</td></tr><tr><td>K</td><td>"+fmt(C+273.15)+"</td></tr>";}
+ else{var base=v*u[f];Object.keys(u).forEach(function(k){rows+="<tr><td>"+k+"</td><td>"+fmt(base/u[k])+"</td></tr>";});}
+ $("out").innerHTML=rows;}
+$("cat").onchange=fill;$("from").onchange=calc;$("val").oninput=calc;fill();
+function bat(){var wh=(parseFloat($("mah").value)||0)/1000*(parseFloat($("v").value)||0),w=parseFloat($("w").value)||1;$("bat").textContent=wh.toFixed(0)+" Wh → ~"+(wh*0.85/w).toFixed(1)+" hours";}
+["mah","v","w"].forEach(function(i){$(i).oninput=bat;});bat();
+})();
+</script></main></body></html>

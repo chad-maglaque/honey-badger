@@ -1,0 +1,13 @@
+[Unit]
+Description=Reapply the saved power mode (CPU governor, AI model size)
+After=local-fs.target systemd-tmpfiles-setup.service
+# The AI reads /run/prepper/llama-variant when it starts.
+Before=llama-server.service kolibri.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/prepper/os/bin/prepperctl power-restore
+
+[Install]
+WantedBy=multi-user.target

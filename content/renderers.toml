@@ -1,0 +1,205 @@
+# Renderer registry — which app opens which kind of content.
+#
+# The launcher shows every renderer whose `requires` is met — a service that is
+# running (a name from [portal.services]), or "app:<catalog id>" for a web app
+# that must be installed under apps/ — and
+# opens content with the device default unless the viewer picked their own
+# (stored in their browser). Admins change the device default in Settings.
+#
+# URL placeholders:
+#   {id}        catalog id                   {file}  path under /content/
+#   {book}      ZIM book name (file minus .zim, as kiwix-serve names it)
+#   {url}       URL-encoded /content/... link to the raw file
+
+[kind.zim]
+label = "Offline wiki (ZIM)"
+default = "kiwix"
+  [[kind.zim.renderer]]
+  id = "kiwix"
+  name = "Kiwix server"
+  url = "/kiwix/viewer#{book}"
+  requires = "kiwix"
+  note = "Full-text search, images, works in any browser."
+  [[kind.zim.renderer]]
+  id = "kiwix-raw"
+  name = "Kiwix (no frame)"
+  url = "/kiwix/content/{book}/"
+  requires = "kiwix"
+  note = "Plain pages — best for very old phones and e-readers."
+  [[kind.zim.renderer]]
+  id = "kiwix-js"
+  name = "Kiwix JS in your browser"
+  url = "/apps/kiwix-js/www/index.html?archive={book}"
+  requires = "app:kiwix-js"
+  note = "Reads the archive client-side; small ZIMs can be kept on your device."
+  [[kind.zim.renderer]]
+  id = "download"
+  name = "Download .zim"
+  url = "/content/{file}"
+  note = "For the Kiwix app on Android, iOS, Windows, macOS, Linux."
+
+[kind.pmtiles]
+label = "Map"
+default = "maplibre"
+  [[kind.pmtiles.renderer]]
+  id = "maplibre"
+  name = "Vector map (MapLibre)"
+  url = "/maps/?map={id}"
+  note = "Smooth zoom, search by place name, offline routing if installed. Needs WebGL."
+  [[kind.pmtiles.renderer]]
+  id = "lite"
+  name = "Lite map (Leaflet, no WebGL)"
+  url = "/maps/lite.html?map={id}"
+  note = "Canvas renderer for old or low-power devices."
+  [[kind.pmtiles.renderer]]
+  id = "download"
+  name = "Download .pmtiles file"
+  url = "/content/{file}"
+  note = "The raw map archive, for QGIS, another Badger or a PMTiles viewer. Organic Maps and OsmAnd can't open it — they use their own offline map downloads."
+
+[kind.pdf]
+label = "PDF"
+default = "pdfjs"
+  [[kind.pdf.renderer]]
+  id = "pdfjs"
+  name = "PDF.js viewer"
+  url = "/apps/pdfjs/web/viewer.html?file={url}"
+  note = "Search inside the document, works everywhere."
+  [[kind.pdf.renderer]]
+  id = "native"
+  name = "Browser's own viewer"
+  url = "/content/{file}"
+
+[kind.epub]
+label = "eBook"
+default = "foliate"
+  [[kind.epub.renderer]]
+  id = "foliate"
+  name = "Reader (foliate-js)"
+  url = "/apps/foliate-js/reader.html?url={url}"
+  note = "Paginated reading, adjustable font size, night mode."
+  [[kind.epub.renderer]]
+  id = "kavita"
+  name = "Kavita library"
+  url = "/books/"
+  requires = "kavita"
+  note = "Full library with covers, series, and reading progress per person."
+  [[kind.epub.renderer]]
+  id = "download"
+  name = "Download .epub"
+  url = "/content/{file}"
+
+[kind.video]
+label = "Video"
+default = "html5"
+  [[kind.video.renderer]]
+  id = "html5"
+  name = "Built-in player"
+  url = "/player.html?src={url}"
+  note = "Direct play; lowest power use."
+  [[kind.video.renderer]]
+  id = "jellyfin"
+  name = "Jellyfin"
+  url = "/video/"
+  requires = "jellyfin"
+  note = "Library browsing, subtitles, resume — uses more power."
+
+[kind.audio]
+label = "Audio"
+default = "html5"
+  [[kind.audio.renderer]]
+  id = "html5"
+  name = "Built-in player"
+  url = "/player.html?src={url}"
+
+[kind.kolibri]
+label = "Courses"
+default = "kolibri"
+  [[kind.kolibri.renderer]]
+  id = "kolibri"
+  name = "Kolibri learning platform"
+  url = "/learn/"
+  requires = "kolibri"
+
+[kind.model]
+label = "Offline AI"
+default = "ask"
+  [[kind.model.renderer]]
+  id = "ask"
+  name = "Ask the Library (cites sources)"
+  url = "/#/ask"
+  requires = "llama"
+  note = "Answers drawn from the disk's own articles, with links to check them."
+  [[kind.model.renderer]]
+  id = "chat"
+  name = "Open chat"
+  url = "/ai/"
+  requires = "llama"
+  note = "Free-form chat with the local model. It can be wrong — verify."
+
+[kind.app]
+label = "Tool"
+default = "open"
+  [[kind.app.renderer]]
+  id = "open"
+  name = "Open"
+  url = "/apps/{id}/"
+
+[kind.pdfset]
+label = "Document collection"
+default = "browse"
+  [[kind.pdfset.renderer]]
+  id = "browse"
+  name = "Browse files"
+  url = "/#/item/{id}"
+
+[kind.epubset]
+label = "Book collection"
+default = "browse"
+  [[kind.epubset.renderer]]
+  id = "browse"
+  name = "Browse files"
+  url = "/#/item/{id}"
+  [[kind.epubset.renderer]]
+  id = "kavita"
+  name = "Kavita library"
+  url = "/books/"
+  requires = "kavita"
+
+[kind.dataset]
+label = "Data"
+default = "browse"
+  [[kind.dataset.renderer]]
+  id = "browse"
+  name = "Browse files"
+  url = "/#/item/{id}"
+
+[kind.videoset]
+label = "Video collection"
+default = "browse"
+  [[kind.videoset.renderer]]
+  id = "browse"
+  name = "Browse & play"
+  url = "/#/item/{id}"
+  [[kind.videoset.renderer]]
+  id = "jellyfin"
+  name = "Jellyfin"
+  url = "/video/"
+  requires = "jellyfin"
+
+[kind.audioset]
+label = "Audio collection"
+default = "browse"
+  [[kind.audioset.renderer]]
+  id = "browse"
+  name = "Browse & play"
+  url = "/#/item/{id}"
+
+[kind.apk]
+label = "Android app"
+default = "download"
+  [[kind.apk.renderer]]
+  id = "download"
+  name = "Install on Android"
+  url = "/content/{file}"
+  note = "Download, then open the file and allow installs from your browser."

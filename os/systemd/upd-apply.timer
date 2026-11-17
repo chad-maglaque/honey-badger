@@ -1,0 +1,13 @@
+[Unit]
+Description=Weekly content update download
+
+[Timer]
+# With [upd] window set, render.py's drop-in (upd-apply.timer.d/prepper-window.conf)
+# moves this into the window.
+OnCalendar=Sun 02:00
+RandomizedDelaySec=2h
+Persistent=true
+Unit=upd-auto.service
+
+[Install]
+WantedBy=timers.target

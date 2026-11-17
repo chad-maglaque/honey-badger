@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Player</title><link rel="stylesheet" href="/style.css">
+<style>main{max-width:1000px} video,audio{width:100%;max-height:75vh;background:#000;border-radius:12px}</style></head>
+<body><header class="top"><a class="brand" href="/#/">← Honey Badger</a><span id="t" class="muted small"></span></header>
+<main><div id="m"></div><p class="small muted">Tip: video plays directly from the Badger — no re-encoding, lowest battery use.</p></main>
+<script>
+(function(){var src=new URLSearchParams(location.search).get("src")||"";if(src.indexOf("/content/")!==0){document.getElementById("m").textContent="Nothing to play.";return;}
+var name=decodeURIComponent(src.split("/").pop());document.getElementById("t").textContent=name;document.title=name;
+var audio=/\.(mp3|ogg|opus|m4a|flac|wav)$/i.test(src);var el=document.createElement(audio?"audio":"video");el.controls=true;el.preload="metadata";el.src=src;el.setAttribute("playsinline","");
+var vtt=src.replace(/\.[^.]+$/,".vtt");var tr=document.createElement("track");tr.kind="subtitles";tr.src=vtt;tr.srclang="en";tr.label="Subtitles";el.appendChild(tr);
+document.getElementById("m").appendChild(el);})();
+</script></body></html>

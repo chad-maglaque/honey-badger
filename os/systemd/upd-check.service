@@ -1,0 +1,11 @@
+[Unit]
+Description=Check upstream, peers for content updates (metadata only)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# 75 = offline / another download running: normal for a box that is mostly offline.
+SuccessExitStatus=75
+EnvironmentFile=-/etc/prepper/proxy.env
+ExecStart=/usr/bin/python3 /opt/prepper/software/upd/upd.py check
+Nice=10

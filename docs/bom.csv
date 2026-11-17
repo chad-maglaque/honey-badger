@@ -1,0 +1,93 @@
+section,part,qty,spec,example,where_to_buy,search_terms,est_usd_each,notes
+Core,Raspberry Pi 5 8GB,1,BCM2712 8 GB,Raspberry Pi 5 8GB,"Raspberry Pi approved resellers: Adafruit, PiShop.us, CanaKit, Micro Center, Digi-Key, SparkFun",Raspberry Pi 5 8GB,175,2026 RAM-shortage price; 16 GB not worth $385
+Core,Active Cooler,1,official,Raspberry Pi Active Cooler,"Adafruit, PiShop.us, Micro Center",Raspberry Pi 5 Active Cooler,5,
+Core,RTC battery (rechargeable),1,ML-2020 with JST lead,Raspberry Pi SC1163,"Adafruit, PiShop.us, Digi-Key",Raspberry Pi 5 RTC battery,5,"set rtc_battery = ""ml2020"" to enable charging"
+Core,UPS HAT 4-cell with 6-18 V DC input,1,"98 x 86 mm board, 5.1 V 5 A, MAX1704x fuel gauge, pogo-pin under-Pi mount",Geekworm X1202,"geekworm.com, Amazon (Geekworm store), AliExpress (Geekworm official)",Geekworm X1202,50,VERIFY DC-in connector and stacking with X1001
+Core,18650 cells,4,"3,500 mAh flat-top, matched",Molicel M35A or Samsung 35E,"18650batterystore.com, IMRbatteries.com, Liion Wholesale",Molicel M35A flat top,8,avoid marketplace '9900 mAh' fakes
+Core,NVMe HAT 2280 top-mount,1,PCIe FFC to M.2 M-key 2280,Geekworm X1001,"geekworm.com, Amazon",Geekworm X1001 NVMe,18,
+Core,NVMe SSD 2280,1,"DRAM-less, low power; 512 GB Field / 1 TB Base / 2-4 TB Ultimate",WD SN5000 / SN770 class,"B&H, Newegg, Micro Center, Amazon (sold by Amazon)",WD Blue SN5000 2TB,volatile,check current price; prefer low idle power
+Core,microSD 32 GB,1,A1 or better,SanDisk / Samsung,any major retailer,microSD 32GB A1,8,rescue image
+Core,USB Wi-Fi 6 adapter (AP mode),1,"MediaTek MT7921AU, 85 x 63 x 20 mm, 2 RP-SMA jacks",ALFA AWUS036AXML or EDUP EP-AX1672,"Rokland (ALFA US distributor), Amazon",ALFA AWUS036AXML,50,in-kernel driver; 5 GHz AP; on a Pi USB 3 port
+Core,Wi-Fi FPC antenna (built in),2,"dual-band 2.4/5 GHz, adhesive, ≤48x12 mm, pre-wired to RP-SMA male, ~20 cm lead",generic,"Amazon, Digi-Key",2.4G 5G FPC antenna RP-SMA male,8,"or a U.FL FPC antenna + U.FL to RP-SMA male pigtail; mounts in frames under the lid"
+Core,NVMe USB enclosure,1,"M.2 NVMe to USB-C, 10 Gbps",generic (RTL9210 / JMS583 chip),Amazon,M.2 NVMe USB enclosure,20,load the SSD from a laptop; rescue access to the content
+Radio,SDR receiver,1,R828D/R828S tuner with TCXO,RTL-SDR Blog V4 (or V4L),"rtl-sdr.com store links (Amazon RTL-SDR Blog store, AliExpress official)",RTL-SDR Blog V4,40,V4 is going EOL; V4L is the successor; needs the rtl-sdr-blog driver build if the distro driver misbehaves
+Radio,Meshtastic node 915 MHz,1,nRF52840 + SX1262,RAK WisBlock RAK19007 + RAK4631,"store.rakwireless.com, Rokland, Amazon",RAK WisBlock Meshtastic starter kit 915,35,buy the 915 MHz (US) version; runs from USB (a LiPo is optional)
+Radio,USB GPS with built-in patch antenna,1,"u-blox M8/M10, ≤42x42x16 mm",generic u-blox M8/M10 board,"Amazon, SparkFun (u-blox boards)",u-blox M8 USB GPS module,25,"built in, cradle under the lid; many pucks are ~50 mm across and won't fit"
+Radio,SDR 2 receiver + dipole antenna kit,1,"R828D tuner, TCXO; dipole set with telescopic elements, mount, 3 m + 60 cm coax",RTL-SDR Blog V4 dipole kit,"rtl-sdr.com store links (Amazon RTL-SDR Blog store)",RTL-SDR Blog V4 dipole kit,57,"aircraft (ADS-B) and weather satellites; the dipole set up as a 137 MHz V-dipole outdoors; sits on the printed shelf over SDR 1"
+Radio,1090 MHz ADS-B whip,1,"SMA male, 7-10 cm",generic,Amazon,1090MHz ADS-B antenna SMA male,12,screws onto the SDR 2 jack for aircraft
+Radio,SMA bulkhead to right-angle SMA cable,1,"SMA female bulkhead to right-angle SMA male, 20-25 cm RG316",generic,Amazon,SMA female bulkhead right angle SMA male RG316,7,"SDR 2 jack to the second dongle; plug turned toward the Wi-Fi side, clear of the Ethernet jack"
+Radio,SMA dust caps,1,pack,generic,Amazon,SMA female dust cap,2,for whichever jack has no antenna
+Radio,Compact USB 2.0 hub board,1,"4-port, board ≤45x25 mm",generic,"Amazon, Adafruit",USB 2.0 hub board 4 port mini,8,"on a Pi USB 2 port; all four ports used: SDR 1, SDR 2, RAK node, GPS"
+Radio,LoRa FPC antenna 915 MHz (built in),1,"U.FL, ≤80x20 mm",RAK or generic,"store.rakwireless.com, Rokland",915MHz FPC antenna IPEX,6,radio can never run without an antenna; hot-glue the U.FL
+Radio,SMA bulkhead to SDR cable,1,"SMA female bulkhead to SMA male, 10-15 cm RG316",generic,Amazon,SMA female bulkhead to SMA male RG316,6,panel jack at the end of the whip channel (or run the dongle's own SMA through the panel)
+Radio,Folding SDR whip,1,"SMA male, swivel knuckle, ≤135 mm folded, ≤9 mm grip",2 m/70 cm handheld whip,"Amazon, ham radio stores",SMA male folding antenna 2m 70cm,15,folds into the rear channel and two TPU clips
+Radio,Internal USB cables,1,"short (10-20 cm), right-angle plugs where needed: Pi to Wi-Fi adapter, Pi to hub, hub to SDR / RAK (USB-C) / GPS",generic,Amazon,short right angle USB cable,15,buy what your parts need
+Radio,90-degree USB-A and RJ45 adapters,1,set for the Pi's USB and Ethernet ports,generic,Amazon,90 degree USB A adapter,8,only 25 mm of plug room beyond the Pi's port edge
+Panel & I/O,1.3in OLED 128x64 I2C,1,SH1106 (or 0.96in SSD1306),generic,"Amazon, AliExpress; Adafruit for SSD1306",1.3 inch OLED SH1106 I2C,8,address 0x3C
+Panel & I/O,Rotary encoder with push,1,"EC11 24-detent, 15 mm D-shaft (cut to fit)",Bourns PEC11R or generic,"Adafruit, Digi-Key, Amazon",EC11 rotary encoder switch 15mm shaft,3,
+Panel & I/O,Encoder knob,1,"low-profile 14 x 8 mm, 6 mm D-shaft",generic aluminium,"Adafruit, Amazon",14mm low profile knob 6mm D shaft,2,sits inside the 10 mm control pocket
+Panel & I/O,Momentary button 12 mm,1,normally-open,generic panel-mount,"Adafruit, Digi-Key, Amazon",12mm momentary push button panel mount,3,wire to Pi 5 power-button pads (J2)
+Panel & I/O,5 mm LED + 330 ohm resistor,1,red or amber,generic,"Adafruit, Digi-Key",5mm amber LED,1,GPIO 23; not green
+Panel & I/O,LED holder 5 mm,1,"clip-in, for a 6.3 mm hole",generic,"Digi-Key, Amazon",5mm LED holder clip,1,
+Panel & I/O,Panel-mount USB-A extension 30 cm,2,USB 3.0 with M3 screw ears,generic,"Adafruit, Amazon",panel mount USB 3.0 extension cable,6,front USB 1 on a Pi USB 3 port; USB 2 on a USB 2 port
+Panel & I/O,Panel-mount USB-C extension,1,M2.5 screw ears,generic,"Adafruit, Amazon",panel mount USB-C extension,8,
+Panel & I/O,USB-C PD trigger board,1,fixed 15 V,Adafruit HUSB238 breakout set to 15 V (or ZY12PDN set and locked to 15 V),"Adafruit, Amazon",USB-C PD trigger 15V,5,a ZY12PDN can output 20 V: set it to 15 V and lock it
+Panel & I/O,DC5521 barrel plug pigtail,1,"5.5 x 2.1 mm male, 18 AWG",generic,Amazon,DC5521 male pigtail,2,into the X1202 DC input
+Panel & I/O,GX16-2 aviation connector pair,1,2-pin panel socket + cable plug (one plug per adapter cable),generic,"Amazon, AliExpress",GX16 2 pin aviation connector,6,sealed 8–30 V solar/DC input
+Panel & I/O,12 V step-down regulator,1,"5 A, input up to 50 V; drops out to pass-through below ~12.5 V",Pololu D36V50F12,"pololu.com, Amazon",Pololu D36V50F12,35,regulates 20–26 V panels to 12 V; the X1202 takes 6–18 V
+Panel & I/O,Input fuse + TVS,1,5 A inline blade fuse holder + SMBJ30A,generic,"Digi-Key, Amazon",SMBJ30A,3,first thing after the GX16
+Panel & I/O,Reverse-polarity P-MOSFET stage,1,"P-channel MOSFET ≥40 V ≥10 A (e.g. AOD4185, IRF4905) + 15 V zener + 100 kohm",generic,"Digi-Key, Amazon",AOD4185 P-channel MOSFET,3,right after the fuse
+Panel & I/O,INA228 input meter (optional),1,"85 V, I2C 0x40",Adafruit INA228 breakout,"Adafruit, Digi-Key",INA228 breakout,15,"set input_monitor = ""ina228"" and input_shunt_ohms (Adafruit: 0.015)"
+Panel & I/O,Ideal-diode module,2,"LM74700-based, single channel",generic,"Amazon, AliExpress",LM74700 ideal diode module,6,one per source (USB-C and DC in)
+Panel & I/O,Panel-mount RJ45 extension,1,Cat6 with M3 screw ears,generic,"Adafruit, Amazon",panel mount ethernet extension,8,
+Panel & I/O,40 mm 5 V fan,1,quiet,Noctua NF-A4x10 5V,"Amazon, noctua.at",Noctua NF-A4x10 5V,15,add a 40 mm dust filter
+Panel & I/O,Fan switch MOSFET,1,"AO3400-class logic-level N-MOSFET + flyback diode, module or on perfboard",generic,"Amazon, Digi-Key",AO3400 MOSFET module,3,"GPIO 18; a gate pull-down turns the fan off if the Pi hangs, a pull-up keeps it on"
+Panel & I/O,Sensor socket (rear),1,"M8 4-pin A-coded female panel socket, front mount, IP67, with leads",generic,"Amazon, Digi-Key",M8 4 pin female panel mount connector front,6,"rear SENSORS socket: 1 = 3.3 V (polyfused), 2 = GND, 3 = 1-Wire, 4 = float; different from the GX16 power input"
+Panel & I/O,Sensor polyfuse + pull-ups,1,"100 mA PTC resettable fuse, 4.7 kΩ (1-Wire) and 10 kΩ (float) resistors",generic,"Amazon, Digi-Key",PTC resettable fuse 100mA,2,protects the Pi 3.3 V rail from a crushed outdoor cable
+Case,"PETG filament, yellow",1,"~450 g used (base, sled)","Polymaker, Prusament, Overture, eSun","Amazon, maker stores",yellow PETG filament 1.75,20,1 kg spool; Honey Badger body colour; also the lid inlay colour
+Case,"PETG filament, black",1,~160 g used (lid),"Polymaker, Prusament, Overture, eSun","Amazon, maker stores",black PETG filament 1.75,15,0.5–1 kg spool
+Case,"TPU 95A filament, black",1,~150 g used,"Polymaker PolyFlex TPU95, Overture TPU, eSun eTPU-95A",Amazon,black TPU 95A filament,25,"bumpers, dampers, gasket, SDR clips"
+Case,M3 heat-set inserts,22,M3 x 5.7 mm,CNC Kitchen or Ruthex,"Amazon, CNC Kitchen store",M3 heat set insert,0.2,"8 lid, 4 bumper bottom, 4 power tray, 4 SDR clips, 2 SDR shelf"
+Case,M2.5 heat-set inserts,4,M2.5,CNC Kitchen or Ruthex,Amazon,M2.5 heat set insert,0.25,sled (Pi/UPS holes)
+Case,M3 screw kit,1,"button head: 8x M3x8 (lid edge, bumper bottom), 4x M3x10 (lid corners), 8x M3x6 (SDR clips, tray), 6x M3x10 + nuts (USB-A, RJ45 ears), 4x M3x20 + nuts (fan), 2x M3x12 (SDR shelf); 8 washers",generic,"Amazon, hardware store",M3 button head screw kit,9,
+Case,M2.5 and M2 screw kit,1,"M2.5 for the USB-C ears and the UPS; 4x M2 + nylon spacers + nuts for the OLED",generic,"Amazon, hardware store",M2 M2.5 screw nylon spacer kit,7,
+Case,Closed-cell foam 3 mm,1,EVA or neoprene,generic,"craft stores, McMaster-Carr",EVA foam sheet 3mm,3,between the lid posts and the NVMe HAT
+Case,Hook-and-loop strap 20 mm,1,,generic,any,velcro strap 20mm,2,around UPS cells
+Wiring,Sundries,1,"silicone wire 18/24 AWG, heat-shrink, Dupont jumpers, I2C splices",generic,"Amazon, Adafruit",silicone wire kit,15,
+Wiring,Zip ties,1,"≤2.2 mm wide, 100 pack",generic,any,2.2mm zip ties,3,the anchor slots are 2.4 mm
+Wiring,Kapton tape,1,10-20 mm roll,generic,Amazon,kapton tape,5,insulate the power tray and stack
+Wiring,Hot glue sticks,1,mini sticks,generic,any,mini hot glue sticks,3,secure the U.FL plugs
+Wiring,Thermal pad,1,1 mm,generic,Amazon,thermal pad 1mm,5,SSD to heatsink or HAT
+Wiring,Perfboard,1,cut to 80 x 26 mm,generic,"Amazon, Adafruit",perfboard,3,power tray carrier
+Wiring,2-pin header,1,2.54 mm,generic,"Adafruit, Digi-Key",2 pin header 2.54mm,1,solder to the Pi 5 J2 pads for the power button
+Wiring,Sticker paper,1,"printable vinyl or laminated label sheets",generic,"Amazon, office stores",printable vinyl sticker paper,10,"lid mark, panel labels, QR sticker"
+Field power,LiFePO4 12.8 V 20 Ah,1,256 Wh with BMS,"LiTime, Renogy, Dakota Lithium","solar retailers, Amazon",12V 20Ah LiFePO4,115,no charging below 0 °C unless self-heating
+Field power,MPPT charge controller,1,75 V / 10 A,Victron SmartSolar MPPT 75/10,"Victron dealers, Amazon",Victron SmartSolar 75/10,60,optional: only with the LiFePO4 battery
+Field power,Folding solar panel,1,"12 V-class, Voc ≤ 30 V",Jackery SolarSaga 40W Air (already owned) or 100 W,"solar retailers, Amazon",100W folding solar panel,0,plugs straight into the Badger via an adapter cable
+Field power,Adapter cable DC8020 to GX16,1,"Jackery DC8020 male → GX16 plug, 16 AWG",DIY from DC8020 adapter + GX16 plug,Amazon,DC8020 adapter cable,15,verify polarity with a multimeter; make MC4/XT60/Anderson/car-plug versions as needed
+Transport,Hard case with foam,1,interior ≈ 300 x 225 x 132 mm,Pelican 1400 class,"pelican.com, B&H, Amazon",Pelican 1400 with foam,115,for big drops and transport
+Transport,Faraday bag,1,fits spares,Mission Darkness,"MOS Equipment, Amazon",Mission Darkness Faraday bag,30,spare SD + USB bundle
+Tools,Soldering iron + heat-set insert tips,1,temperature-controlled,Pinecil + insert tip set,"Amazon, Pine64",Pinecil heat set insert tip,55,
+Tools,Multimeter,1,auto-ranging,generic,any,auto ranging multimeter,25,check polarity on every new cable
+Tools,Crimper + wire strippers,1,Dupont/JST crimper,generic,Amazon,dupont crimper kit,30,
+Tools,Hex keys and small drivers,1,"1.5, 2, 2.5 mm hex + small Phillips",generic,any,hex key set,10,
+Tools,Hot glue gun,1,mini,generic,any,mini hot glue gun,10,
+Test fixtures,USB webcam 1080p,1,Logitech C270/C920 class,Logitech C920,anywhere,Logitech C920,30,reads the front panel in snapshots
+Test fixtures,Webcam clamp/gooseneck mount,1,,,Amazon,webcam clamp mount gooseneck,12,holds the camera square to the front panel
+Test fixtures,Smart plug with local HTTP API + power metering,1,no cloud account needed,Shelly Plug US Gen3,Amazon / shelly.com,Shelly Plug US Gen3,20,"automated power-cut, brownout and restart tests"
+Test fixtures,Second Meshtastic radio 915 MHz,1,"USB-C, with antenna",Heltec WiFi LoRa 32 V3,Heltec store / Rokland / Amazon,Heltec LoRa 32 V3 915,25,two-way mesh and !q lookups
+Test fixtures,Inline USB-C power meter 240 W,1,shows V/A/W and PD contract,,Amazon,USB C power meter 240W,20,checks the 15 V PD trigger and watt readings
+Test fixtures,USB flash drive 32 GB,1,,,anywhere,32GB USB 3 flash drive,8,"file sharing, eject, update bundles"
+Test fixtures,Spare microSD 32 GB + USB card reader,1,,,anywhere,microSD card reader USB-C,16,builder flash and first-boot runs
+Test fixtures,Ethernet cable 2 m,1,cat6,,anywhere,cat6 ethernet cable 2m,5,keeps SSH up while Wi-Fi is under test
+Test fixtures (optional),Programmable bench supply 0–60 V,1,USB-controllable,Riden RD6006,Amazon / AliExpress,Riden RD6006,90,"sweeps the 8–30 V solar/DC input, Voc, reverse polarity"
+Test fixtures (optional),DS18B20 waterproof temperature probe,1,,,Amazon / Adafruit,DS18B20 waterproof probe,5,case air temperature during heat tests
+Sensor kit (optional),BME280 breakout,1,"3.3 V I2C temperature/humidity/pressure, in a vented weatherproof box",Adafruit BME280 or generic,"Adafruit, Amazon",BME280 breakout 3.3V,10,or an SHT31/SHT41 in a weather shield
+Sensor kit (optional),DS18B20 waterproof probe,1,1-3 m lead,generic,"Amazon, Adafruit",DS18B20 waterproof probe,4,1-Wire on GPIO 4
+Sensor kit (optional),Float switch,1,normally open,generic,Amazon,float switch normally open,4,flood alarm on GPIO 24
+Sensor kit (optional),Ultrasonic water level + USB-TTL,1,"JSN-SR04T (UART mode) + CP2102 3.3 V adapter",generic,Amazon,JSN-SR04T,18,water level without touching the water
+Sensor kit (optional),M8 4-pin male field-wireable plug,1,A-coded,generic,"Amazon, Digi-Key",M8 4 pin male field wireable connector,6,mates with the rear SENSORS socket
+Sensor kit (optional),4-core shielded cable,1,10-20 m,generic,"Amazon, hardware store",4 core shielded cable 22AWG,10,outdoor runs
+Sensor kit (optional),Glands + heat-shrink + IP65 box,1,PG7,generic,Amazon,PG7 cable gland IP65 junction box,8,waterproofing
+Sensor kit (optional — extra),USB Geiger counter,1,GQ GMC-320 Plus V5,GQ GMC-320 Plus,"gqelectronicsllc.com, Amazon",GQ GMC-320 Plus,110,front USB port; a warning not a calibrated dose
+Sensor kit (optional — extra),Pressure-transducer water depth,1,"ADS1115 + 4-20 mA vented transducer + 150 ohm + 5-24 V boost",generic,Amazon,4-20mA water level transducer,53,wells or deep tanks

@@ -1,0 +1,34 @@
+[Unit]
+Description=Honey Badger sensor station (temperature, water, flood, radiation)
+After=local-fs.target
+
+[Service]
+User=prepper
+# i2c: /dev/i2c-1 · dialout: USB/UART serial (Geiger counter, ultrasonic level) · gpio: gpioget
+SupplementaryGroups=i2c dialout gpio
+ExecStart=/usr/bin/python3 /opt/prepper/software/sensors/sensord.py
+# [sensors] enabled = false → exits 0 and stays stopped; a crash restarts it.
+Restart=on-failure
+RestartSec=10
+# Writes only the feature's folder (readings, alerts) and the mesh outbox, both under
+# /var/lib/prepper/portal. Reads /sys/bus/w1 (1-Wire probes) and the serial/I²C/GPIO devices below.
+ProtectSystem=strict
+ReadWritePaths=-/var/lib/prepper/portal
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+DeviceAllow=char-i2c rw
+DeviceAllow=char-ttyUSB rw
+DeviceAllow=char-ttyACM rw
+DeviceAllow=char-ttyAMA rw
+DeviceAllow=char-gpiochip rw
+MemoryMax=128M
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

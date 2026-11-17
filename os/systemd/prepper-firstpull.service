@@ -1,0 +1,29 @@
+[Unit]
+Description=Honey Badger first content download (after the first-boot reboot)
+After=network-online.target prepper-net.service
+Wants=network-online.target
+# firstboot.sh creates the marker; finish-provisioning removes it. A reboot
+# mid-download stops this unit before finish-provisioning runs, so the
+# (resumable) pull simply starts again on the next boot.
+ConditionPathExists=/var/lib/prepper/first-pull-pending
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/prepper/proxy.env
+ExecStartPre=/opt/prepper/os/bin/prepperctl build-status content 10 "Downloading content — the Badger is usable while this runs"
+# First content pull: smallest items first, so essentials (medical, survival,
+# maps overview, tools) are usable within minutes and Wikipedia lands last.
+# `first-pull` runs upd and then finish-provisioning — except when upd exits
+# 75 (no source reachable yet, or another download holds the lock): then it
+# exits 75 too, provisioning stays open and systemd tries again in 5 minutes.
+# A few failed items do not hold the Badger in "building".
+ExecStart=/opt/prepper/os/bin/prepperctl first-pull
+Restart=on-failure
+RestartSec=5min
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

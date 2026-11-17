@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ke-Shi / Nu:Time™</title><link rel="stylesheet" href="/tools/tools.css">
+<style>
+body { transition: background-color .8s linear; }
+.clock { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 760px) { .clock { grid-template-columns: 340px minmax(0, 1fr); align-items: start; } }
+.face { display: flex; justify-content: center; }
+canvas#dial { width: 100%; max-width: 340px; height: auto; aspect-ratio: 1; }
+.digits { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: clamp(2.6rem, 9vw, 4.2rem); font-weight: 600; letter-spacing: .02em; font-variant-numeric: tabular-nums; line-height: 1; }
+.spoken { font-size: 1.05rem; margin-top: 8px; }
+.ref { font-size: .8rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+canvas#strip { width: 100%; height: 46px; display: block; border-radius: 6px; }
+.strip-axis { display: flex; justify-content: space-between; font-family: ui-monospace, Menlo, monospace; font-size: .72rem; color: var(--muted); margin-top: 4px; }
+.row3 { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.row3 > div { min-width: 0; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: .92rem; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+select, input { width: 100%; }
+</style></head>
+<body>
+<header class="top"><a class="brand" href="/#/tools">← Tools</a><b>Ke-Shi / Nu:Time™</b></header>
+<main>
+<script>try{var t=localStorage.getItem("theme");if(t&&t!=="auto")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+<div class="clock">
+  <div class="card face"><canvas id="dial" width="680" height="680" aria-label="Nu:Time™ dial"></canvas></div>
+  <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+    <div class="card">
+      <div class="ref" id="ref">—</div>
+      <div class="digits" id="digits" aria-live="off">--:--:--</div>
+      <div class="spoken" id="spoken"></div>
+      <div class="small muted" id="beats" style="margin-top:6px"></div>
+    </div>
+    <div class="card">
+      <div class="small muted" style="margin-bottom:6px">The day in 1,000 beats — sky colour from the Sun's altitude at this location</div>
+      <canvas id="strip" width="1000" height="46"></canvas>
+      <div class="strip-axis"><span>00</span><span>02</span><span>04</span><span>06</span><span>08</span><span>10 gong</span></div>
+    </div>
+  </div>
+</div>
+<div class="card section">
+  <div class="row3">
+    <div><label for="mode">Reference</label><select id="mode">
+      <option value="civil">Civil local (time zone)</option><option value="utc">UTC (same everywhere)</option>
+      <option value="solar">Mean solar (longitude)</option><option value="apparent">True solar (sundial)</option></select></div>
+    <div><label for="locale">Names</label><select id="locale">
+      <option value="en">English — gong · beat · tick</option><option value="zh">中文 — 更 · 分 · 刻</option>
+      <option value="fr">Français — gong · beat · tic</option><option value="es">Español — gong · beat · tic</option>
+      <option value="de">Deutsch — gong · beat · tick</option></select></div>
+    <div><label for="place">Location</label><select id="place"></select></div>
+  </div>
+  <div class="row3" id="manual" style="display:none;margin-top:6px">
+    <div><label for="lat">Latitude</label><input type="number" id="lat" step="any"></div>
+    <div><label for="lon">Longitude</label><input type="number" id="lon" step="any"></div>
+    <div><label for="tz">Time zone</label><input type="text" id="tz" placeholder="Europe/Helsinki"></div>
+  </div>
+</div>
+<div class="card section"><dl class="kv" id="info"></dl></div>
+<div class="card section small">
+  <p><b>How it works.</b> One day is 10 gongs, each gong is 100 beats, each beat is 100 ticks: 1,000 beats or 100,000 ticks a day. A beat is 86.4 seconds and a tick is 0.864 seconds. Noon is <span class="mono">05:00:00</span>.</p>
+  <p><b>References.</b> Civil local follows your time zone, including daylight saving: the display skips or repeats an hour on those days, like a wall clock. UTC is the same everywhere. Mean solar uses your longitude, ignoring political time zones. True solar adds the equation of time, so <span class="mono">05:00:00</span> is when the Sun is highest.</p>
+  <p class="muted">Ke-Shi borrows names from East Asian timekeeping (更 watches, 分, 刻). Its 10 × 100 × 100 arithmetic is modern, not an historical Chinese standard. Sky colours are artistic, not a weather report.</p>
+</div>
+<script src="/tools/nutime.js"></script>
+<script>
+(function () {
+  "use strict";
+  var N = window.NuTime, $ = function (i) { return document.getElementById(i); };
+  // Text from the Badger (/api/time) or typed by the viewer goes into innerHTML below: escape it.
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  var CITIES = [
+    ["Greenwich", 51.4779, -0.0015, "Europe/London"], ["Helsinki", 60.1699, 24.9384, "Europe/Helsinki"],
+    ["Reykjavík", 64.1466, -21.9426, "Atlantic/Reykjavik"], ["Longyearbyen", 78.2232, 15.6267, "Arctic/Longyearbyen"],
+    ["Paris", 48.8566, 2.3522, "Europe/Paris"], ["Madrid", 40.4168, -3.7038, "Europe/Madrid"],
+    ["Berlin", 52.52, 13.405, "Europe/Berlin"], ["New York", 40.7128, -74.006, "America/New_York"],
+    ["Chicago", 41.8781, -87.6298, "America/Chicago"], ["Denver", 39.7392, -104.9903, "America/Denver"],
+    ["Los Angeles", 34.0522, -118.2437, "America/Los_Angeles"], ["Mexico City", 19.4326, -99.1332, "America/Mexico_City"],
+    ["Beijing", 39.9042, 116.4074, "Asia/Shanghai"], ["Hong Kong", 22.3193, 114.1694, "Asia/Hong_Kong"],
+    ["Tokyo", 35.6762, 139.6503, "Asia/Tokyo"], ["Singapore", 1.3521, 103.8198, "Asia/Singapore"],
+    ["Sydney", -33.8688, 151.2093, "Australia/Sydney"]];
+  var deviceTz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || "UTC";
+  var st = { mode: "civil", locale: "en", place: "badger", lat: null, lon: null, tz: deviceTz, offset: 0, sync: null, badger: null };
+  function load(k, d) { try { var v = localStorage.getItem("nutime." + k); return v === null ? d : v; } catch (e) { return d; } }
+  function save(k, v) { try { localStorage.setItem("nutime." + k, v); } catch (e) {} }
+
+  // location options
+  var opts = '<option value="badger">This Badger (GPS / home)</option><option value="device">This device\'s location</option>' +
+    CITIES.map(function (c, i) { return '<option value="c' + i + '">' + c[0] + "</option>"; }).join("") + '<option value="manual">Enter coordinates…</option>';
+  $("place").innerHTML = opts;
+  st.mode = load("mode", "civil"); st.locale = load("locale", "en"); st.place = load("place", "badger");
+  $("mode").value = st.mode; $("locale").value = st.locale; $("place").value = st.place;
+  $("lat").value = load("lat", ""); $("lon").value = load("lon", ""); $("tz").value = load("tz", deviceTz);
+
+  function applyPlace() {
+    var p = st.place;
+    $("manual").style.display = p === "manual" ? "" : "none";
+    if (p.charAt(0) === "c") { var c = CITIES[+p.slice(1)]; st.lat = c[1]; st.lon = c[2]; st.tz = c[3]; st.where = c[0]; }
+    else if (p === "manual") { st.lat = parseFloat($("lat").value); st.lon = parseFloat($("lon").value); st.tz = $("tz").value || deviceTz; st.where = "custom"; }
+    else if (p === "badger" && st.badger && st.badger.location.latitude != null) {
+      st.lat = st.badger.location.latitude; st.lon = st.badger.location.longitude; st.tz = st.badger.location.ianaTimeZone || deviceTz;
+      st.where = "Badger (" + (st.badger.locationSource || "config") + ")"; }
+    else if (p === "device" && navigator.geolocation && window.isSecureContext) {
+      navigator.geolocation.getCurrentPosition(function (pos) { st.lat = pos.coords.latitude; st.lon = pos.coords.longitude; st.tz = deviceTz; st.where = "this device"; stripAt = 0; }, function () {});
+    }
+    if (st.lat == null || isNaN(st.lat)) {
+      // No location yet (no GPS fix, none configured): Greenwich, with Greenwich's own time zone so the
+      // sky, sunrise and civil time all describe the same place.
+      st.lat = 51.4779; st.lon = -0.0015; st.tz = "Europe/London";
+      st.where = "Greenwich — no location yet; pick your city below";
+    }
+    stripAt = 0;
+  }
+  ["mode", "locale", "place"].forEach(function (k) { $(k).onchange = function () { st[k] = this.value; save(k, this.value); applyPlace(); }; });
+  ["lat", "lon", "tz"].forEach(function (k) { $(k).oninput = function () { save(k, this.value); applyPlace(); }; });
+
+  // sync the device clock against the Badger (GPS-disciplined) when it's reachable
+  function sync() {
+    var t0 = Date.now();
+    fetch("/api/time?mode=utc").then(function (r) { return r.json(); }).then(function (rec) {
+      var t1 = Date.now(); if (!rec.instant) return;
+      st.offset = Date.parse(rec.instant) - (t0 + t1) / 2; st.sync = rec.sync; st.badger = rec;
+      if (st.place === "badger") applyPlace();
+    }).catch(function () { st.sync = null; });
+  }
+
+  var dial = $("dial"), dc = dial.getContext("2d"), strip = $("strip"), sc = strip.getContext("2d"), stripAt = 0, astroAt = 0, astro = {};
+  function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim() || "#888"; }
+  function opt() { return { tz: st.tz, lon: st.lon }; }
+  function refBeats(ms) { return N.msIntoDay(ms, st.mode, opt()) / 86400; }   // 0–1000
+
+  function drawDial(ms) {
+    var W = dial.width, c = W / 2, r = W * 0.46, ctx = dc, ink = css("--text"), muted = css("--muted"), acc = css("--accent");
+    ctx.clearRect(0, 0, W, W);
+    // day arc (sunrise → sunset) on the outer ring
+    ctx.lineWidth = W * 0.035;
+    ctx.beginPath(); ctx.arc(c, c, r, 0, 2 * Math.PI); ctx.strokeStyle = "rgba(20,30,70,.55)"; ctx.stroke();
+    var ev = astro.ev;
+    if (ev && !ev.polar) {
+      var a0 = refBeats(ev.sunrise) / 1000 * 2 * Math.PI - Math.PI / 2, a1 = refBeats(ev.sunset) / 1000 * 2 * Math.PI - Math.PI / 2;
+      ctx.beginPath(); ctx.arc(c, c, r, a0, a1 < a0 ? a1 + 2 * Math.PI : a1); ctx.strokeStyle = "rgba(240,170,60,.9)"; ctx.stroke();
+    } else if (ev && ev.polar === "day") { ctx.beginPath(); ctx.arc(c, c, r, 0, 2 * Math.PI); ctx.strokeStyle = "rgba(240,170,60,.9)"; ctx.stroke(); }
+    // beat marks every 10 beats, gong numerals
+    for (var i = 0; i < 100; i++) {
+      var a = i / 100 * 2 * Math.PI - Math.PI / 2, big = i % 10 === 0, r1 = r * (big ? 0.80 : 0.86), r2 = r * 0.91;
+      ctx.beginPath(); ctx.moveTo(c + Math.cos(a) * r1, c + Math.sin(a) * r1); ctx.lineTo(c + Math.cos(a) * r2, c + Math.sin(a) * r2);
+      ctx.lineWidth = big ? 5 : 2; ctx.strokeStyle = big ? ink : muted; ctx.stroke();
+      if (big) { ctx.fillStyle = ink; ctx.font = "600 " + Math.round(W * 0.06) + "px ui-monospace, Menlo, monospace"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText(String(i / 10), c + Math.cos(a) * r * 0.68, c + Math.sin(a) * r * 0.68); }
+    }
+    var b = refBeats(ms);                                   // continuous beats-of-day
+    function hand(frac, len, width, color) {
+      var a = frac * 2 * Math.PI - Math.PI / 2;
+      ctx.beginPath(); ctx.moveTo(c - Math.cos(a) * len * 0.12, c - Math.sin(a) * len * 0.12); ctx.lineTo(c + Math.cos(a) * len, c + Math.sin(a) * len);
+      ctx.lineWidth = width; ctx.lineCap = "round"; ctx.strokeStyle = color; ctx.stroke();
+    }
+    hand(b / 1000, r * 0.48, W * 0.03, ink);               // gong hand: once a day
+    hand((b % 100) / 100, r * 0.74, W * 0.018, ink);       // beat hand: once a gong (2 h 24 min)
+    hand((b * 100 % 100) / 100, r * 0.84, W * 0.007, acc); // tick hand: once a beat (86.4 s)
+    ctx.beginPath(); ctx.arc(c, c, W * 0.022, 0, 2 * Math.PI); ctx.fillStyle = acc; ctx.fill();
+  }
+
+  function drawStrip(ms) {
+    var into = N.msIntoDay(ms, st.mode, opt());
+    for (var k = 0; k < 1000; k++) {
+      var instant = ms - into + k * 86400;                  // start of beat k in this reference day
+      sc.fillStyle = N.sky(N.sun(instant + 43200, st.lat, st.lon).altitude); sc.fillRect(k, 0, 1, 46);
+    }
+    stripAt = ms;
+  }
+
+  function fmtLocal(ms) { var m = N.pref() === "nutime" ? "local" : N.pref(); return N.fmt(ms, { mode: m, short: true, tz: st.tz }); }
+  function nuAt(ms) { return N.now(ms, st.mode, opt()).display; }
+
+  function frame() {
+    var ms = Date.now() + st.offset, r = N.now(ms, st.mode, opt()), L = N.LABELS[st.locale] || N.LABELS.en;
+    $("digits").textContent = r.display;
+    $("ref").textContent = { utc: "UTC", civil: "Civil local · " + st.tz, solar: "Mean solar · " + (+st.lon).toFixed(2) + "°", apparent: "True solar · " + (+st.lon).toFixed(2) + "°" }[st.mode];
+    $("spoken").innerHTML = r.gong + " " + L.gong + " · " + r.beat + " " + L.beat + " · " + r.tick + " " + L.tick +
+      (st.locale === "zh" ? ' <span class="muted">(' + L.spoken.join(" : ") + ")</span>" : "");
+    $("beats").textContent = "Beat " + r.beatsOfDay.toFixed(2) + " of 1,000";
+    drawDial(ms);
+    if (ms - astroAt > 1000) {                               // astronomy at ~1 Hz; hands at display rate
+      astroAt = ms;
+      var s = N.sun(ms, st.lat, st.lon); astro.alt = s.altitude; astro.ev = N.sunEvents(ms, st.lat, st.lon, st.tz);   // today = the local date at the chosen place
+      document.body.style.backgroundColor = N.sky(s.altitude);
+      var ev = astro.ev, sy = st.sync;
+      $("info").innerHTML =
+        "<dt>Location</dt><dd>" + esc(st.where) + " · " + (+st.lat).toFixed(3) + ", " + (+st.lon).toFixed(3) + "</dd>" +
+        "<dt>Sun</dt><dd>" + s.altitude.toFixed(1) + "° altitude · " + s.azimuth.toFixed(0) + "° azimuth</dd>" +
+        (ev.polar ? "<dt>Today</dt><dd>Polar " + esc(ev.polar) + "</dd>" :
+          "<dt>Sunrise</dt><dd>" + esc(nuAt(ev.sunrise)) + " · " + esc(fmtLocal(ev.sunrise)) + "</dd><dt>Sunset</dt><dd>" + esc(nuAt(ev.sunset)) + " · " + esc(fmtLocal(ev.sunset)) + "</dd>") +
+        "<dt>Solar noon</dt><dd>" + esc(nuAt(ev.solarNoon)) + " · " + esc(fmtLocal(ev.solarNoon)) + "</dd>" +
+        "<dt>Now</dt><dd>" + esc(N.fmt(ms, { mode: "local", tz: st.tz })) + " · " + esc(N.fmt(ms, { mode: "utc" })) + " · UTC Nu:Time™ " + esc(N.now(ms, "utc").display) + "</dd>" +
+        "<dt>Clock</dt><dd>" + (sy ? "synced to Badger (" + esc(sy.source || "system") + ")" + ", device offset " + (st.offset >= 0 ? "+" : "") + Math.round(st.offset) + " ms" : "this device's clock (Badger not reachable)") + "</dd>";
+    }
+    if (ms - stripAt > 60000) drawStrip(ms);
+    var x = r.beatsOfDay;                                     // "now" marker on the strip
+    var mk = $("strip"); sc.save(); drawStripMarker(x); sc.restore();
+    requestAnimationFrame(frame);
+  }
+  var lastMarker = -1;
+  function drawStripMarker(x) {
+    var k = Math.floor(x); if (k === lastMarker) return;
+    if (lastMarker >= 0) drawStrip(Date.now() + st.offset);   // repaint to clear the old marker (once per beat)
+    sc.fillStyle = "#fff"; sc.fillRect(k - 1, 0, 3, 46); sc.fillStyle = "#000"; sc.fillRect(k, 0, 1, 46); lastMarker = k;
+  }
+  applyPlace(); sync(); setInterval(sync, 600000);
+  requestAnimationFrame(frame);
+})();
+</script></main></body></html>

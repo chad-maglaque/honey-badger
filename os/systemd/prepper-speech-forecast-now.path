@@ -1,0 +1,12 @@
+[Unit]
+Description=Start a NOAA forecast capture when the launcher asks ("Update now")
+
+[Path]
+# The portal (admin only) writes this file; forecastd.py deletes it as soon as it starts.
+PathExists=/var/lib/prepper/portal/features/forecast/update-now.request
+Unit=prepper-forecast.service
+TriggerLimitIntervalSec=10min
+TriggerLimitBurst=4
+
+[Install]
+WantedBy=paths.target

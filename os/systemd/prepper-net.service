@@ -1,0 +1,23 @@
+[Unit]
+Description=Honey Badger Wi-Fi access point
+After=sys-subsystem-net-devices-wlan0.device NetworkManager.service
+Wants=NetworkManager.service
+Before=nginx.service
+# Retried below; don't let the start-rate limit give up on the hotspot.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/sleep 3
+# Exits non-zero unless an AP is really being served (after its own fallbacks:
+# 2.4 GHz, then the onboard radio), so a failure shows and is retried.
+ExecStart=/opt/prepper/os/bin/prepperctl net-up
+# A Wi-Fi password change still waiting to be confirmed gets its automatic switch-back again
+# (a reboot loses systemd-run timers). "-": never fails the hotspot.
+ExecStartPost=-/opt/prepper/os/bin/prepperctl wifi-rearm
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=LoRa mesh (Meshtastic) bridge to the check-in board
+After=dev-ttyACM0.device
+
+[Service]
+User=prepper
+SupplementaryGroups=dialout
+ExecStart=/opt/prepper/venv/bin/python /opt/prepper/software/meshbridge/meshbridge.py
+Restart=always
+RestartSec=15
+# Writes only the check-in board (the portal's folder) and its heartbeat.
+ProtectSystem=strict
+ReadWritePaths=-/var/lib/prepper/portal -/run/prepper
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

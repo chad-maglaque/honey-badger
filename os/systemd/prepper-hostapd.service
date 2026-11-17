@@ -1,0 +1,16 @@
+[Unit]
+Description=Honey Badger Wi-Fi hotspot (hostapd)
+# Not Debian's hostapd@.service: its instance name must be the interface
+# (BindsTo=sys-subsystem-net-devices-%i.device), and the AP interface changes
+# (USB adapter or onboard wlan0). prepperctl net-up renders
+# /etc/hostapd/prepper.conf, addresses the interface and starts this unit;
+# it is deliberately not enabled on its own.
+After=network.target NetworkManager.service
+ConditionFileNotEmpty=/etc/hostapd/prepper.conf
+
+[Service]
+Type=forking
+PIDFile=/run/prepper-hostapd.pid
+ExecStart=/usr/sbin/hostapd -B -P /run/prepper-hostapd.pid /etc/hostapd/prepper.conf
+Restart=on-failure
+RestartSec=3

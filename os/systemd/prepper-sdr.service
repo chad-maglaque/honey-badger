@@ -1,0 +1,30 @@
+[Unit]
+Description=Honey Badger radio scheduler (aircraft ADS-B and weather-satellite passes on RTL-SDR)
+After=prepper-alertd.service gpsd.service
+
+[Service]
+User=prepper
+SupplementaryGroups=plugdev
+ExecStart=/usr/bin/python3 /opt/prepper/software/sdr/sdrd.py
+# Borrows the weather dongle from alertd only by the rules in software/sdr/sdrd.py (opt-in
+# satellite passes, on-demand aircraft scans, never while an alert is live) or uses a second
+# dongle ([radio] sdr2). readsb / SatDump run as its children and stop with it.
+Restart=always
+RestartSec=15
+TimeoutStopSec=60
+# SatDump's picture-making is CPU-heavy: keep the launcher and the AI responsive.
+Nice=10
+CPUWeight=50
+StateDirectory=prepper/sdr
+StateDirectoryMode=0750
+ProtectSystem=strict
+ReadWritePaths=-/run/prepper
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

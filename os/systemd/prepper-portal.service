@@ -1,0 +1,21 @@
+[Unit]
+Description=Honey Badger launcher API
+After=network.target
+
+[Service]
+User=prepper
+EnvironmentFile=/etc/default/prepper
+ExecStart=/usr/bin/python3 /opt/prepper/software/portal/server.py
+Restart=always
+RestartSec=2
+Environment=PORTAL_QUIET=1
+# No ProtectSystem/ReadWritePaths here: the whitelisted prepperctl helper it
+# calls via sudo inherits this unit's mount namespace and must be able to
+# change the system. File permissions do the fencing instead: user prepper
+# can write only /var/lib/prepper/portal (board, mesh outbox, settings) and
+# /run/prepper, and can read /etc/prepper/prepper.toml (0640 root:prepper).
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

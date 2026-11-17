@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radio frequencies</title><link rel="stylesheet" href="/tools/tools.css"></head>
+<body><header class="top"><a class="brand" href="/#/tools">← Tools</a><b>Radio frequencies</b></header><main>
+<script>try{var t=localStorage.getItem("theme");if(t&&t!=="auto")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+<div class="warnbox">US frequencies unless noted. <b>Licenses:</b> FRS, MURS and CB need none. GMRS needs an FCC license (no exam). Amateur (ham) bands need a license — except that FCC rules allow any means of communication when life or property is in immediate danger and normal channels are unavailable.</div>
+<h2 class="section">Most useful first</h2>
+<table class="t"><tr><th>Use</th><th>Frequency</th><th>Notes</th></tr>
+<tr><td>NOAA Weather Radio</td><td>162.400–162.550 MHz</td><td>Listen-only. See WX channels below.</td></tr>
+<tr><td>FRS/GMRS channel 1 · 3</td><td>462.5625 · 462.6125 MHz</td><td>Common family/neighborhood channels.</td></tr>
+<tr><td>CB channel 9 · 19</td><td>27.065 · 27.185 MHz</td><td>9 = emergency, 19 = highway/truckers. AM.</td></tr>
+<tr><td>Ham 2 m calling</td><td>146.520 MHz FM</td><td>National simplex calling frequency.</td></tr>
+<tr><td>Ham 70 cm calling</td><td>446.000 MHz FM</td><td>National simplex calling frequency.</td></tr>
+<tr><td>Marine VHF ch 16</td><td>156.800 MHz</td><td>Distress, safety and calling.</td></tr>
+<tr><td>Aviation emergency</td><td>121.500 MHz AM</td><td>Monitored by aircraft and ATC.</td></tr>
+<tr><td>Meshtastic (US default LongFast)</td><td>906.875 MHz</td><td>LoRa mesh text; this Badger can bridge it.</td></tr>
+<tr><td>WWV time & propagation</td><td>2.5, 5, 10, 15, 20 MHz</td><td>Shortwave. Exact time; tells you which HF bands are open.</td></tr>
+</table>
+<h2 class="section">NOAA Weather Radio</h2>
+<table class="t"><tr><th>Ch</th><th>MHz</th><th>Ch</th><th>MHz</th></tr>
+<tr><td>WX1</td><td>162.550</td><td>WX5</td><td>162.450</td></tr>
+<tr><td>WX2</td><td>162.400</td><td>WX6</td><td>162.500</td></tr>
+<tr><td>WX3</td><td>162.475</td><td>WX7</td><td>162.525</td></tr>
+<tr><td>WX4</td><td>162.425</td><td></td><td></td></tr></table>
+<h2 class="section">FRS / GMRS</h2><div id="frs"></div>
+<p class="small muted">GMRS repeaters listen on 467.xxx (channel 15–22 frequency + 5 MHz) and transmit on 462.xxx.</p>
+<h2 class="section">MURS</h2>
+<table class="t"><tr><th>Ch</th><th>MHz</th></tr><tr><td>1</td><td>151.820</td></tr><tr><td>2</td><td>151.880</td></tr><tr><td>3</td><td>151.940</td></tr><tr><td>4</td><td>154.570</td></tr><tr><td>5</td><td>154.600</td></tr></table>
+<h2 class="section">CB (40 channels, AM)</h2><div id="cb"></div>
+<h2 class="section">Marine VHF</h2>
+<table class="t"><tr><th>Ch</th><th>MHz</th><th>Use</th></tr><tr><td>16</td><td>156.800</td><td>Distress, safety, calling</td></tr><tr><td>9</td><td>156.450</td><td>Recreational calling</td></tr><tr><td>13</td><td>156.650</td><td>Bridge-to-bridge navigation</td></tr><tr><td>22A</td><td>157.100</td><td>US Coast Guard liaison</td></tr></table>
+<h2 class="section">Amateur radio</h2>
+<table class="t"><tr><th>Band</th><th>Calling / simplex</th></tr>
+<tr><td>2 m</td><td>146.520 MHz FM</td></tr><tr><td>1.25 m</td><td>223.500 MHz FM</td></tr><tr><td>70 cm</td><td>446.000 MHz FM</td></tr><tr><td>6 m</td><td>52.525 MHz FM</td></tr><tr><td>10 m</td><td>29.600 MHz FM</td></tr>
+<tr><td>60 m (US channels, USB dial)</td><td>5330.5 · 5346.5 · 5357.0 · 5371.5 · 5403.5 kHz</td></tr></table>
+<p class="small muted">Local repeaters: see Comms → Local repeater directory (imported from your region).</p>
+<h2 class="section">Time signals</h2>
+<table class="t"><tr><th>Station</th><th>Frequencies</th></tr><tr><td>WWV (Colorado)</td><td>2.5, 5, 10, 15, 20 MHz</td></tr><tr><td>WWVH (Hawaii)</td><td>2.5, 5, 10, 15 MHz</td></tr><tr><td>CHU (Canada)</td><td>3.330, 7.850, 14.670 MHz</td></tr></table>
+<h2 class="section">Europe: PMR446 (licence-free)</h2><div id="pmr"></div>
+<script>
+(function(){
+function tbl(rows,cols){return '<table class="t"><tr>'+cols.map(function(c){return"<th>"+c+"</th>";}).join("")+"</tr>"+rows.map(function(r){return"<tr>"+r.map(function(c){return"<td>"+c+"</td>";}).join("")+"</tr>";}).join("")+"</table>";}
+var frs=[462.5625,462.5875,462.6125,462.6375,462.6625,462.6875,462.7125,467.5625,467.5875,467.6125,467.6375,467.6625,467.6875,467.7125,462.5500,462.5750,462.6000,462.6250,462.6500,462.6750,462.7000,462.7250];
+document.getElementById("frs").innerHTML=tbl(frs.map(function(f,i){var c=i+1;return[c,f.toFixed(4),c<=7?"FRS 2 W / GMRS 5 W":c<=14?"FRS/GMRS 0.5 W (low power)":"FRS 2 W / GMRS 50 W, repeater outputs"];}),["Ch","MHz","Power"]);
+var cb=[26.965,26.975,26.985,27.005,27.015,27.025,27.035,27.055,27.065,27.075,27.085,27.105,27.115,27.125,27.135,27.155,27.165,27.175,27.185,27.205,27.215,27.225,27.255,27.235,27.245,27.265,27.275,27.285,27.295,27.305,27.315,27.325,27.335,27.345,27.355,27.365,27.375,27.385,27.395,27.405];
+var rows=[];for(var i=0;i<20;i++)rows.push([i+1,cb[i].toFixed(3)+(i===8?" ⚠ emergency":i===18?"":""),i+21,cb[i+20].toFixed(3)]);rows[18][1]+=" highway";
+document.getElementById("cb").innerHTML=tbl(rows,["Ch","MHz","Ch","MHz"]);
+var p=[];for(var j=0;j<16;j++)p.push([j+1,(446.00625+j*0.0125).toFixed(5)]);document.getElementById("pmr").innerHTML=tbl(p,["Ch","MHz"]);
+})();
+</script></main></body></html>

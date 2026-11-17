@@ -1,0 +1,12 @@
+[Unit]
+Description=Honey Badger front panel (display + knob)
+After=prepper-powerd.service
+
+[Service]
+ExecStart=/opt/prepper/venv/bin/python /opt/prepper/software/panel/panel.py
+# No display fitted / display = "none": the panel exits 0 and stays stopped.
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

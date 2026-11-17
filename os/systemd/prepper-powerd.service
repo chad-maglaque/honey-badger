@@ -1,0 +1,11 @@
+[Unit]
+Description=Honey Badger battery monitor and safe shutdown
+After=local-fs.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/prepper/software/powerd/powerd.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

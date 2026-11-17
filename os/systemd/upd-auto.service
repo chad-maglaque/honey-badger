@@ -1,0 +1,22 @@
+[Unit]
+Description=Scheduled content update download (honours [upd] auto_apply and window)
+After=network-online.target
+# Exit 75 (offline, or another download holds the lock) is retried every
+# 30 minutes, at most 12 times per 6 h; next week's timer starts afresh.
+StartLimitIntervalSec=6h
+StartLimitBurst=12
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/prepper/proxy.env
+# auto_apply = false → skipped (not failed).
+ExecCondition=/opt/prepper/os/bin/prepperctl auto-apply-enabled
+# No --now: upd.py itself skips the run outside [upd] window.
+ExecStart=/usr/bin/python3 /opt/prepper/software/upd/upd.py apply
+Restart=on-failure
+RestartSec=30min
+# 1 = a transfer or install failed: upd keeps what it has; don't hammer the mirrors.
+RestartPreventExitStatus=1
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=infinity

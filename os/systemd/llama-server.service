@@ -1,0 +1,20 @@
+[Unit]
+Description=Offline AI model (llama.cpp)
+After=local-fs.target prepper-power-restore.service
+
+[Service]
+# Its own user, no sudo; it only needs to read the model files.
+User=llama
+ExecStart=/opt/prepper/os/bin/llama-start
+Restart=on-failure
+RestartSec=10
+Nice=5
+CPUWeight=50
+MemoryHigh=6G
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

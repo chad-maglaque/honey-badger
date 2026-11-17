@@ -1,0 +1,767 @@
+#!/usr/bin/env python3
+"""
+prepper-build — build Honey Badgers from a laptop without ever storing
+the OS image or the content on the laptop.
+
+  plan    show what a tier holds, whether it fits a drive, how long it takes
+  flash   stream Raspberry Pi OS straight onto the Badger's NVMe/SD
+          (download → xz-decompress → raw write, verified by sha256 on the fly),
+          then inject the Badger's config. The Badger downloads its own content.
+  inject  write config + software into an already-flashed boot partition
+  relay   pass-through proxy for a Badger that has no internet of its own;
+          bytes stream through memory only — nothing is written to disk
+  watch   follow a Badger's provisioning progress
+  clone   point a Badger at another Badger on the LAN and pull everything from it
+
+Typical first unit (Badger plugged into your router by Ethernet):
+  sudo ./builder/prepper-build flash /dev/disk4 --tier base --ssid HoneyBadger --pin 246813
+  ./builder/prepper-build watch badger.local
+Extra units copy from the first one over the LAN, using no internet at all:
+  sudo ./builder/prepper-build flash /dev/disk4 --tier base --hostname badger2 \\
+       --peer http://badger.local/sync --trust-key "$(ssh badger.local cat /etc/prepper/keys/disk_ed25519.pub)"
+
+Standard library only (Python 3.11+). macOS and Linux.
+"""
+from __future__ import annotations
+
+import argparse
+import getpass
+import hashlib
+import io
+import ipaddress
+import json
+import lzma
+import os
+import platform
+import plistlib
+import re
+import secrets
+import select
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import tarfile
+import threading
+import time
+import tomllib
+import unicodedata
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "software" / "upd"))
+import upd  # noqa: E402
+
+DEFAULT_IMAGE = "https://downloads.raspberrypi.com/raspios_lite_arm64_latest"
+UA = "prepper-build/1.0"
+RELAY_NET = ("10.10.11.1", "10.10.11.2")      # laptop, Badger — direct-cable fallback link
+TIERS = ("field", "base", "ultimate")
+DRIVE_GB = {"field": 512, "base": 1000, "ultimate": 2000}
+SSH_PUBKEY = re.compile(r"^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com"
+                        r"|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]+={0,3}( [^\n]*)?$")
+
+
+def human(n: float) -> str:
+    for u in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1000 or u == "TB":
+            return f"{n:.1f} {u}" if u != "B" else f"{int(n)} B"
+        n /= 1000
+    return f"{n:.1f} TB"
+
+
+def die(msg: str) -> None:
+    print(f"prepper-build: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+# ─────────────────────────────── plan ────────────────────────────────────────
+
+def cmd_plan(a) -> int:
+    items = upd.load_catalog(REPO / "content" / "catalog.toml")
+    cfg = upd.Config.load("/nonexistent")
+    cfg.tier, cfg.languages, cfg.budget_gb = a.tier, tuple(a.langs.split(",")), a.budget_gb
+    cfg.pins = tuple(a.pin_item or [])
+    chosen = upd.wanted(items, cfg)
+    by_cat: dict[str, list] = {}
+    for i in chosen:
+        by_cat.setdefault(i.category, []).append(i)
+    total = sum(i.size_gb for i in chosen)
+    print(f"\n Tier '{a.tier}'" + (f", budget {a.budget_gb} GB" if a.budget_gb else "") +
+          f", languages {a.langs}: {len(chosen)} items, {total:,.0f} GB\n")
+    for cat, xs in by_cat.items():
+        print(f" {cat} — {sum(x.size_gb for x in xs):,.1f} GB")
+        if a.verbose:
+            for x in sorted(xs, key=lambda x: -x.size_gb):
+                src = x.source.get("type")
+                print(f"     {x.size_gb:8.2f} GB  {x.title}{'  (manual)' if src == 'manual' else ''}")
+    manual = [i for i in chosen if i.source.get("type") == "manual"]
+    biggest = max((i.size_gb for i in chosen if i.source.get("type") != "manual"), default=0)
+    drive = a.drive_gb or DRIVE_GB.get(a.tier, 2000)
+    usable = drive * 0.93 - 12                          # filesystem overhead + OS
+    need = total + biggest + 25                          # room to fetch a new copy of the largest item
+    print(f"\n Drive {drive:,} GB → ~{usable:,.0f} GB usable. Needs {total:,.0f} GB + {biggest:,.0f} GB update headroom"
+          f" + 25 GB reserve = {need:,.0f} GB → {'fits ✓' if need <= usable else 'TOO BIG ✗ — pick a bigger drive or a smaller tier'}")
+    if a.mbps:
+        hours = (total - sum(i.size_gb for i in manual)) * 8000 / a.mbps / 3600
+        print(f" First download at {a.mbps} Mbps: ~{hours:,.1f} h (the Badger is usable within minutes — smallest items land first)")
+    if manual:
+        print(f"\n {len(manual)} items you supply yourself: " + ", ".join(i.title for i in manual))
+    return 0
+
+
+# ───────────────────────────── drives ────────────────────────────────────────
+
+def drive_info(dev: str) -> dict:
+    """Size, name, and whether the target looks like an internal/system disk."""
+    if platform.system() == "Darwin":
+        out = subprocess.run(["diskutil", "info", "-plist", dev], capture_output=True)
+        if out.returncode:
+            die(f"{dev}: not a disk")
+        p = plistlib.loads(out.stdout)
+        return {"size": p.get("TotalSize") or p.get("Size", 0), "name": p.get("MediaName", "?"),
+                "internal": p.get("Internal", True) and not p.get("RemovableMediaOrExternalDevice", False),
+                "whole": p.get("WholeDisk", False), "bus": p.get("BusProtocol", "?"),
+                "system": p.get("DeviceIdentifier") == "disk0" or "APFS" in str(p.get("Content", ""))}
+    out = subprocess.run(["lsblk", "-J", "-b", "-d", "-o", "NAME,SIZE,MODEL,RM,TRAN,TYPE,MOUNTPOINTS", dev],
+                         capture_output=True, text=True)
+    if out.returncode:
+        die(f"{dev}: not a disk")
+    d = json.loads(out.stdout)["blockdevices"][0]
+    root_dev = subprocess.run(["findmnt", "-n", "-o", "SOURCE", "/"], capture_output=True, text=True).stdout
+    return {"size": int(d["size"]), "name": d.get("model") or "?", "internal": d.get("tran") not in ("usb", "mmc"),
+            "whole": d.get("type") == "disk", "bus": d.get("tran"), "system": Path(dev).name in root_dev}
+
+
+def unmount(dev: str) -> None:
+    if platform.system() == "Darwin":
+        subprocess.run(["diskutil", "unmountDisk", "force", dev], check=False, capture_output=True)
+    else:
+        for part in Path("/dev").glob(Path(dev).name + "*"):
+            subprocess.run(["umount", str(part)], check=False, capture_output=True)
+
+
+def raw_path(dev: str) -> str:
+    # /dev/rdiskN bypasses the buffer cache on macOS — several times faster.
+    return dev.replace("/dev/disk", "/dev/rdisk") if platform.system() == "Darwin" else dev
+
+
+def boot_mount(dev: str) -> tuple[Path, bool]:
+    """Mount the first (FAT) partition; return (mountpoint, we_mounted_it)."""
+    time.sleep(2)
+    if platform.system() == "Darwin":
+        subprocess.run(["diskutil", "mountDisk", dev], check=False, capture_output=True)
+        for _ in range(20):
+            for name in ("bootfs", "boot"):
+                if Path(f"/Volumes/{name}/config.txt").exists():
+                    return Path(f"/Volumes/{name}"), False
+            time.sleep(1)
+        die("boot partition did not mount (look for /Volumes/bootfs) — run `inject` by hand")
+    subprocess.run(["partprobe", dev], check=False, capture_output=True)
+    part = dev + ("p1" if dev[-1].isdigit() else "1")
+    mp = Path("/mnt/prepper-boot"); mp.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["mount", part, str(mp)], check=True)
+    return mp, True
+
+
+# ───────────────────────────── flash ─────────────────────────────────────────
+
+class HashingReader(io.RawIOBase):
+    """Wraps the HTTP response: counts and sha256-hashes compressed bytes as they pass."""
+
+    def __init__(self, resp):
+        self.resp, self.h, self.n = resp, hashlib.sha256(), 0
+
+    def readinto(self, b):
+        chunk = self.resp.read(len(b))
+        self.h.update(chunk); self.n += len(chunk)
+        b[:len(chunk)] = chunk
+        return len(chunk)
+
+    def readable(self):
+        return True
+
+
+def stream_image(url: str, dev: str) -> None:
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    resp = urllib.request.urlopen(req, timeout=60)
+    final = resp.geturl()
+    total = int(resp.headers.get("Content-Length") or 0)
+    print(f" image: {final.rsplit('/', 1)[-1]} ({human(total)} compressed)")
+    expected = None
+    try:
+        with urllib.request.urlopen(urllib.request.Request(final + ".sha256", headers={"User-Agent": UA}), timeout=30) as r:
+            expected = r.read().decode().split()[0]
+    except (urllib.error.URLError, IndexError):
+        print(" (no published sha256 — size check only)")
+    src = HashingReader(resp)
+    dec = lzma.LZMADecompressor() if final.endswith(".xz") else None
+    written, started, buf = 0, time.monotonic(), bytearray()
+    block = 4 << 20
+    with open(raw_path(dev), "wb", buffering=0) as out:
+        while True:
+            chunk = src.read(1 << 20)
+            if not chunk:
+                break
+            data = dec.decompress(chunk) if dec else chunk
+            buf += data
+            while len(buf) >= block:
+                out.write(buf[:block]); del buf[:block]; written += block
+            el = time.monotonic() - started
+            pct = f"{100 * src.n / total:5.1f}%" if total else ""
+            print(f"\r {pct}  downloaded {human(src.n)}  written {human(written)}  {human(src.n / max(el, 1))}/s   ",
+                  end="", flush=True)
+        if buf:
+            pad = (-len(buf)) % 512
+            out.write(bytes(buf) + b"\0" * pad); written += len(buf)
+        os.fsync(out.fileno())
+    print()
+    if expected:
+        got = src.h.hexdigest()
+        if got != expected:
+            die(f"sha256 mismatch ({got} ≠ {expected}) — the write is not trustworthy; flash again")
+        print(" sha256 verified ✓ (hashed in flight — nothing was saved on this computer)")
+
+
+def cmd_flash(a) -> int:
+    if os.geteuid() != 0:
+        die("writing a raw disk needs root: run with sudo")
+    info = drive_info(a.device)
+    print(f"\n Target {a.device}: {info['name']} · {human(info['size'])} · {info['bus']}")
+    if info["system"] or (info["internal"] and not a.force):
+        die("that looks like an internal/system disk — refusing (use --force only if you are certain)")
+    if not info["whole"]:
+        die("give the whole disk (e.g. /dev/disk4 or /dev/sdb), not a partition")
+    render_config(a); ssh_keys(a.ssh_key or [])      # bad options stop us before the long write, not after
+    plan_gb = sum(i.size_gb for i in upd.wanted(upd.load_catalog(REPO / "content/catalog.toml"),
+                                                 _cfg_for(a)))
+    if info["size"] / 1e9 < plan_gb * 1.15 and not a.force:
+        print(f" ⚠ tier '{a.tier}' needs ~{plan_gb:,.0f} GB; this drive is {human(info['size'])}.")
+    if not a.yes:
+        ans = input(f" ERASE everything on {a.device} ({info['name']})? Type the device name to confirm: ")
+        if ans.strip() != a.device:
+            die("not confirmed")
+    unmount(a.device)
+    stream_image(a.image, a.device)
+    mp, ours = boot_mount(a.device)
+    try:
+        inject(mp, a)
+    finally:
+        if platform.system() == "Darwin":
+            subprocess.run(["diskutil", "eject", a.device], check=False, capture_output=True)
+        elif ours:
+            subprocess.run(["umount", str(mp)], check=False)
+    print("\n Done. Put the drive in the Badger, connect Ethernet (or see `relay`), power on.")
+    print(f" Follow progress:  ./builder/prepper-build watch {a.hostname}.local")
+    return 0
+
+
+def _cfg_for(a) -> upd.Config:
+    c = upd.Config.load("/nonexistent")
+    c.tier, c.languages = a.tier, tuple(a.langs.split(","))
+    return c
+
+
+# ───────────────────────────── inject ────────────────────────────────────────
+
+_B64 = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def sha512_crypt(password: str, salt: str | None = None, rounds: int = 5000) -> str:
+    """glibc SHA-512 crypt ("$6$…", what /etc/shadow, cloud-init `passwd:` and
+    userconf take), in the standard library only: Python's crypt module is
+    gone in 3.13 and macOS's crypt(3) has no SHA-512. The password is hashed
+    here so it never reaches the boot partition in clear text."""
+    p = password.encode()
+    s = (salt or "".join(secrets.choice(_B64) for _ in range(16))).encode()[:16]
+    h = hashlib.sha512
+    b = h(p + s + p).digest()
+    a = h(p + s)
+    n = len(p)
+    while n > 64:
+        a.update(b); n -= 64
+    a.update(b[:n])
+    n = len(p)
+    while n:
+        a.update(b if n & 1 else p); n >>= 1
+    c = a.digest()
+    dp = h(p * len(p)).digest()
+    pp = (dp * (len(p) // 64 + 1))[:len(p)]
+    ds = h(s * (16 + c[0])).digest()
+    ss = (ds * (len(s) // 64 + 1))[:len(s)]
+    for i in range(rounds):
+        r = h(pp if i & 1 else c)
+        if i % 3:
+            r.update(ss)
+        if i % 7:
+            r.update(pp)
+        r.update(c if i & 1 else pp)
+        c = r.digest()
+    out = []
+    for g in range(21):                        # glibc's byte order: (0,21,42), (22,43,1), …
+        x = g * 22 % 63
+        w = c[x] << 16 | c[(x + 21) % 63] << 8 | c[(x + 42) % 63]
+        out += [_B64[(w >> 6 * k) & 63] for k in range(4)]
+    out += [_B64[(c[63] >> 6 * k) & 63] for k in range(2)]
+    prefix = "$6$" + (f"rounds={rounds}$" if rounds != 5000 else "")
+    return prefix + s.decode() + "$" + "".join(out)
+
+
+# Values below end up in YAML (user-data), TOML (prepper.toml), a root shell
+# script (firstrun.sh) and an env file firstboot.sh sources as root, so each
+# is checked against a strict pattern here — before anything is written.
+HOSTNAME_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+TZ_RE = re.compile(r"[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}")
+COUNTRY_RE = re.compile(r"[A-Z]{2}")
+LANG_RE = re.compile(r"[a-z]{3}")
+PIN_RE = re.compile(r"[0-9A-Za-z]{6,32}")
+PEER_RE = re.compile(r"https?://[A-Za-z0-9.:\[\]-]+(/[A-Za-z0-9._/-]*)?")      # = prepperctl add-peer
+RELAY_RE = re.compile(r"(http://)?([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\]):([0-9]{1,5})")
+ED25519_RE = re.compile(r"ssh-ed25519 [A-Za-z0-9+/]+={0,3}( [^\x00-\x1f\x7f]*)?")  # = prepperctl trust
+
+
+def wifi_name(value: str, what: str) -> str:
+    if not value or len(value.encode()) > 32:
+        die(f"{what} must be 1–32 bytes")
+    if any(unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp") for ch in value):
+        die(f"{what} must not contain control characters")
+    return value
+
+
+def wifi_psk(value: str, what: str) -> str:
+    if value and not (8 <= len(value) <= 63 and all(0x20 <= ord(ch) <= 0x7E for ch in value)):
+        die(f"{what} must be 8–63 printable ASCII characters (WPA2), or empty for an open network")
+    return value
+
+
+def validate(a) -> None:
+    """Every unit option, checked before the long write and before any file is made."""
+    if not HOSTNAME_RE.fullmatch(a.hostname) or a.hostname.isdigit():
+        die(f"--hostname {a.hostname!r}: use lowercase letters, digits and '-' (at most 63)")
+    if not TZ_RE.fullmatch(a.timezone):
+        die(f"--timezone {a.timezone!r}: expected a zone name such as America/Denver")
+    if not COUNTRY_RE.fullmatch(a.country):
+        die(f"--country {a.country!r}: expected a two-letter code such as US")
+    if not all(LANG_RE.fullmatch(x) for x in a.langs.split(",")):
+        die(f"--langs {a.langs!r}: expected ISO 639-3 codes such as eng,spa")
+    wifi_name(a.ssid, "--ssid")
+    wifi_psk(a.passphrase or "", "--passphrase")
+    if a.pin is not None and not PIN_RE.fullmatch(a.pin):
+        die("--pin must be 6–32 letters/digits (the Badger refuses anything shorter)")
+    if a.uplink:
+        ssid, _, psk = a.uplink.partition(":")
+        wifi_name(ssid, "--uplink SSID"); wifi_psk(psk, "--uplink password")
+    if a.relay:
+        m = RELAY_RE.fullmatch(a.relay)
+        if not m or not 0 < int(m.group(3)) < 65536:
+            die(f"--relay {a.relay!r}: expected host:port, e.g. {RELAY_NET[0]}:3128")
+    for peer in a.peer or []:
+        if not PEER_RE.fullmatch(peer):
+            die(f"--peer {peer!r}: expected http://host/sync")
+    for k in a.trust_key or []:
+        if not ED25519_RE.fullmatch(k.strip()):
+            die(f"--trust-key {k[:40]!r}…: expected one ssh-ed25519 public key line")
+    if a.ssh_password is not None and (len(a.ssh_password) < 8 or any(ord(ch) < 0x20 for ch in a.ssh_password)):
+        die("--ssh-password must be at least 8 characters, without control characters")
+
+
+def ssh_keys(args: list[str]) -> list[str]:
+    """--ssh-key values: a public key file, or a public key line. Anything
+    else (a mistyped path, a private key) stops the build — used as a
+    literal it would silently leave you with no way to log in."""
+    keys = []
+    for k in args:
+        p = Path(k).expanduser()
+        if p.is_file():
+            src, lines = str(p), p.read_text(errors="replace").splitlines()
+        elif SSH_PUBKEY.fullmatch(k.strip()):
+            src, lines = "argument", [k]
+        else:
+            die(f"--ssh-key {k!r}: no such file, and not an SSH public key line")
+        for line in (x.strip() for x in lines):
+            if not line or line.startswith("#"):
+                continue
+            if not SSH_PUBKEY.fullmatch(line) or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in line):
+                die(f"--ssh-key {src}: {line[:40]!r}… is not an SSH public key (did you give the private key?)")
+            keys.append(line)
+    return keys
+
+def software_tarball() -> bytes:
+    bio = io.BytesIO()
+    skip = {".git", "tests", "__pycache__", ".DS_Store", "case"}
+    with tarfile.open(fileobj=bio, mode="w:gz") as tar:
+        for p in sorted(REPO.rglob("*")):
+            rel = p.relative_to(REPO)
+            if any(part in skip for part in rel.parts) or not p.is_file():
+                continue
+            tar.add(p, arcname=str(rel), filter=_as_root)
+    return bio.getvalue()
+
+
+def _as_root(ti: tarfile.TarInfo) -> tarfile.TarInfo:
+    """Extracted as root on the Badger, tar keeps numeric owners: a laptop's
+    uid 501 / gid 20 would become some Debian user and the dialout group."""
+    ti.uid = ti.gid = 0
+    ti.uname = ti.gname = "root"
+    ti.mode &= 0o755                      # no group/world write, no setuid
+    return ti
+
+
+def render_config(a) -> str:
+    """prepper.toml for this unit: the example with this build's choices filled in."""
+    validate(a)
+    t = (REPO / "os" / "prepper.toml.example").read_text()
+
+    def setv(section: str, key: str, value) -> None:
+        nonlocal t
+        # ensure_ascii=False: JSON would write an emoji as a \ud83e\udda1 surrogate pair, which TOML rejects.
+        val = json.dumps(value, ensure_ascii=False) if not isinstance(value, bool) else ("true" if value else "false")
+        pat = re.compile(rf"(?ms)(^\[{re.escape(section)}\]\n.*?^){re.escape(key)}\s*=.*?$")
+        t, n = pat.subn(lambda m: f"{m.group(1)}{key} = {val}", t, count=1)
+        if not n:
+            die(f"config template has no {section}.{key}")
+    setv("device", "edition", a.tier)
+    setv("device", "disk_id", a.hostname)
+    setv("device", "timezone", a.timezone)
+    setv("network", "hostname", a.hostname)
+    setv("network", "ssid", a.ssid)
+    setv("network", "passphrase", a.passphrase or "")
+    setv("network", "country", a.country)
+    setv("upd", "tier", a.tier)
+    setv("upd", "languages", a.langs.split(","))
+    setv("upd", "disk_id", a.hostname)
+    setv("upd", "peers", a.peer or [])
+    setv("portal", "search_langs", a.langs.split(",")[:1])
+    if a.uplink:
+        ssid, _, psk = a.uplink.partition(":")
+        q = lambda v: json.dumps(v, ensure_ascii=False)  # noqa: E731 — see setv
+        t = t.replace("uplink_wifi = []", f"uplink_wifi = [{{ ssid = {q(ssid)}, psk = {q(psk)} }}]", 1)
+    tomllib.loads(t)                                     # must parse, or we stop here
+    return t
+
+
+def yq(v: str) -> str:
+    """A YAML double-quoted scalar. JSON's escapes are a subset of YAML's;
+    ensure_ascii=False keeps emoji as UTF-8 (YAML parsers differ on
+    \\ud83d-style surrogate pairs)."""
+    return json.dumps(v, ensure_ascii=False)
+
+
+def cloud_init(a, keys: list[str], pw_hash: str) -> tuple[str, str]:
+    q = yq
+    user_data = "\n".join([
+        "#cloud-config",
+        f"hostname: {q(a.hostname)}",
+        "manage_etc_hosts: true",
+        f"timezone: {q(a.timezone)}",
+        "users:",
+        "  - name: prepper-admin",
+        "    groups: [sudo, adm, dialout, plugdev, i2c, gpio]",
+        "    shell: /bin/bash",
+        "    sudo: ALL=(ALL) NOPASSWD:ALL",
+        *(["    lock_passwd: true"] if keys else
+          # lock_passwd defaults to true, which would make the password useless.
+          ["    lock_passwd: false", f"    passwd: {q(pw_hash)}"]),
+        *(["    ssh_authorized_keys:"] + [f"      - {q(k)}" for k in keys] if keys else []),
+        f"ssh_pwauth: {'false' if keys else 'true'}",
+        "runcmd:",
+        "  - [systemctl, enable, --now, ssh]",
+        "  - [bash, -c, \"install -m 644 /boot/firmware/prepper/prepper-firstboot.service /etc/systemd/system/ "
+        "&& systemctl daemon-reload && systemctl enable prepper-firstboot.service "
+        "&& systemctl start --no-block prepper-firstboot.service\"]",
+        "",
+    ])
+    wifi = ""
+    if a.uplink:
+        ssid, _, psk = a.uplink.partition(":")
+        wifi = (f"  wifis:\n    wlan0:\n      dhcp4: true\n      optional: true\n      regulatory-domain: {q(a.country)}\n"
+                f"      access-points:\n        {q(ssid)}:\n" + (f"          password: {q(psk)}\n" if psk else "          {}\n"))
+    network = ("network:\n  version: 2\n  ethernets:\n    eth0:\n      dhcp4: true\n      optional: true\n"
+               f"      addresses: [{RELAY_NET[1]}/24]\n" + wifi)   # static fallback for the laptop relay link
+    return user_data, network
+
+
+def legacy_firstrun(a, keys: list[str], pw_hash: str) -> str:
+    """Bookworm images without cloud-init: rpi-imager-style firstrun.sh.
+    Every value is shell-quoted; the password arrives already hashed. Network
+    setup (uplink Wi-Fi, relay cable) is done by firstboot.sh, which runs
+    once NetworkManager is up — this script runs before it starts."""
+    key_lines = "\n".join(f"echo {shlex.quote(k)} >> /home/prepper-admin/.ssh/authorized_keys" for k in keys)
+    # With keys: like cloud-init's lock_passwd, a locked password ("!"), no SSH
+    # password logins, and passwordless sudo (otherwise sudo would be unusable).
+    key_only = ("echo 'prepper-admin ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/010_prepper-admin-nopasswd\n"
+                "chmod 440 /etc/sudoers.d/010_prepper-admin-nopasswd\n"
+                "install -d /etc/ssh/sshd_config.d\n"
+                "echo 'PasswordAuthentication no' > /etc/ssh/sshd_config.d/10-prepper.conf\n") if keys else ""
+    return f"""#!/bin/bash
+set +e
+/usr/lib/userconf-pi/userconf prepper-admin {shlex.quote(pw_hash or "!")}
+install -d -m 700 -o 1000 -g 1000 /home/prepper-admin/.ssh
+{key_lines}
+chown -R 1000:1000 /home/prepper-admin/.ssh
+{key_only}systemctl enable ssh
+install -m 644 /boot/firmware/prepper/prepper-firstboot.service /etc/systemd/system/
+systemctl enable prepper-firstboot.service
+sed -i 's| systemd.run.*||g' /boot/firmware/cmdline.txt
+rm -f /boot/firmware/firstrun.sh
+exit 0
+"""
+
+
+def inject(boot: Path, a) -> None:
+    if not (boot / "config.txt").exists():
+        die(f"{boot} is not a Raspberry Pi boot partition")
+    config = render_config(a)                  # validate everything before writing anything
+    keys = ssh_keys(a.ssh_key or [])
+    if not keys:
+        default = Path("~/.ssh/id_ed25519.pub").expanduser()
+        if default.exists():
+            keys = ssh_keys([str(default)])
+    password = a.ssh_password
+    if not keys and not password:
+        # No key and no password given: a fixed default would let anyone on
+        # the Badger's Wi-Fi log in with sudo. Make one up and show it once.
+        password = "-".join(secrets.token_hex(3) for _ in range(4))
+        print(f" No SSH key found: user prepper-admin gets the password  {password}  — write it down.")
+    pw_hash = "" if keys else sha512_crypt(password)
+    d = boot / "prepper"
+    d.mkdir(exist_ok=True)
+    tgz = software_tarball()
+    (d / "software.tar.gz").write_bytes(tgz)
+    (d / "prepper.toml").write_text(config)
+    shutil.copy(REPO / "os/bin/firstboot.sh", d / "firstboot.sh")
+    shutil.copy(REPO / "os/systemd/prepper-firstboot.service", d / "prepper-firstboot.service")
+    if a.pin:
+        (d / "admin_pin").write_text(a.pin)
+    if a.relay:
+        proxy = a.relay if "://" in a.relay else f"http://{a.relay}"    # validate() allowed host:port only
+        host = proxy.split("://", 1)[1]
+        (d / "proxy.env").write_text(f"http_proxy={proxy}\nhttps_proxy={proxy}\nHTTP_PROXY={proxy}\n"
+                                      f"HTTPS_PROXY={proxy}\nRSYNC_PROXY={host}\nno_proxy=localhost,127.0.0.1,.lan,.local\n"
+                                      f"PREPPER_RELAY_ADDR={RELAY_NET[1]}/24\n")   # firstboot.sh: eth0 on the cable
+    if a.trust_key:
+        (d / "trusted_keys").write_text("\n".join(k.strip() for k in a.trust_key) + "\n")
+    mode = a.mode
+    if mode == "auto":
+        issue = (boot / "issue.txt").read_text() if (boot / "issue.txt").exists() else ""
+        mode = "cloud-init" if (boot / "user-data").exists() or (boot / "meta-data").exists() \
+            or "trixie" in issue else "firstrun"
+    if mode == "cloud-init":
+        ud, nc = cloud_init(a, keys, pw_hash)
+        (boot / "user-data").write_text(ud)
+        (boot / "network-config").write_text(nc)
+        if not (boot / "meta-data").exists():
+            (boot / "meta-data").write_text(f"instance-id: {a.hostname}-{int(time.time())}\n")
+    else:
+        (boot / "firstrun.sh").write_text(legacy_firstrun(a, keys, pw_hash))
+        cmd = (boot / "cmdline.txt").read_text().strip()
+        if "systemd.run=" not in cmd:
+            cmd += " systemd.run=/boot/firmware/firstrun.sh systemd.run_success_action=reboot systemd.unit=kernel-command-line.target"
+        (boot / "cmdline.txt").write_text(cmd + "\n")
+    print(f" injected: software ({human(len(tgz))}), prepper.toml, first-boot ({mode})"
+          + (", relay proxy" if a.relay else "") + (f", {len(keys)} SSH key(s)" if keys else ", password SSH"))
+
+
+def cmd_inject(a) -> int:
+    inject(Path(a.bootfs), a)
+    return 0
+
+
+# ───────────────────────────── relay ─────────────────────────────────────────
+
+class Relay:
+    """Minimal forward proxy: HTTP CONNECT tunnels + plain HTTP. Streams only —
+    every byte goes socket → memory → socket. Nothing touches the disk."""
+
+    def __init__(self, port: int, allow: str):
+        self.port, self.allow = port, allow
+        self.bytes = 0
+        self.lock = threading.Lock()
+
+    def pipe(self, a: socket.socket, b: socket.socket) -> None:
+        socks = [a, b]
+        try:
+            while True:
+                r, _, x = select.select(socks, [], socks, 300)
+                if x or not r:
+                    return
+                for s in r:
+                    data = s.recv(1 << 16)
+                    if not data:
+                        return
+                    (b if s is a else a).sendall(data)
+                    with self.lock:
+                        self.bytes += len(data)
+        except OSError:
+            return
+        finally:
+            a.close(); b.close()
+
+    @staticmethod
+    def connect(host: str, port: int) -> socket.socket:
+        """Upstream connection — never to this computer's own loopback services."""
+        for *_, sa in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+            if ipaddress.ip_address(sa[0].split("%")[0]).is_loopback:
+                raise ValueError(f"refusing to relay to {host} (this computer)")
+        return socket.create_connection((host, port), timeout=30)
+
+    def handle(self, c: socket.socket, addr) -> None:
+        if self.allow and not addr[0].startswith(self.allow):
+            c.close(); return
+        try:
+            head = b""
+            while b"\r\n\r\n" not in head and len(head) < 65536:
+                chunk = c.recv(4096)
+                if not chunk:
+                    c.close(); return
+                head += chunk
+            line = head.split(b"\r\n", 1)[0].decode("latin-1")
+            method, target, _ = line.split(" ", 2)
+            if method == "CONNECT":
+                host, _, port = target.rpartition(":")
+                up = self.connect(host.strip("[]"), int(port))
+                c.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                rest = head.split(b"\r\n\r\n", 1)[1]
+                if rest:
+                    up.sendall(rest)
+            else:
+                m = re.match(r"http://([^/:]+)(?::(\d+))?(/.*)?", target)
+                if not m:
+                    c.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n"); c.close(); return
+                host, port, path = m.group(1), int(m.group(2) or 80), m.group(3) or "/"
+                up = self.connect(host, port)
+                first, rest = head.split(b"\r\n", 1)
+                up.sendall(f"{method} {path} {first.decode('latin-1').rsplit(' ', 1)[1]}\r\n".encode() + rest)
+            print(f" {addr[0]} → {target}", flush=True)
+            self.pipe(c, up)
+        except (OSError, ValueError) as e:
+            try:
+                c.sendall(f"HTTP/1.1 502 Bad Gateway\r\n\r\n{e}".encode())
+            except OSError:
+                pass
+            c.close()
+
+    def serve(self) -> None:
+        # All interfaces on purpose: the Badger arrives on the Ethernet cable;
+        # handle() admits only addresses starting with --allow.
+        srv = socket.create_server(("0.0.0.0", self.port), reuse_port=False)  # noqa: S104
+        print(f" relay listening on :{self.port} — streaming only, nothing is stored on this computer")
+
+        def stats():
+            while True:
+                time.sleep(30)
+                print(f" … {human(self.bytes)} relayed so far", flush=True)
+        threading.Thread(target=stats, daemon=True).start()
+        while True:
+            c, addr = srv.accept()
+            threading.Thread(target=self.handle, args=(c, addr), daemon=True).start()
+
+
+def cmd_relay(a) -> int:
+    print(f"""
+ Direct-cable build (the Badger has no internet; this computer does):
+   1. Connect an Ethernet cable from this computer to the Badger.
+   2. Give this computer's Ethernet port the address {RELAY_NET[0]}/24, e.g. on macOS:
+        networksetup -listallnetworkservices
+        sudo networksetup -setmanual "<your Ethernet service>" {RELAY_NET[0]} 255.255.255.0
+   3. Flash the Badger with   --relay {RELAY_NET[0]}:{a.port}   (the Badger uses {RELAY_NET[1]} on that cable).
+ Simpler alternative on macOS: System Settings → General → Sharing → Internet Sharing over Ethernet.
+""")
+    Relay(a.port, a.allow).serve()
+    return 0
+
+
+# ───────────────────────────── watch / clone ─────────────────────────────────
+
+def get_json(url: str, data: dict | None = None, headers: dict | None = None) -> dict:
+    req = urllib.request.Request(url, data=json.dumps(data).encode() if data is not None else None,
+                                 headers={"Content-Type": "application/json", "User-Agent": UA, **(headers or {})})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read())
+
+
+def cmd_watch(a) -> int:
+    base = a.host if a.host.startswith("http") else f"http://{a.host}"
+    last = ""
+    while True:
+        try:
+            s = get_json(base + "/api/status")
+            b = s.get("build") or {}
+            u = (s.get("updates") or {}).get("counts") or {}
+            st = s.get("storage") or {}
+            line = (f"{b.get('phase', '?'):<11} {b.get('pct', 0):>3}%  {b.get('message', '')[:50]:<50} "
+                    f"| used {human(st.get('used', 0))} | pending {u.get('install', 0) + u.get('update', 0)}")
+            if line != last:
+                print(time.strftime("%H:%M:%S "), line, flush=True); last = line
+            if b.get("phase") == "done" and not a.follow:
+                print(" ✓ Badger is ready."); return 0
+        except (OSError, ValueError) as e:
+            print(time.strftime("%H:%M:%S "), f"waiting for {base} … ({type(e).__name__})", flush=True)
+        time.sleep(a.interval)
+
+
+def cmd_clone(a) -> int:
+    dst = a.to if a.to.startswith("http") else f"http://{a.to}"
+    pin = a.pin or getpass.getpass(f"Admin PIN for {dst}: ")
+    tok = get_json(dst + "/api/admin/login", {"pin": pin}).get("token")
+    if not tok:
+        die("login failed")
+    h = {"X-Admin-Token": tok}
+    src = a.src.rstrip("/")
+    if not src.endswith("/sync"):
+        src += "/sync"
+    print(get_json(dst + "/api/admin/updates", {"action": "add-peer", "peer": src}, h).get("output"))
+    print(get_json(dst + "/api/admin/updates", {"action": "apply"}, h).get("output"))
+    print(f" {dst} is now pulling from {src}. Follow with: prepper-build watch {a.to}")
+    print(" (The source Badger's signing key must be trusted on the target: prepperctl trust \"<key>\")")
+    return 0
+
+
+# ───────────────────────────── CLI ───────────────────────────────────────────
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="prepper-build", description=__doc__.split("\n\n")[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__.split("\n\n", 1)[1])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def unit_opts(p):
+        p.add_argument("--tier", choices=TIERS, default="base")
+        p.add_argument("--langs", default="eng", help="comma list of ISO 639-3 codes, e.g. eng,spa")
+        p.add_argument("--hostname", default="badger")
+        p.add_argument("--ssid", default="HoneyBadger")
+        p.add_argument("--passphrase", default="", help="Wi-Fi password (8+ chars); empty = open network")
+        p.add_argument("--country", default="US")
+        p.add_argument("--timezone", default="America/Denver")
+        p.add_argument("--pin", help="admin PIN for the launcher's Settings page")
+        p.add_argument("--uplink", help="SSID:password of a Wi-Fi the Badger may use to download")
+        p.add_argument("--relay", help="host:port of `prepper-build relay` when the Badger has no internet")
+        p.add_argument("--peer", action="append", help="another Badger to pull content from (http://host/sync)")
+        p.add_argument("--trust-key", action="append", help="public key line of a Badger to trust for peer sync")
+        p.add_argument("--ssh-key", action="append", help="public key file or line for SSH (default ~/.ssh/id_ed25519.pub)")
+        p.add_argument("--ssh-password", help="only if you have no SSH key")
+        p.add_argument("--mode", choices=("auto", "cloud-init", "firstrun"), default="auto")
+
+    p = sub.add_parser("plan"); p.add_argument("--tier", choices=TIERS + ("pocket",), default="base")
+    p.add_argument("--langs", default="eng"); p.add_argument("--drive-gb", type=int)
+    p.add_argument("--budget-gb", type=float, default=0.0, help="laptop go-bag: fill this many GB by priority")
+    p.add_argument("--pin-item", action="append"); p.add_argument("--mbps", type=float, default=100)
+    p.add_argument("-v", "--verbose", action="store_true")
+    p = sub.add_parser("flash"); p.add_argument("device"); unit_opts(p)
+    p.add_argument("--image", default=DEFAULT_IMAGE); p.add_argument("--yes", action="store_true")
+    p.add_argument("--force", action="store_true")
+    p = sub.add_parser("inject"); p.add_argument("bootfs"); unit_opts(p)
+    p = sub.add_parser("relay"); p.add_argument("--port", type=int, default=3128)
+    p.add_argument("--allow", default="10.10.", help="only accept clients whose address starts with this")
+    p = sub.add_parser("watch"); p.add_argument("host", nargs="?", default="badger.local")
+    p.add_argument("--interval", type=float, default=10); p.add_argument("--follow", action="store_true")
+    p = sub.add_parser("clone"); p.add_argument("--from", dest="src", required=True); p.add_argument("--to", required=True)
+    p.add_argument("--pin")
+    a = ap.parse_args()
+    return {"plan": cmd_plan, "flash": cmd_flash, "inject": cmd_inject, "relay": cmd_relay,
+            "watch": cmd_watch, "clone": cmd_clone}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

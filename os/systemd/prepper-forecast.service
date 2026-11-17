@@ -1,0 +1,28 @@
+[Unit]
+Description=NOAA Weather Radio forecast to text (record via alertd's tap, whisper.cpp)
+After=prepper-alertd.service
+# Started hourly by prepper-forecast.timer (it exits at once unless [forecast] interval_hours have
+# passed) and on demand by prepper-speech-forecast-now.path ("Update now" in the launcher).
+
+[Service]
+Type=oneshot
+User=prepper
+Environment=PREPPER_CONFIG=/etc/prepper/prepper.toml
+ExecStart=/usr/bin/python3 /opt/prepper/software/speech/forecastd.py
+# Up to 14 min of recording + transcription; whisper has its own timeout inside.
+TimeoutStartSec=50min
+# Background work: llama-server, the portal and Voice mode come first.
+Nice=15
+CPUWeight=20
+IOSchedulingClass=idle
+MemoryHigh=1G
+MemoryMax=1500M
+# Reads the config, alertd's captures (/run/prepper/noaa-tap) and the speech programs in
+# /opt/prepper-speech; writes only its feature folder and the tap request in /run/prepper.
+ProtectSystem=strict
+ReadWritePaths=-/var/lib/prepper/portal/features/forecast -/run/prepper
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

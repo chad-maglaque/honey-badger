@@ -1,0 +1,22 @@
+[Unit]
+Description=Kiwix server (all ZIM collections)
+After=local-fs.target
+
+[Service]
+User=kiwix
+EnvironmentFile=/etc/default/prepper
+# Before the first ZIM lands there is no library: skip cleanly (no restart
+# loop). `prepperctl rebuild-library` starts this unit once a library exists.
+ExecCondition=+/bin/sh -c 'test -s "$KIWIX_LIBRARY" || /opt/prepper/os/bin/prepperctl rebuild-library >/dev/null 2>&1; test -s "$KIWIX_LIBRARY"'
+ExecStart=/usr/local/bin/kiwix-serve --library --monitorLibrary --nodatealiases --address 127.0.0.1 --port 8081 --urlRootLocation /kiwix --threads 4 --blockexternal ${KIWIX_LIBRARY}
+Restart=on-failure
+RestartSec=10
+Nice=-2
+# Read-only view of the whole system (the data root included); its own user, no sudo.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,1860 @@
+# Honey Badger — content catalog (single source of truth)
+#
+# Every item: where it comes from, how big it is, which editions carry it.
+#   tiers     field (512 GB drive) · base (1 TB) · ultimate (2 TB; 4 TB for growth) · pocket (pool
+#             for budgeted laptop go-bags, filled by priority)
+#   priority  1 = carry even on the smallest device … 9 = nice to have
+#   source    kiwix | http | hf | git | rsync | pmtiles | manual (see upd.py)
+#   size_gb   decimal GB, from the Kiwix mirror listing on 2026-11-16 (ZIM
+#             sizes drift every release; upd uses the live size when fetching)
+#
+# Regenerate docs/CONTENTS.md after editing:  python3 tools/gen_contents.py
+
+
+# ════════ reference ════════
+
+[[item]]
+id = "wikipedia_en_all_maxi"
+title = "Wikipedia (English, complete, with images)"
+category = "reference"
+kind = "zim"
+lang = "eng"
+size_gb = 127.775
+tiers = ["field", "base", "ultimate"]
+priority = 1
+license = "CC BY-SA / per source"
+description = "Every English article with images — the backbone of the library."
+source = { type = "kiwix", name = "wikipedia_en_all_maxi", path = "wikipedia/" }
+
+[[item]]
+id = "wikipedia_en_all_mini"
+title = "Wikipedia (English, intros only)"
+category = "reference"
+kind = "zim"
+lang = "eng"
+size_gb = 13.959
+tiers = ["pocket"]
+priority = 2
+license = "CC BY-SA / per source"
+description = "Lead section of every article; the go-bag edition."
+source = { type = "kiwix", name = "wikipedia_en_all_mini", path = "wikipedia/" }
+
+[[item]]
+id = "wikipedia_es_all_maxi"
+title = "Wikipedia (Español, completa)"
+category = "reference"
+kind = "zim"
+lang = "spa"
+size_gb = 36.507
+tiers = ["base", "ultimate"]
+priority = 3
+license = "CC BY-SA / per source"
+description = "Spanish Wikipedia with images."
+source = { type = "kiwix", name = "wikipedia_es_all_maxi", path = "wikipedia/" }
+
+[[item]]
+id = "wikipedia_es_all_mini"
+title = "Wikipedia (Español, resúmenes)"
+category = "reference"
+kind = "zim"
+lang = "spa"
+size_gb = 4.08
+tiers = ["pocket"]
+priority = 3
+license = "CC BY-SA / per source"
+description = "Spanish Wikipedia introductions."
+source = { type = "kiwix", name = "wikipedia_es_all_mini", path = "wikipedia/" }
+
+[[item]]
+id = "wikipedia_es_all_nopic"
+title = "Wikipedia (Español, sin imágenes)"
+category = "reference"
+kind = "zim"
+lang = "spa"
+size_gb = 12.885
+tiers = ["field"]
+priority = 3
+license = "CC BY-SA / per source"
+description = "Spanish Wikipedia, text only."
+source = { type = "kiwix", name = "wikipedia_es_all_nopic", path = "wikipedia/" }
+
+[[item]]
+id = "wikipedia_en_all_nopic"
+title = "Wikipedia (English, no images)"
+category = "reference"
+kind = "zim"
+lang = "eng"
+size_gb = 52.613
+tiers = []
+priority = 4
+license = "CC BY-SA / per source"
+description = "Full text without images — pin this on a laptop with room to spare."
+source = { type = "kiwix", name = "wikipedia_en_all_nopic", path = "wikipedia/" }
+
+[[item]]
+id = "wiktionary_en_all_nopic"
+title = "Wiktionary (English)"
+category = "reference"
+kind = "zim"
+lang = "eng"
+size_gb = 15.032
+tiers = ["field", "base", "ultimate"]
+priority = 4
+license = "CC BY-SA / per source"
+description = "Dictionary and thesaurus with etymologies and translations."
+source = { type = "kiwix", name = "wiktionary_en_all_nopic", path = "wiktionary/" }
+
+[[item]]
+id = "wikibooks_en_all_maxi"
+title = "Wikibooks"
+category = "reference"
+kind = "zim"
+lang = "eng"
+size_gb = 4.724
+tiers = ["field", "base", "ultimate"]
+priority = 5
+license = "CC BY-SA / per source"
+description = "Open textbooks and manuals, including cookbooks and how-tos."
+source = { type = "kiwix", name = "wikibooks_en_all_maxi", path = "wikibooks/" }
+
+[[item]]
+id = "wikivoyage_en_all_maxi"
+title = "Wikivoyage"
+category = "reference"
+kind = "zim"
+lang = "eng"
+size_gb = 1.074
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 5
+license = "CC BY-SA / per source"
+description = "Travel guides: regions, routes, local customs."
+source = { type = "kiwix", name = "wikivoyage_en_all_maxi", path = "wikivoyage/" }
+
+[[item]]
+id = "theworldfactbook_en_all"
+title = "CIA World Factbook"
+category = "reference"
+kind = "zim"
+lang = "eng"
+size_gb = 0.407
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 6
+license = "Public domain"
+description = "Country profiles: geography, people, economy, infrastructure."
+source = { type = "kiwix", name = "theworldfactbook_en_all", path = "other/" }
+
+[[item]]
+id = "wikipedia_fr_all_maxi"
+title = "Wikipédia (Français, complète)"
+category = "reference"
+kind = "zim"
+lang = "fra"
+size_gb = 55.835
+tiers = ["ultimate"]
+priority = 6
+license = "CC BY-SA / per source"
+description = "French Wikipedia with images."
+source = { type = "kiwix", name = "wikipedia_fr_all_maxi", path = "wikipedia/" }
+
+[[item]]
+id = "wikipedia_fr_all_mini"
+title = "Wikipédia (Français, résumés)"
+category = "reference"
+kind = "zim"
+lang = "fra"
+size_gb = 5.691
+tiers = ["pocket"]
+priority = 6
+license = "CC BY-SA / per source"
+description = "French Wikipedia introductions."
+source = { type = "kiwix", name = "wikipedia_fr_all_mini", path = "wikipedia/" }
+
+
+# ════════ medical ════════
+
+[[item]]
+id = "hesperian_books"
+title = "Hesperian health guides (Where There Is No Doctor, etc.)"
+category = "medical"
+kind = "pdfset"
+lang = "eng"
+size_gb = 0.5
+tiers = ["field", "base", "ultimate"]
+priority = 1
+license = "Hesperian terms (free non-commercial)"
+description = "Community health classics. Free PDFs from hesperian.org — download and copy into docs/hesperian_books/."
+source = { type = "manual" }
+
+[[item]]
+id = "irp.fas.org_en_military-medicine"
+title = "Military medicine manuals (FAS)"
+category = "medical"
+kind = "zim"
+lang = "eng"
+size_gb = 0.065
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 1
+license = "US Government public domain"
+description = "US military medical field publications archived by the Federation of American Scientists."
+source = { type = "kiwix", name = "irp.fas.org_en_military-medicine", path = "zimit/" }
+
+[[item]]
+id = "mdwiki_en_all"
+title = "WikiMed with videos"
+category = "medical"
+kind = "zim"
+lang = "eng"
+size_gb = 10.737
+tiers = ["base", "ultimate"]
+priority = 1
+license = "CC BY-SA / per source"
+description = "WikiMed plus its medical video library."
+source = { type = "kiwix", name = "mdwiki_en_all", path = "other/" }
+
+[[item]]
+id = "mdwiki_en_all_maxi"
+title = "WikiMed medical encyclopedia"
+category = "medical"
+kind = "zim"
+lang = "eng"
+size_gb = 2.255
+tiers = ["field", "pocket"]
+priority = 1
+license = "CC BY-SA / per source"
+description = "~70k medical articles (MDWiki): conditions, drugs, anatomy, procedures."
+source = { type = "kiwix", name = "mdwiki_en_all_maxi", path = "other/" }
+
+[[item]]
+id = "zimgit-medicine_en"
+title = "Field medicine library (zimgit)"
+category = "medical"
+kind = "zim"
+lang = "eng"
+size_gb = 0.07
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 1
+license = "CC BY-SA / per source"
+description = "Curated first-aid and austere-medicine documents."
+source = { type = "kiwix", name = "zimgit-medicine_en", path = "other/" }
+
+[[item]]
+id = "medlineplus.gov_en_all"
+title = "MedlinePlus (NIH/NLM)"
+category = "medical"
+kind = "zim"
+lang = "eng"
+size_gb = 1.933
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 2
+license = "US Government (includes licensed A.D.A.M. content)"
+description = "Plain-language health topics, drugs and supplements, medical tests."
+source = { type = "kiwix", name = "medlineplus.gov_en_all", path = "zimit/" }
+
+[[item]]
+id = "nhs.uk_en_medicines"
+title = "NHS medicines A–Z"
+category = "medical"
+kind = "zim"
+lang = "eng"
+size_gb = 0.016
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 2
+license = "OGL v3"
+description = "What common medicines are for, how to take them, side effects."
+source = { type = "kiwix", name = "nhs.uk_en_medicines", path = "zimit/" }
+
+[[item]]
+id = "medlineplus.gov_es_all"
+title = "MedlinePlus en español"
+category = "medical"
+kind = "zim"
+lang = "spa"
+size_gb = 1.718
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 3
+license = "US Government (includes licensed A.D.A.M. content)"
+description = "MedlinePlus health topics in Spanish."
+source = { type = "kiwix", name = "medlineplus.gov_es_all", path = "zimit/" }
+
+[[item]]
+id = "wikipedia_es_medicine_maxi"
+title = "Wikipedia Médica (español)"
+category = "medical"
+kind = "zim"
+lang = "spa"
+size_gb = 0.469
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 3
+license = "CC BY-SA"
+description = "Spanish Wikipedia's medicine articles, with images."
+source = { type = "kiwix", name = "wikipedia_es_medicine_maxi", path = "wikipedia/" }
+
+[[item]]
+id = "wwwnc.cdc.gov_en_all"
+title = "CDC Travelers' Health"
+category = "medical"
+kind = "zim"
+lang = "eng"
+size_gb = 0.178
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 3
+license = "US Government public domain"
+description = "Disease risks, vaccines and prevention by country."
+source = { type = "kiwix", name = "wwwnc.cdc.gov_en_all", path = "zimit/" }
+
+[[item]]
+id = "openfda_drug_labels"
+title = "openFDA drug labels"
+category = "medical"
+kind = "dataset"
+lang = "eng"
+size_gb = 10.0
+tiers = ["base", "ultimate"]
+priority = 4
+license = "US Government public domain"
+description = "Every US drug label (indications, dosing, warnings). Bulk JSON from open.fda.gov; ~2 GB download."
+source = { type = "manual" }
+
+[[item]]
+id = "wikivet.net_en_all_maxi"
+title = "WikiVet"
+category = "medical"
+kind = "zim"
+lang = "eng"
+size_gb = 0.057
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 5
+license = "CC BY-SA / per source"
+description = "Veterinary reference for livestock, pets and working animals."
+source = { type = "kiwix", name = "wikivet.net_en_all_maxi", path = "other/" }
+
+[[item]]
+id = "libretexts.org_en_med"
+title = "LibreTexts Medicine"
+category = "medical"
+kind = "zim"
+lang = "eng"
+size_gb = 1.181
+tiers = ["base", "ultimate"]
+priority = 6
+license = "CC BY-SA / per source"
+description = "Open medical and nursing textbooks."
+source = { type = "kiwix", name = "libretexts.org_en_med", path = "libretexts/" }
+
+[[item]]
+id = "medicalsciences.stackexchange.com_en_all"
+title = "Medical Sciences Q&A"
+category = "medical"
+kind = "zim"
+lang = "eng"
+size_gb = 0.061
+tiers = ["field", "base", "ultimate"]
+priority = 6
+license = "CC BY-SA / per source"
+description = "Stack Exchange questions on medicine and physiology."
+source = { type = "kiwix", name = "medicalsciences.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "quickguidesformedicine_en_all"
+title = "Quick Guides for Medicine (video)"
+category = "medical"
+kind = "zim"
+lang = "eng"
+size_gb = 0.527
+tiers = ["base", "ultimate"]
+priority = 6
+license = "CC BY-SA / per source"
+description = "Short clinical skills and procedure videos."
+source = { type = "kiwix", name = "quickguidesformedicine_en_all", path = "videos/" }
+
+[[item]]
+id = "librepathology_en_all_maxi"
+title = "Libre Pathology"
+category = "medical"
+kind = "zim"
+lang = "eng"
+size_gb = 0.095
+tiers = ["base", "ultimate"]
+priority = 8
+license = "CC BY-SA / per source"
+description = "Pathology reference for clinicians."
+source = { type = "kiwix", name = "librepathology_en_all_maxi", path = "other/" }
+
+
+# ════════ survival ════════
+
+[[item]]
+id = "ready.gov_en_all"
+title = "Ready.gov (FEMA)"
+category = "survival"
+kind = "zim"
+lang = "eng"
+size_gb = 2.04
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 1
+license = "US Government public domain"
+description = "Official US preparedness guidance for every hazard."
+source = { type = "kiwix", name = "ready.gov_en_all", path = "zimit/" }
+
+[[item]]
+id = "zimgit-post-disaster_en"
+title = "Post-disaster library (zimgit)"
+category = "survival"
+kind = "zim"
+lang = "eng"
+size_gb = 0.645
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 1
+license = "CC BY-SA / per source"
+description = "Curated manuals for shelter, sanitation, water, food and rebuilding."
+source = { type = "kiwix", name = "zimgit-post-disaster_en", path = "other/" }
+
+[[item]]
+id = "armypubs_en_all"
+title = "US Army publications & field manuals"
+category = "survival"
+kind = "zim"
+lang = "eng"
+size_gb = 8.268
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 2
+license = "US Government public domain"
+description = "Field manuals and technical manuals from the Army Publishing Directorate."
+source = { type = "kiwix", name = "armypubs_en_all", path = "zimit/" }
+
+[[item]]
+id = "ready.gov_es_all"
+title = "Ready.gov en español"
+category = "survival"
+kind = "zim"
+lang = "spa"
+size_gb = 2.04
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 2
+license = "US Government public domain"
+description = "FEMA preparedness guidance in Spanish."
+source = { type = "kiwix", name = "ready.gov_es_all", path = "zimit/" }
+
+[[item]]
+id = "outdoors.stackexchange.com_en_all"
+title = "Great Outdoors Q&A"
+category = "survival"
+kind = "zim"
+lang = "eng"
+size_gb = 0.142
+tiers = ["field", "base", "ultimate"]
+priority = 3
+license = "CC BY-SA / per source"
+description = "Camping, hiking, navigation and wilderness skills Q&A."
+source = { type = "kiwix", name = "outdoors.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "zimgit-knots_en"
+title = "Knots library (zimgit)"
+category = "survival"
+kind = "zim"
+lang = "eng"
+size_gb = 0.028
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 3
+license = "CC BY-SA / per source"
+description = "Knots, hitches and lashings."
+source = { type = "kiwix", name = "zimgit-knots_en", path = "other/" }
+
+[[item]]
+id = "trueprepper.com_en_all"
+title = "TruePrepper"
+category = "survival"
+kind = "zim"
+lang = "eng"
+size_gb = 1.396
+tiers = ["field", "base", "ultimate"]
+priority = 4
+license = "Per source"
+description = "Prepping guides and gear reviews."
+source = { type = "kiwix", name = "trueprepper.com_en_all", path = "other/" }
+
+[[item]]
+id = "wikipedia_en_knots_maxi"
+title = "Wikipedia: knots"
+category = "survival"
+kind = "zim"
+lang = "eng"
+size_gb = 0.014
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 4
+license = "CC BY-SA / per source"
+description = "Every knot article on Wikipedia, with diagrams."
+source = { type = "kiwix", name = "wikipedia_en_knots_maxi", path = "wikipedia/" }
+
+[[item]]
+id = "survivors_en_all_maxi"
+title = "Survivors wiki"
+category = "survival"
+kind = "zim"
+lang = "eng"
+size_gb = 0.137
+tiers = ["field", "base", "ultimate"]
+priority = 5
+license = "CC BY-SA / per source"
+description = "Community survival knowledge base."
+source = { type = "kiwix", name = "survivors_en_all_maxi", path = "other/" }
+
+[[item]]
+id = "survivorlibrary.com_en_all"
+title = "Survivor Library"
+category = "survival"
+kind = "zim"
+lang = "eng"
+size_gb = 220.117
+tiers = ["ultimate"]
+priority = 6
+license = "Public domain (scans)"
+description = "Thousands of pre-1900s technical books: smithing, farming, chemistry, medicine, power."
+source = { type = "kiwix", name = "survivorlibrary.com_en_all", path = "zimit/" }
+
+[[item]]
+id = "wikihow_personal"
+title = "wikiHow (personal copy)"
+category = "survival"
+kind = "zim"
+lang = "eng"
+size_gb = 0.0
+tiers = []
+priority = 6
+license = "CC BY-NC-SA"
+description = "No current wikiHow ZIM is published. Build your own with zimit for personal use (CC BY-NC-SA)."
+source = { type = "manual" }
+
+
+# ════════ food-water ════════
+
+[[item]]
+id = "zimgit-water_en"
+title = "Water library (zimgit)"
+category = "food-water"
+kind = "zim"
+lang = "eng"
+size_gb = 0.021
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 1
+license = "CC BY-SA / per source"
+description = "Finding, treating and storing water."
+source = { type = "kiwix", name = "zimgit-water_en", path = "other/" }
+
+[[item]]
+id = "zimgit-food-preparation_en"
+title = "Food preparation library (zimgit)"
+category = "food-water"
+kind = "zim"
+lang = "eng"
+size_gb = 0.098
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 2
+license = "CC BY-SA / per source"
+description = "Preserving, cooking and storing food without utilities."
+source = { type = "kiwix", name = "zimgit-food-preparation_en", path = "other/" }
+
+[[item]]
+id = "gardening.stackexchange.com_en_all"
+title = "Gardening & Landscaping Q&A"
+category = "food-water"
+kind = "zim"
+lang = "eng"
+size_gb = 0.933
+tiers = ["field", "base", "ultimate"]
+priority = 3
+license = "CC BY-SA / per source"
+description = "Growing food, soil, pests, plant problems."
+source = { type = "kiwix", name = "gardening.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "gardenology.org_en_all"
+title = "Gardenology plant encyclopedia"
+category = "food-water"
+kind = "zim"
+lang = "eng"
+size_gb = 0.112
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 3
+license = "CC BY-SA / per source"
+description = "Plant profiles and growing information."
+source = { type = "kiwix", name = "gardenology.org_en_all", path = "other/" }
+
+[[item]]
+id = "cooking.stackexchange.com_en_all"
+title = "Seasoned Advice (cooking Q&A)"
+category = "food-water"
+kind = "zim"
+lang = "eng"
+size_gb = 0.238
+tiers = ["field", "base", "ultimate"]
+priority = 5
+license = "CC BY-SA / per source"
+description = "Cooking technique, food safety and substitutions."
+source = { type = "kiwix", name = "cooking.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "sustainability.stackexchange.com_en_all"
+title = "Sustainable Living Q&A"
+category = "food-water"
+kind = "zim"
+lang = "eng"
+size_gb = 0.027
+tiers = ["field", "base", "ultimate"]
+priority = 5
+license = "CC BY-SA / per source"
+description = "Self-sufficiency, energy and resource questions."
+source = { type = "kiwix", name = "sustainability.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "based.cooking_en_all"
+title = "based.cooking recipes"
+category = "food-water"
+kind = "zim"
+lang = "eng"
+size_gb = 0.023
+tiers = ["field", "base", "ultimate"]
+priority = 6
+license = "CC BY-SA / per source"
+description = "Simple open recipe collection."
+source = { type = "kiwix", name = "based.cooking_en_all", path = "zimit/" }
+
+[[item]]
+id = "foss.cooking_en_all"
+title = "foss.cooking recipes"
+category = "food-water"
+kind = "zim"
+lang = "eng"
+size_gb = 0.03
+tiers = ["field", "base", "ultimate"]
+priority = 6
+license = "CC BY-SA / per source"
+description = "Open recipe collection."
+source = { type = "kiwix", name = "foss.cooking_en_all", path = "zimit/" }
+
+[[item]]
+id = "homebrew.stackexchange.com_en_all"
+title = "Homebrewing Q&A"
+category = "food-water"
+kind = "zim"
+lang = "eng"
+size_gb = 0.038
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+description = "Fermentation, brewing and sanitation."
+source = { type = "kiwix", name = "homebrew.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "pets.stackexchange.com_en_all"
+title = "Pets Q&A"
+category = "food-water"
+kind = "zim"
+lang = "eng"
+size_gb = 0.087
+tiers = ["base", "ultimate"]
+priority = 8
+license = "CC BY-SA / per source"
+description = "Animal care questions."
+source = { type = "kiwix", name = "pets.stackexchange.com_en_all", path = "stack_exchange/" }
+
+
+# ════════ energy-repair ════════
+
+[[item]]
+id = "ifixit_en_all"
+title = "iFixit repair guides"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 3.543
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 1
+license = "CC BY-NC-SA"
+description = "Step-by-step repair guides for vehicles, electronics, appliances and tools."
+source = { type = "kiwix", name = "ifixit_en_all", path = "ifixit/" }
+
+[[item]]
+id = "diy.stackexchange.com_en_all"
+title = "Home Improvement Q&A"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 2.04
+tiers = ["field", "base", "ultimate"]
+priority = 2
+license = "CC BY-SA / per source"
+description = "Electrical, plumbing, carpentry, HVAC."
+source = { type = "kiwix", name = "diy.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "appropedia_en_all_maxi"
+title = "Appropedia"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.582
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 3
+license = "CC BY-SA / per source"
+description = "Appropriate technology: water, sanitation, energy and building for low-resource settings."
+source = { type = "kiwix", name = "appropedia_en_all_maxi", path = "other/" }
+
+[[item]]
+id = "cd3wdproject.org_en_all"
+title = "CD3WD library"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.573
+tiers = ["field", "base", "ultimate"]
+priority = 3
+license = "CC BY-SA / per source"
+description = "Development and low-tech manuals: agriculture, construction, energy, health."
+source = { type = "kiwix", name = "cd3wdproject.org_en_all", path = "zimit/" }
+
+[[item]]
+id = "mechanics.stackexchange.com_en_all"
+title = "Motor Vehicle Maintenance Q&A"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.342
+tiers = ["field", "base", "ultimate"]
+priority = 3
+license = "CC BY-SA / per source"
+description = "Diagnosing and fixing cars, trucks and small engines."
+source = { type = "kiwix", name = "mechanics.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "electronics.stackexchange.com_en_all"
+title = "Electrical Engineering Q&A"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 4.295
+tiers = ["field", "base", "ultimate"]
+priority = 4
+license = "CC BY-SA / per source"
+description = "Circuits, power supplies, batteries, solar."
+source = { type = "kiwix", name = "electronics.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "energypedia_en_all_maxi"
+title = "Energypedia"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.8
+tiers = ["field", "base", "ultimate"]
+priority = 4
+license = "CC BY-SA / per source"
+description = "Off-grid and renewable energy knowledge."
+source = { type = "kiwix", name = "energypedia_en_all_maxi", path = "other/" }
+
+[[item]]
+id = "bicycles.stackexchange.com_en_all"
+title = "Bicycles Q&A"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.499
+tiers = ["field", "base", "ultimate"]
+priority = 5
+license = "CC BY-SA / per source"
+description = "Bike repair and maintenance — transport when fuel runs out."
+source = { type = "kiwix", name = "bicycles.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "solar.lowtechmagazine.com_mul_all"
+title = "Low-tech Magazine"
+category = "energy-repair"
+kind = "zim"
+lang = "mul"
+size_gb = 0.7
+tiers = ["field", "base", "ultimate"]
+priority = 5
+license = "CC BY-SA / per source"
+description = "Low-energy technology, old and new."
+source = { type = "kiwix", name = "solar.lowtechmagazine.com_mul_all", path = "zimit/" }
+
+[[item]]
+id = "wikiciv_en_all_maxi"
+title = "WikiCiv"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.005
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 5
+license = "CC BY-SA / per source"
+description = "Step-by-step tech tree for rebuilding basic technology."
+source = { type = "kiwix", name = "wikiciv_en_all_maxi", path = "other/" }
+
+[[item]]
+id = "woodworking.stackexchange.com_en_all"
+title = "Woodworking Q&A"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.107
+tiers = ["field", "base", "ultimate"]
+priority = 5
+license = "CC BY-SA / per source"
+description = "Joinery, tools and finishing."
+source = { type = "kiwix", name = "woodworking.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "engineering.stackexchange.com_en_all"
+title = "Engineering Q&A"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.259
+tiers = ["base", "ultimate"]
+priority = 6
+license = "CC BY-SA / per source"
+description = "Mechanical, civil and structural engineering."
+source = { type = "kiwix", name = "engineering.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "raspberrypi.stackexchange.com_en_all"
+title = "Raspberry Pi Q&A"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.299
+tiers = ["field", "base", "ultimate"]
+priority = 6
+license = "CC BY-SA / per source"
+description = "Fix and extend this device."
+source = { type = "kiwix", name = "raspberrypi.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "arduino.stackexchange.com_en_all"
+title = "Arduino Q&A"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.26
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+description = "Microcontrollers and sensors."
+source = { type = "kiwix", name = "arduino.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "crafts.stackexchange.com_en_all"
+title = "Arts & Crafts Q&A"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.059
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+description = "Sewing, leather, materials."
+source = { type = "kiwix", name = "crafts.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "lifehacks.stackexchange.com_en_all"
+title = "Lifehacks Q&A"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.049
+tiers = ["field", "base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+description = "Improvised fixes."
+source = { type = "kiwix", name = "lifehacks.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "openwrt.org_en_all"
+title = "OpenWrt documentation"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 0.52
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+description = "Router firmware — rebuild networks."
+source = { type = "kiwix", name = "openwrt.org_en_all", path = "zimit/" }
+
+[[item]]
+id = "askubuntu.com_en_all"
+title = "Ask Ubuntu"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 2.792
+tiers = ["ultimate"]
+priority = 8
+license = "CC BY-SA / per source"
+description = "Ubuntu Linux Q&A."
+source = { type = "kiwix", name = "askubuntu.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "superuser.com_en_all"
+title = "Super User"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 3.973
+tiers = ["ultimate"]
+priority = 8
+license = "CC BY-SA / per source"
+description = "Computer hardware and software Q&A."
+source = { type = "kiwix", name = "superuser.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "unix.stackexchange.com_en_all"
+title = "Unix & Linux Q&A"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 1.288
+tiers = ["base", "ultimate"]
+priority = 8
+license = "CC BY-SA / per source"
+description = "Linux administration."
+source = { type = "kiwix", name = "unix.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "stackoverflow.com_en_all"
+title = "Stack Overflow"
+category = "energy-repair"
+kind = "zim"
+lang = "eng"
+size_gb = 114.89
+tiers = ["ultimate"]
+priority = 9
+license = "CC BY-SA / per source"
+description = "Programming Q&A — the whole thing."
+source = { type = "kiwix", name = "stackoverflow.com_en_all", path = "stack_exchange/" }
+
+
+# ════════ comms ════════
+
+[[item]]
+id = "repeaters_local"
+title = "Local repeater directory"
+category = "comms"
+kind = "dataset"
+lang = "eng"
+size_gb = 0.01
+tiers = ["field", "base", "ultimate"]
+priority = 2
+license = "Per source"
+description = "Export your region from RepeaterBook or your club as CHIRP CSV; copy into data/repeaters_local/."
+source = { type = "manual" }
+
+[[item]]
+id = "ham.stackexchange.com_en_all"
+title = "Amateur Radio Q&A"
+category = "comms"
+kind = "zim"
+lang = "eng"
+size_gb = 0.078
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 3
+license = "CC BY-SA / per source"
+description = "Antennas, propagation, licensing, digital modes."
+source = { type = "kiwix", name = "ham.stackexchange.com_en_all", path = "stack_exchange/" }
+
+
+# ════════ maps ════════
+
+[[item]]
+id = "maps_home_region"
+title = "Home region street map"
+category = "maps"
+kind = "pmtiles"
+lang = "zxx"
+size_gb = 1.5
+tiers = ["pocket"]
+priority = 2
+license = "ODbL (OpenStreetMap contributors)"
+description = "Your area at full detail — edit the bbox to your county/state."
+source = { type = "pmtiles", bbox = [-123.2, 36.9, -121.2, 38.4], maxzoom = 15 }
+
+[[item]]
+id = "maps_north_america"
+title = "North America street map"
+category = "maps"
+kind = "pmtiles"
+lang = "zxx"
+size_gb = 28.0
+tiers = ["field", "base"]
+priority = 2
+license = "ODbL (OpenStreetMap contributors)"
+description = "Street-level vector map of North America (zoom 15)."
+source = { type = "pmtiles", bbox = [-170, 5, -50, 84], maxzoom = 15 }
+
+[[item]]
+id = "maps_world_z8"
+title = "World overview map"
+category = "maps"
+kind = "pmtiles"
+lang = "zxx"
+size_gb = 0.6
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 3
+license = "ODbL (OpenStreetMap contributors)"
+description = "Whole planet to zoom 8: countries, cities, main roads."
+source = { type = "pmtiles", maxzoom = 8 }
+
+[[item]]
+id = "usgs_topo_local"
+title = "USGS topo maps (your area)"
+category = "maps"
+kind = "pdfset"
+lang = "eng"
+size_gb = 5.0
+tiers = ["field", "base", "ultimate"]
+priority = 3
+license = "Public domain"
+description = "US Topo GeoPDFs for your county/state from the USGS National Map."
+source = { type = "manual" }
+
+[[item]]
+id = "maps_planet"
+title = "Planet street map"
+category = "maps"
+kind = "pmtiles"
+lang = "zxx"
+size_gb = 139.5
+tiers = ["ultimate"]
+priority = 5
+license = "ODbL (OpenStreetMap contributors)"
+description = "Street-level vector map of the entire planet (zoom 15)."
+source = { type = "pmtiles" }
+
+[[item]]
+id = "nps_maps"
+title = "National Park maps"
+category = "maps"
+kind = "pdfset"
+lang = "eng"
+size_gb = 3.0
+tiers = ["field", "base", "ultimate"]
+priority = 6
+license = "Public domain"
+description = "Official park maps (public domain) from the NPS Harpers Ferry Center map library."
+source = { type = "manual" }
+
+[[item]]
+id = "satellite_local"
+title = "Satellite imagery (your area)"
+category = "maps"
+kind = "pmtiles"
+lang = "eng"
+size_gb = 20.0
+tiers = ["base", "ultimate"]
+priority = 6
+license = "CC BY 4.0"
+description = "Sentinel-2 cloudless (EOX, CC BY 4.0) or NAIP imagery converted to PMTiles for your region."
+source = { type = "manual" }
+
+[[item]]
+id = "openstreetmap-wiki_en_all_nopic"
+title = "OpenStreetMap wiki"
+category = "maps"
+kind = "zim"
+lang = "eng"
+size_gb = 0.534
+tiers = ["base", "ultimate"]
+priority = 8
+license = "CC BY-SA / per source"
+description = "How map data and tags work."
+source = { type = "kiwix", name = "openstreetmap-wiki_en_all_nopic", path = "other/" }
+
+
+# ════════ learn ════════
+
+[[item]]
+id = "libretexts.org_en_k12"
+title = "LibreTexts K-12"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.37
+tiers = ["field", "base", "ultimate"]
+priority = 5
+license = "CC BY-NC-SA / per book"
+description = "Open university and school textbooks."
+source = { type = "kiwix", name = "libretexts.org_en_k12", path = "libretexts/" }
+
+[[item]]
+id = "libretexts.org_en_workforce"
+title = "LibreTexts Workforce (trades)"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.514
+tiers = ["base", "ultimate"]
+priority = 5
+license = "CC BY-NC-SA / per book"
+description = "Open university and school textbooks."
+source = { type = "kiwix", name = "libretexts.org_en_workforce", path = "libretexts/" }
+
+[[item]]
+id = "kolibri_channels"
+title = "Kolibri courses (Khan Academy, CK-12, …)"
+category = "learn"
+kind = "kolibri"
+lang = "eng"
+size_gb = 60.0
+tiers = ["base", "ultimate"]
+priority = 6
+license = "Per channel"
+description = "Import channels in Kolibri (/learn → Device → Channels) while online, or from another Badger."
+source = { type = "manual" }
+
+[[item]]
+id = "libretexts.org_en_bio"
+title = "LibreTexts Biology"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 2.255
+tiers = ["base", "ultimate"]
+priority = 6
+license = "CC BY-NC-SA / per book"
+description = "Open university and school textbooks."
+source = { type = "kiwix", name = "libretexts.org_en_bio", path = "libretexts/" }
+
+[[item]]
+id = "libretexts.org_en_chem"
+title = "LibreTexts Chemistry"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 2.147
+tiers = ["base", "ultimate"]
+priority = 6
+license = "CC BY-NC-SA / per book"
+description = "Open university and school textbooks."
+source = { type = "kiwix", name = "libretexts.org_en_chem", path = "libretexts/" }
+
+[[item]]
+id = "libretexts.org_en_eng"
+title = "LibreTexts Engineering"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.678
+tiers = ["base", "ultimate"]
+priority = 6
+license = "CC BY-NC-SA / per book"
+description = "Open university and school textbooks."
+source = { type = "kiwix", name = "libretexts.org_en_eng", path = "libretexts/" }
+
+[[item]]
+id = "phet_en_all"
+title = "PhET simulations"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.109
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 6
+license = "CC BY"
+description = "Interactive math and science simulations."
+source = { type = "kiwix", name = "phet_en_all", path = "phet/" }
+
+[[item]]
+id = "biology.stackexchange.com_en_all"
+title = "Biology Q&A"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.425
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+description = "Life sciences: plants, animals, microbes and the human body."
+source = { type = "kiwix", name = "biology.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "chemistry.stackexchange.com_en_all"
+title = "Chemistry Q&A"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.42
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+description = "Practical and theoretical chemistry."
+source = { type = "kiwix", name = "chemistry.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "earthscience.stackexchange.com_en_all"
+title = "Earth Science Q&A"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.133
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+description = "Weather, geology, climate."
+source = { type = "kiwix", name = "earthscience.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "khanacademy_en_all"
+title = "Khan Academy (2023 snapshot)"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 180.389
+tiers = ["ultimate"]
+priority = 7
+license = "CC BY-NC-SA"
+description = "Video lessons and exercises, K-12 through college."
+source = { type = "kiwix", name = "khanacademy_en_all", path = "other/" }
+
+[[item]]
+id = "libretexts.org_en_geo"
+title = "LibreTexts Geosciences"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 1.181
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-NC-SA / per book"
+description = "Open university and school textbooks."
+source = { type = "kiwix", name = "libretexts.org_en_geo", path = "libretexts/" }
+
+[[item]]
+id = "libretexts.org_en_math"
+title = "LibreTexts Mathematics"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.83
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-NC-SA / per book"
+description = "Open university and school textbooks."
+source = { type = "kiwix", name = "libretexts.org_en_math", path = "libretexts/" }
+
+[[item]]
+id = "libretexts.org_en_phys"
+title = "LibreTexts Physics"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.56
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-NC-SA / per book"
+description = "Open university and school textbooks."
+source = { type = "kiwix", name = "libretexts.org_en_phys", path = "libretexts/" }
+
+[[item]]
+id = "wikiversity_en_all_maxi"
+title = "Wikiversity"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 2.147
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+description = "Open learning materials and course notes."
+source = { type = "kiwix", name = "wikiversity_en_all_maxi", path = "wikiversity/" }
+
+[[item]]
+id = "crashcourse_en_all"
+title = "Crash Course (video)"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 22.549
+tiers = ["ultimate"]
+priority = 8
+license = "CC BY-NC-SA"
+description = "Fast-paced video courses across subjects."
+source = { type = "kiwix", name = "crashcourse_en_all", path = "other/" }
+
+[[item]]
+id = "libretexts.org_en_biz"
+title = "LibreTexts Business"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.84
+tiers = ["ultimate"]
+priority = 8
+license = "CC BY-NC-SA / per book"
+description = "Open university and school textbooks."
+source = { type = "kiwix", name = "libretexts.org_en_biz", path = "libretexts/" }
+
+[[item]]
+id = "libretexts.org_en_human"
+title = "LibreTexts Humanities"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 4.402
+tiers = ["ultimate"]
+priority = 8
+license = "CC BY-NC-SA / per book"
+description = "Open university and school textbooks."
+source = { type = "kiwix", name = "libretexts.org_en_human", path = "libretexts/" }
+
+[[item]]
+id = "libretexts.org_en_socialsci"
+title = "LibreTexts Social sciences"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 2.04
+tiers = ["ultimate"]
+priority = 8
+license = "CC BY-NC-SA / per book"
+description = "Open university and school textbooks."
+source = { type = "kiwix", name = "libretexts.org_en_socialsci", path = "libretexts/" }
+
+[[item]]
+id = "libretexts.org_en_stats"
+title = "LibreTexts Statistics"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 0.216
+tiers = ["base", "ultimate"]
+priority = 8
+license = "CC BY-NC-SA / per book"
+description = "Open university and school textbooks."
+source = { type = "kiwix", name = "libretexts.org_en_stats", path = "libretexts/" }
+
+[[item]]
+id = "physics.stackexchange.com_en_all"
+title = "Physics Q&A"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 1.825
+tiers = ["ultimate"]
+priority = 8
+license = "CC BY-SA / per source"
+description = "Mechanics, electricity, heat and optics explained."
+source = { type = "kiwix", name = "physics.stackexchange.com_en_all", path = "stack_exchange/" }
+
+[[item]]
+id = "voa_learning_en_all"
+title = "VOA Learning English (video)"
+category = "learn"
+kind = "zim"
+lang = "eng"
+size_gb = 7.087
+tiers = ["ultimate"]
+priority = 8
+license = "Public domain"
+description = "English lessons for non-native speakers."
+source = { type = "kiwix", name = "voa_learning_en_all", path = "videos/" }
+
+
+# ════════ books ════════
+
+[[item]]
+id = "gutenberg_en_lcc-r"
+title = "Gutenberg: Medicine"
+category = "books"
+kind = "zim"
+lang = "eng"
+size_gb = 1.533
+tiers = ["field", "base"]
+priority = 3
+license = "Public domain"
+description = "Project Gutenberg books in this Library of Congress class."
+source = { type = "kiwix", name = "gutenberg_en_lcc-r", path = "books/" }
+
+[[item]]
+id = "gutenberg_en_lcc-s"
+title = "Gutenberg: Agriculture"
+category = "books"
+kind = "zim"
+lang = "eng"
+size_gb = 3.422
+tiers = ["field", "base"]
+priority = 3
+license = "Public domain"
+description = "Project Gutenberg books in this Library of Congress class."
+source = { type = "kiwix", name = "gutenberg_en_lcc-s", path = "books/" }
+
+[[item]]
+id = "gutenberg_en_lcc-t"
+title = "Gutenberg: Technology"
+category = "books"
+kind = "zim"
+lang = "eng"
+size_gb = 9.566
+tiers = ["field", "base"]
+priority = 3
+license = "Public domain"
+description = "Project Gutenberg books in this Library of Congress class."
+source = { type = "kiwix", name = "gutenberg_en_lcc-t", path = "books/" }
+
+[[item]]
+id = "gutenberg_en_lcc-q"
+title = "Gutenberg: Science"
+category = "books"
+kind = "zim"
+lang = "eng"
+size_gb = 12.883
+tiers = ["field", "base"]
+priority = 4
+license = "Public domain"
+description = "Project Gutenberg books in this Library of Congress class."
+source = { type = "kiwix", name = "gutenberg_en_lcc-q", path = "books/" }
+
+[[item]]
+id = "gutenberg_en_lcc-pz"
+title = "Gutenberg: Children's fiction"
+category = "books"
+kind = "zim"
+lang = "eng"
+size_gb = 14.537
+tiers = ["base"]
+priority = 5
+license = "Public domain"
+description = "Project Gutenberg books in this Library of Congress class."
+source = { type = "kiwix", name = "gutenberg_en_lcc-pz", path = "books/" }
+
+[[item]]
+id = "gutenberg_en_lcc-u"
+title = "Gutenberg: Military science"
+category = "books"
+kind = "zim"
+lang = "eng"
+size_gb = 0.906
+tiers = ["field", "base"]
+priority = 5
+license = "Public domain"
+description = "Project Gutenberg books in this Library of Congress class."
+source = { type = "kiwix", name = "gutenberg_en_lcc-u", path = "books/" }
+
+[[item]]
+id = "gutenberg_en_all"
+title = "Project Gutenberg (complete English)"
+category = "books"
+kind = "zim"
+lang = "eng"
+size_gb = 221.191
+tiers = ["ultimate"]
+priority = 6
+license = "Public domain"
+description = "Every English public-domain book on Project Gutenberg, with covers."
+source = { type = "kiwix", name = "gutenberg_en_all", path = "gutenberg/" }
+
+[[item]]
+id = "gutenberg_en_lcc-pr"
+title = "Gutenberg: English literature"
+category = "books"
+kind = "zim"
+lang = "eng"
+size_gb = 12.959
+tiers = ["base"]
+priority = 6
+license = "Public domain"
+description = "Project Gutenberg books in this Library of Congress class."
+source = { type = "kiwix", name = "gutenberg_en_lcc-pr", path = "books/" }
+
+[[item]]
+id = "gutenberg_en_lcc-ps"
+title = "Gutenberg: American literature"
+category = "books"
+kind = "zim"
+lang = "eng"
+size_gb = 11.588
+tiers = ["base"]
+priority = 6
+license = "Public domain"
+description = "Project Gutenberg books in this Library of Congress class."
+source = { type = "kiwix", name = "gutenberg_en_lcc-ps", path = "books/" }
+
+[[item]]
+id = "gutenberg_en_lcc-v"
+title = "Gutenberg: Naval science"
+category = "books"
+kind = "zim"
+lang = "eng"
+size_gb = 0.812
+tiers = ["field", "base"]
+priority = 6
+license = "Public domain"
+description = "Project Gutenberg books in this Library of Congress class."
+source = { type = "kiwix", name = "gutenberg_en_lcc-v", path = "books/" }
+
+[[item]]
+id = "wikisource_en_all_maxi"
+title = "Wikisource"
+category = "books"
+kind = "zim"
+lang = "eng"
+size_gb = 8.59
+tiers = ["base", "ultimate"]
+priority = 7
+license = "CC BY-SA / per source"
+description = "Public-domain source texts: historical documents, laws, literature."
+source = { type = "kiwix", name = "wikisource_en_all_maxi", path = "wikisource/" }
+
+
+# ════════ video ════════
+
+[[item]]
+id = "ted_mul_agriculture"
+title = "TED: Agriculture"
+category = "video"
+kind = "zim"
+lang = "mul"
+size_gb = 1.288
+tiers = ["field", "base"]
+priority = 5
+license = "CC BY-NC-ND"
+description = "TED talks on agriculture."
+source = { type = "kiwix", name = "ted_mul_agriculture", path = "ted/" }
+
+[[item]]
+id = "ted_mul_water"
+title = "TED: Water"
+category = "video"
+kind = "zim"
+lang = "mul"
+size_gb = 0.872
+tiers = ["field", "base"]
+priority = 5
+license = "CC BY-NC-ND"
+description = "TED talks on water."
+source = { type = "kiwix", name = "ted_mul_water", path = "ted/" }
+
+[[item]]
+id = "s2underground_en_all"
+title = "S2 Underground (video)"
+category = "video"
+kind = "zim"
+lang = "eng"
+size_gb = 5.476
+tiers = ["base", "ultimate"]
+priority = 6
+license = "Per creator"
+description = "Security, communications and preparedness training videos."
+source = { type = "kiwix", name = "s2underground_en_all", path = "videos/" }
+
+[[item]]
+id = "ted_mul_energy"
+title = "TED: Energy"
+category = "video"
+kind = "zim"
+lang = "mul"
+size_gb = 1.933
+tiers = ["field", "base"]
+priority = 6
+license = "CC BY-NC-ND"
+description = "TED talks on energy."
+source = { type = "kiwix", name = "ted_mul_energy", path = "ted/" }
+
+[[item]]
+id = "ted_mul_food"
+title = "TED: Food"
+category = "video"
+kind = "zim"
+lang = "mul"
+size_gb = 2.362
+tiers = ["field", "base"]
+priority = 6
+license = "CC BY-NC-ND"
+description = "TED talks on food."
+source = { type = "kiwix", name = "ted_mul_food", path = "ted/" }
+
+[[item]]
+id = "ted_mul_gardening"
+title = "TED: Gardening"
+category = "video"
+kind = "zim"
+lang = "mul"
+size_gb = 0.326
+tiers = ["field", "base"]
+priority = 6
+license = "CC BY-NC-ND"
+description = "TED talks on gardening."
+source = { type = "kiwix", name = "ted_mul_gardening", path = "ted/" }
+
+[[item]]
+id = "ted_mul_health"
+title = "TED: Health"
+category = "video"
+kind = "zim"
+lang = "mul"
+size_gb = 7.838
+tiers = ["field", "base"]
+priority = 6
+license = "CC BY-NC-ND"
+description = "TED talks on health."
+source = { type = "kiwix", name = "ted_mul_health", path = "ted/" }
+
+[[item]]
+id = "ted_mul_medicine"
+title = "TED: Medicine"
+category = "video"
+kind = "zim"
+lang = "mul"
+size_gb = 3.651
+tiers = ["field", "base"]
+priority = 6
+license = "CC BY-NC-ND"
+description = "TED talks on medicine."
+source = { type = "kiwix", name = "ted_mul_medicine", path = "ted/" }
+
+[[item]]
+id = "canadian-prepper_en_bugoutconcepts"
+title = "Canadian Prepper: Bug-out concepts (video)"
+category = "video"
+kind = "zim"
+lang = "eng"
+size_gb = 2.899
+tiers = ["base", "ultimate"]
+priority = 7
+license = "Per creator"
+description = "Video series from the Canadian Prepper channel."
+source = { type = "kiwix", name = "canadian-prepper_en_bugoutconcepts", path = "videos/" }
+
+[[item]]
+id = "canadian-prepper_en_bugoutroll"
+title = "Canadian Prepper: Bug-out roll (video)"
+category = "video"
+kind = "zim"
+lang = "eng"
+size_gb = 0.879
+tiers = ["base", "ultimate"]
+priority = 7
+license = "Per creator"
+description = "Video series from the Canadian Prepper channel."
+source = { type = "kiwix", name = "canadian-prepper_en_bugoutroll", path = "videos/" }
+
+[[item]]
+id = "canadian-prepper_en_preppingfood"
+title = "Canadian Prepper: Prepping food (video)"
+category = "video"
+kind = "zim"
+lang = "eng"
+size_gb = 2.147
+tiers = ["base", "ultimate"]
+priority = 7
+license = "Per creator"
+description = "Video series from the Canadian Prepper channel."
+source = { type = "kiwix", name = "canadian-prepper_en_preppingfood", path = "videos/" }
+
+[[item]]
+id = "canadian-prepper_en_winterprepping"
+title = "Canadian Prepper: Winter prepping (video)"
+category = "video"
+kind = "zim"
+lang = "eng"
+size_gb = 1.288
+tiers = ["base", "ultimate"]
+priority = 7
+license = "Per creator"
+description = "Video series from the Canadian Prepper channel."
+source = { type = "kiwix", name = "canadian-prepper_en_winterprepping", path = "videos/" }
+
+[[item]]
+id = "lrnselfreliance_en_all"
+title = "Learn Self Reliance (video)"
+category = "video"
+kind = "zim"
+lang = "eng"
+size_gb = 3.973
+tiers = ["base", "ultimate"]
+priority = 7
+license = "Per creator"
+description = "Bushcraft and self-reliance videos."
+source = { type = "kiwix", name = "lrnselfreliance_en_all", path = "videos/" }
+
+[[item]]
+id = "ted_mul_sustainability"
+title = "TED: Sustainability"
+category = "video"
+kind = "zim"
+lang = "mul"
+size_gb = 5.906
+tiers = ["field", "base"]
+priority = 7
+license = "CC BY-NC-ND"
+description = "TED talks on sustainability."
+source = { type = "kiwix", name = "ted_mul_sustainability", path = "ted/" }
+
+[[item]]
+id = "urban-prepper_en_all"
+title = "Urban Prepper (video)"
+category = "video"
+kind = "zim"
+lang = "eng"
+size_gb = 2.255
+tiers = ["base", "ultimate"]
+priority = 7
+license = "Per creator"
+description = "Practical preparedness videos."
+source = { type = "kiwix", name = "urban-prepper_en_all", path = "videos/" }
+
+[[item]]
+id = "ted_mul_all"
+title = "TED talks (complete)"
+category = "video"
+kind = "zim"
+lang = "mul"
+size_gb = 91.268
+tiers = ["ultimate"]
+priority = 8
+license = "CC BY-NC-ND"
+description = "The full TED archive."
+source = { type = "kiwix", name = "ted_mul_all", path = "ted/" }
+
+
+# ════════ ai ════════
+
+[[item]]
+id = "model_qwen25_1_5b"
+title = "Qwen2.5 1.5B Instruct (endurance AI model)"
+category = "ai"
+kind = "model"
+lang = "mul"
+size_gb = 1.1
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 3
+license = "Apache-2.0"
+description = "Smaller, ~10 tokens/s on a Pi 5; used in Endurance power mode."
+source = { type = "hf", repo = "Qwen/Qwen2.5-1.5B-Instruct-GGUF", file = "qwen2.5-1.5b-instruct-q4_k_m.gguf" }
+
+[[item]]
+id = "model_qwen3_4b"
+title = "Qwen3 4B Instruct (default AI model)"
+category = "ai"
+kind = "model"
+lang = "mul"
+size_gb = 2.5
+tiers = ["field", "base", "ultimate"]
+priority = 4
+license = "Apache-2.0"
+description = "Answers Ask-the-Library questions from retrieved articles. ~3–5 tokens/s on a Pi 5 (estimate)."
+source = { type = "hf", repo = "unsloth/Qwen3-4B-Instruct-2507-GGUF", file = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf" }
+
+
+# ════════ tools ════════
+
+[[item]]
+id = "prepper_software"
+title = "Honey Badger software"
+category = "tools"
+kind = "app"
+lang = "zxx"
+size_gb = 0.05
+tiers = ["field", "base", "ultimate", "pocket"]
+priority = 1
+license = "MIT"
+description = "This launcher, updater and device services. To update it like any other content, point it at your own copy of the repository: change this line to source = { type = \"git\", url = \"https://…/your-repo.git\", ref = \"refs/heads/stable\" }. Until then it is tracked, never fetched."
+source = { type = "manual" }
+
+[[item]]
+id = "apk_kiwixmobile"
+title = "Kiwix for Android"
+category = "tools"
+kind = "apk"
+lang = "zxx"
+size_gb = 0.236
+tiers = ["field", "base", "ultimate"]
+priority = 4
+license = "GPL-3.0"
+description = "Read ZIMs on an Android phone, away from the Badger. Sideload from the Badger; official standalone APK from download.kiwix.org."
+source = { type = "http", index = "https://download.kiwix.org/release/kiwix-android/", pattern = "(?<=href=\")(?:kiwix|org\\.kiwix\\.kiwixmobile\\.standalone)-v?(?P<v>\\d+(?:\\.\\d+)+)\\.apk(?=\")" }
+
+[[item]]
+id = "apk_mesh"
+title = "Meshtastic for Android"
+category = "tools"
+kind = "apk"
+lang = "zxx"
+size_gb = 0.05
+tiers = ["field", "base", "ultimate"]
+priority = 4
+license = "Open source (F-Droid)"
+description = "Talk over LoRa mesh radios. Sideload from the Badger; F-Droid build."
+source = { type = "http", index = "https://f-droid.org/en/packages/com.geeksville.mesh/", pattern = "com\\.geeksville\\.mesh_(?P<v>\\d+)\\.apk", download_base = "https://f-droid.org/repo/" }
+
+[[item]]
+id = "apk_organicmaps"
+title = "Organic Maps for Android"
+category = "tools"
+kind = "apk"
+lang = "zxx"
+size_gb = 0.1
+tiers = ["field", "base", "ultimate"]
+priority = 4
+license = "Open source (F-Droid)"
+description = "Offline maps with turn-by-turn navigation. Sideload from the Badger; F-Droid build."
+source = { type = "http", index = "https://f-droid.org/en/packages/app.organicmaps/", pattern = "app\\.organicmaps_(?P<v>\\d+)\\.apk", download_base = "https://f-droid.org/repo/" }
+
+[[item]]
+id = "apk_osmand"
+title = "OsmAnd for Android"
+category = "tools"
+kind = "apk"
+lang = "zxx"
+size_gb = 0.389
+tiers = ["field", "base", "ultimate"]
+priority = 4
+license = "GPL-3.0 (free edition)"
+description = "Offline maps, topo, tracks; imports .obf files. Sideload from the Badger; official universal release APK (all phone CPUs), not a beta."
+# F-Droid only ships per-CPU OsmAnd~ builds and lists betas first; the official release
+# folder has one universal APK per stable version as net.osmand-X.Y.Z.apk (betas, store
+# builds and build-numbered copies have other names and don't match).
+source = { type = "http", index = "https://download.osmand.net/releases/", pattern = "(?<=href=\")net\\.osmand-(?P<v>\\d+\\.\\d+(?:\\.\\d+)?)\\.apk(?=\")" }
+
+[[item]]
+id = "apk_trail_sense"
+title = "Trail Sense for Android"
+category = "tools"
+kind = "apk"
+lang = "zxx"
+size_gb = 0.02
+tiers = ["field", "base", "ultimate"]
+priority = 4
+license = "Open source (F-Droid)"
+description = "Compass, backtrack, weather, astronomy, signaling — uses phone sensors. Sideload from the Badger; F-Droid build."
+source = { type = "http", index = "https://f-droid.org/en/packages/com.kylecorry.trail_sense/", pattern = "com\\.kylecorry\\.trail_sense_(?P<v>\\d+)\\.apk", download_base = "https://f-droid.org/repo/" }
+
+[[item]]
+id = "kiwix-js"
+title = "Kiwix JS (in-browser reader)"
+category = "tools"
+kind = "app"
+lang = "zxx"
+size_gb = 0.05
+tiers = ["field", "base", "ultimate"]
+priority = 7
+license = "GPL-3.0"
+description = "Lets a browser open ZIM files directly."
+source = { type = "git", url = "https://github.com/kiwix/kiwix-js.git", ref = "HEAD" }
+
+
+# ════════ files ════════
+
+[[item]]
+id = "family_vault"
+title = "Family documents"
+category = "files"
+kind = "dataset"
+lang = "eng"
+size_gb = 0.0
+tiers = ["field", "base", "ultimate"]
+priority = 1
+license = "Yours"
+description = "IDs, insurance, deeds, medical records, emergency plan — encrypted on the Badger (see docs/OPERATIONS.md)."
+source = { type = "manual" }

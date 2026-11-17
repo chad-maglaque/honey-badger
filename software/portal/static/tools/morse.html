@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Morse code</title><link rel="stylesheet" href="/tools/tools.css"></head>
+<body><header class="top"><a class="brand" href="/#/tools">← Tools</a><b>Morse code</b></header><main>
+<script>try{var t=localStorage.getItem("theme");if(t&&t!=="auto")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+<div class="card"><h2>Send</h2>
+<label for="txt">Text</label><input type="text" id="txt" value="SOS" style="width:100%">
+<p class="mono" id="code" style="font-size:1.3rem;word-break:break-all"></p>
+<div class="row2"><div><label for="wpm">Speed (words/min)</label><input type="number" id="wpm" value="12" min="4" max="40"></div>
+<div><label for="hz">Tone (Hz)</label><input type="number" id="hz" value="650" min="300" max="1200"></div></div>
+<div class="btns" style="margin-top:12px"><button class="btn" id="play">▶ Sound</button><button class="btn ghost" id="flash">💡 Flash screen</button><button class="btn ghost" id="sos">SOS (repeat)</button><button class="btn ghost" id="stop">■ Stop</button></div>
+<p class="small muted">Flash mode turns the whole screen into a signal lamp — hold it toward the receiver at night.</p></div>
+<div class="card section"><h2>Receive (tap the key)</h2>
+<button class="key" id="key">Tap / hold here</button>
+<p class="mono" id="rx" style="font-size:1.2rem;min-height:1.5em;word-break:break-all"></p>
+<p class="big" id="rxt" style="min-height:1.4em"></p>
+<div class="btns"><button class="btn ghost" id="clr">Clear</button></div>
+<p class="small muted">Short tap = dot, longer press = dash. Pause between letters; longer pause between words. Speed adapts to you.</p></div>
+<div class="card section"><h2>Alphabet</h2><div id="tab"></div><p class="small">International distress: <b>SOS</b> = ··· ––– ··· sent as one run. Three of anything (shots, whistles, fires, flashes) also means distress.</p></div>
+<div class="lamp" id="lamp"></div>
+<script>
+(function(){
+var M={A:".-",B:"-...",C:"-.-.",D:"-..",E:".",F:"..-.",G:"--.",H:"....",I:"..",J:".---",K:"-.-",L:".-..",M:"--",N:"-.",O:"---",P:".--.",Q:"--.-",R:".-.",S:"...",T:"-",U:"..-",V:"...-",W:".--",X:"-..-",Y:"-.--",Z:"--..",
+"0":"-----","1":".----","2":"..---","3":"...--","4":"....-","5":".....","6":"-....","7":"--...","8":"---..","9":"----.",".":".-.-.-",",":"--..--","?":"..--..","/":"-..-.","-":"-....-","=":"-...-","+":".-.-.","@":".--.-.","'":".----.","!":"-.-.--","(":"-.--.",")":"-.--.-",":":"---...",";":"-.-.-.","\"":".-..-."};
+var R={};for(var k in M)R[M[k]]=k;
+function $(i){return document.getElementById(i);}
+function enc(s){return s.toUpperCase().split(" ").map(function(w){return w.split("").map(function(c){return(M[c]||"").replace(/\./g,"·").replace(/-/g,"–");}).filter(Boolean).join(" ");}).join(" / ");}
+function show(){$("code").textContent=$("txt").value.toUpperCase()==="SOS"?"···–––···":enc($("txt").value);}
+$("txt").oninput=show;show();
+var tab="";Object.keys(M).forEach(function(c){tab+='<span style="display:inline-block;width:7.5em;padding:3px 0"><b>'+c.replace("<","&lt;")+'</b> <span class="mono">'+M[c].replace(/\./g,"·").replace(/-/g,"–")+"</span></span>";});$("tab").innerHTML=tab;
+// ── sending ──
+var ctx=null,timers=[],stopFlag=false;
+function seq(text){var s=text.toUpperCase().trim(),out=[];var prosign=s==="SOS";
+ s.split(/\s+/).forEach(function(w,wi){if(wi)out.push(["off",7]);var chars=prosign?["...---..."]:w.split("").map(function(c){return M[c];}).filter(Boolean);
+  chars.forEach(function(code,ci){if(ci)out.push(["off",3]);code.split("").forEach(function(sym,si){if(si)out.push(["off",1]);out.push(["on",sym==="."?1:3]);});});});return out;}
+function run(mode,repeat){stop();stopFlag=false;var unit=1200/(parseFloat($("wpm").value)||12);var steps=seq($("txt").value);if(!steps.length)return;
+ var lamp=$("lamp"),osc=null,gain=null;
+ if(mode==="sound"){ctx=ctx||new(window.AudioContext||window.webkitAudioContext)();osc=ctx.createOscillator();gain=ctx.createGain();osc.frequency.value=parseFloat($("hz").value)||650;gain.gain.value=0;osc.connect(gain);gain.connect(ctx.destination);osc.start();}
+ else{lamp.style.display="block";lamp.style.background="#000";lamp.onclick=stop;}
+ var t=0;function sched(){steps.forEach(function(s){var on=s[0]==="on";timers.push(setTimeout(function(){if(osc)gain.gain.setTargetAtTime(on?0.4:0,ctx.currentTime,0.004);else lamp.style.background=on?"#fff":"#000";},t));t+=s[1]*unit;timers.push(setTimeout(function(){if(osc)gain.gain.setTargetAtTime(0,ctx.currentTime,0.004);else lamp.style.background="#000";},t));});}
+ sched();if(repeat){var n=0;while(n++<20){t+=7*unit;sched();}}
+ timers.push(setTimeout(function(){if(osc){osc.stop();}lamp.style.display="none";},t+50));window._osc=osc;}
+function stop(){timers.forEach(clearTimeout);timers=[];if(window._osc){try{window._osc.stop();}catch(e){}window._osc=null;}$("lamp").style.display="none";}
+$("play").onclick=function(){run("sound");};$("flash").onclick=function(){run("flash");};$("sos").onclick=function(){$("txt").value="SOS";show();run("sound",true);};$("stop").onclick=stop;
+// ── receiving ──
+var key=$("key"),down=0,dot=120,cur="",letters="",gapT=null;
+function press(e){e.preventDefault();if(down)return;down=Date.now();key.classList.add("down");clearTimeout(gapT);}
+function release(e){e.preventDefault();if(!down)return;var d=Date.now()-down;down=0;key.classList.remove("down");
+ var sym=d<dot*2?".":"-";if(sym===".")dot=dot*0.7+d*0.3;else dot=dot*0.7+(d/3)*0.3;cur+=sym;$("rx").textContent=letters.replace(/\S+$/,"")+" "+cur;
+ gapT=setTimeout(function(){letters+=(R[cur]||"?");cur="";$("rxt").textContent=letters;gapT=setTimeout(function(){letters+=" ";$("rxt").textContent=letters;},dot*4);},dot*2.5);}
+key.addEventListener("touchstart",press);key.addEventListener("touchend",release);key.addEventListener("mousedown",press);key.addEventListener("mouseup",release);
+document.addEventListener("keydown",function(e){if(e.code==="Space"&&document.activeElement===key)press(e);});document.addEventListener("keyup",function(e){if(e.code==="Space"&&document.activeElement===key)release(e);});
+$("clr").onclick=function(){letters="";cur="";$("rx").textContent="";$("rxt").textContent="";};
+})();
+</script></main></body></html>

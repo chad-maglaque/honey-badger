@@ -1,0 +1,20 @@
+[Unit]
+Description=Refresh weather-satellite orbit data (TLEs) from Celestrak when online
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=prepper
+# Exits 0 when offline (the normal state of a Badger); the timer tries again tomorrow.
+ExecStart=/usr/bin/python3 /opt/prepper/software/sdr/tlefile.py fetch
+TimeoutStartSec=120
+StateDirectory=prepper/sdr
+StateDirectoryMode=0750
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true

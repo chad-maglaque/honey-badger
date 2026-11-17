@@ -1,0 +1,14 @@
+#!/bin/bash
+# Start llama-server with the model for the current power mode.
+# --api-prefix /ai: every route (web UI, /ai/v1/chat/completions, /ai/health)
+# lives under /ai, so nginx passes /ai/ through unchanged (proxy_pass without a
+# trailing slash) and the portal talks to http://127.0.0.1:8090/ai.
+# shellcheck source=/dev/null
+. /etc/default/prepper
+variant=$(cat /run/prepper/llama-variant 2>/dev/null || echo default)
+model=$LLAMA_MODEL; threads=$LLAMA_THREADS
+if [ "$variant" = endurance ] || [ ! -e "$model" ]; then model=$LLAMA_ENDURANCE_MODEL; threads=2; fi
+[ -e "$model" ] || { echo "no model downloaded yet"; exit 0; }
+exec /opt/prepper/llama/bin/llama-server --model "$model" --host 127.0.0.1 --port 8090 \
+  --threads "$threads" --ctx-size "$LLAMA_CTX" --api-prefix /ai --parallel 2 \
+  --alias prepper-assistant

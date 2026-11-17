@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.venv/
+
+# OS / editors
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Partial downloads and local test data
+*.part
+devdisk/
