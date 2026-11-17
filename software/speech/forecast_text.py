@@ -414,7 +414,7 @@ def short_summary(sections: list[dict], at: float | None = None) -> str | None:
 
 def ai_summary_ok(text: str, source: str) -> str | None:
     """An AI-written short version, cleaned; None if it must not be used: too long, more than one
-    line of content, or containing a number that is not in the forecast (made up)."""
+    line of content, containing a number that is not in the forecast (made up), or naming the device."""
     if not isinstance(text, str):
         return None
     t = text.strip().strip('"').strip("'").strip()
@@ -422,6 +422,8 @@ def ai_summary_ok(text: str, source: str) -> str | None:
     t = t.encode("ascii", "ignore").decode()
     if not t or not _fits(t) or len(t) < 15:
         return None
+    if "badger" in t.lower() and "badger" not in source.lower():
+        return None                     # over the air nothing may name the device (docs/MESH.md → Privacy)
     src_nums = set(re.findall(r"\d+", source))
     for n in re.findall(r"\d+", t):
         if n not in src_nums:

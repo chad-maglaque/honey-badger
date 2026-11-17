@@ -229,6 +229,9 @@ class Text(unittest.TestCase):
         self.assertIsNone(FT.ai_summary_ok("Storms are likely today.", src))         # no numbers at all
         self.assertEqual(FT.ai_summary_ok('"Storms, hi 78, lo 61"', src), "Wx: Storms, hi 78, lo 61")
         self.assertIsNone(FT.ai_summary_ok(None, src))
+        # over the air nothing names the device (red team finding 6) — unless NOAA itself said it (a place name)
+        self.assertIsNone(FT.ai_summary_ok("Honey Badger Wx: storms, hi 78, lo 61", src))
+        self.assertIsNotNone(FT.ai_summary_ok("Wx Badger Creek: storms, hi 78", src + " Badger Creek flooding."))
 
 
 class Lib(unittest.TestCase):

@@ -926,7 +926,8 @@ id = "x"
         self.assertEqual(events[-1]["board"], "community")
         out = [json.loads(x) for x in (self.tmp / "outbox.jsonl").read_text().splitlines()]
         self.assertEqual(len(out), 1)
-        self.assertTrue(out[0]["text"].startswith("Badger sensors: ⚠ Basement: water detected"))
+        # CHANGED (red team finding 6): over the air the prefix no longer names the device
+        self.assertTrue(out[0]["text"].startswith("Sensors: ⚠ Basement: water detected"))
         self.assertEqual(out[0]["kind"], "danger")                # mesh courtesy: right after NOAA alerts
         self.assertNotIn("dedupe", out[0])                        # local readings are unique
         self.assertLessEqual(len(out[0]["text"].encode()), 200)
@@ -944,7 +945,9 @@ id = "x"
         lines = (self.tmp / "outbox.jsonl").read_text().splitlines()
         self.assertEqual(len(lines), 2)
         self.assertIn("dry again", json.loads(lines[1])["text"])
-        self.assertEqual(json.loads(lines[1])["kind"], "community")
+        # CHANGED (red team finding 6): sensor messages go on the FAMILY channel by default ([sensors] mesh_board)
+        self.assertEqual((json.loads(lines[1])["kind"], json.loads(lines[1])["board"]), ("family", "family"))
+        self.assertEqual(json.loads(lines[0])["board"], "family")
         # readings stored
         st = sl.Store(data / "readings.db", readonly=True)
         self.assertTrue(st.history("basement:flood", 86400, t + 700))
@@ -1029,7 +1032,7 @@ id = "x"
         self.assertIn("µSv/h", text)
         self.assertIn("RH", text)
         msgs = (self.tmp / "outbox.jsonl").read_text().splitlines()
-        self.assertTrue(any("Badger sensors: " in m for m in msgs))
+        self.assertTrue(any("Sensors: " in m and "Badger" not in m for m in msgs))
         self.assertEqual(json.loads(msgs[-1])["kind"], "auto")    # the summary: lowest priority on the mesh
         n = len(msgs)
         self.tick(d, t + 600)
@@ -1276,6 +1279,11 @@ remote_nodes = ["!abcd1234"]
         st, r = self.req("POST", "/api/sensors/test", {"board": "community", "mesh": True}, admin=self.admin)
         self.assertEqual(st, 200, r)
         self.assertTrue(r["mesh"])
+        ob = (self.tmp / "mesh-outbox.jsonl")
+        if ob.exists():
+            sent = ob.read_text()
+            self.assertIn("Sensors: Test from", sent)
+            self.assertNotIn("Badger sensors", sent)
         self.assertEqual(self.req("POST", "/api/sensors/test", {}, admin=self.admin)[0], 429)
         self.mod._last_test[0] = 0
         self.assertEqual(self.req("POST", "/api/sensors/test", {"board": "town"}, admin=self.admin)[0], 400)

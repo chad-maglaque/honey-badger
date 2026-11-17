@@ -17,6 +17,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -206,10 +207,16 @@ class FamilyAccess(Portal):
 
     def test_members_me_and_mesh_nodes(self):
         ana = self.join("AnaM")
-        self.admin_op({"op": "add_radio", "id": self.member_id("AnaM"), "radio": "!0badf00d"})
+        st, pr = self.admin_op({"op": "add_radio", "id": self.member_id("AnaM"), "radio": "!0badf00d"})
+        self.assertEqual(st, 202, pr)                    # CHANGED (red team 4): pending until the radio confirms
         st, r = self.req("GET", "/api/members/me", member=ana)
-        self.assertEqual(set(r["member"]), {"name", "radios"})
-        self.assertEqual(r["member"]["radios"], ["!0badf00d"])
+        self.assertEqual(set(r["member"]), {"name", "radios", "pending_radios"})
+        self.assertEqual((r["member"]["radios"], [x["radio"] for x in r["member"]["pending_radios"]]), ([], ["!0badf00d"]))
+        server.CFG.mesh_pair_file = self.tmp / "mesh-pair.json"
+        (self.tmp / "mesh-pair.json").write_text(json.dumps({"confirms": [{"radio": "!0badf00d", "code": pr["code"],
+                                                                           "at": time.time()}]}))
+        st, r = self.req("GET", "/api/members/me", member=ana)
+        self.assertEqual((r["member"]["radios"], r["member"]["pending_radios"]), (["!0badf00d"], []))
         for tok in (None, "bogus"):
             self.assertEqual(self.req("GET", "/api/mesh/nodes", member=tok)[0], 401)
         self.assertEqual(self.req("GET", "/api/mesh/nodes", admin="bogus")[0], 401)
@@ -243,8 +250,11 @@ class Injection(Portal):
         before = len(self.outbox())
         nasty = ["line1\nline2", "a\r\nb", "x y z", "q\u0085r", '{"text":"inj","board":"family"}\n{"x":1}',
                  "tab\there"]
+        # (sent by the admin: a visitor's mesh post now waits for a family member's OK — red-team finding 10)
         for i, t in enumerate(nasty):
-            st, r = self.post({"name": "N\n{\"board\":\"family\"}", "text": t, "mesh": True}, ip=f"10.6.0.{i}")
+            server._last_post.clear()
+            st, r = self.req("POST", "/api/board", {"name": "N\n{\"board\":\"family\"}", "text": t, "mesh": True},
+                             admin=self.admin, headers={"X-Real-IP": f"10.6.0.{i}"})
             self.assertEqual(st, 200, r)
         lines = self.outbox()[before:]
         self.assertEqual(len(lines), len(nasty))
@@ -465,7 +475,7 @@ class AdminOps(Portal):
                                                                            "AI": "family", "!q": "off"}},
                          admin=self.admin)
         self.assertEqual(st, 200)
-        self.assertEqual(r["settings"]["mesh_commands"].get("help"), "community")
+        self.assertEqual(r["settings"]["mesh_commands"].get("help"), "family")
 
     def test_mesh_commands_only_known_levels_reach_the_file(self):
         self.req("POST", "/api/admin/settings", {"mesh_commands": {"ai": "Community", "status": "everyone",
@@ -473,7 +483,7 @@ class AdminOps(Portal):
                  admin=self.admin)
         saved = json.loads((self.tmp / "portal-settings.json").read_text()).get("mesh_commands", {})
         self.assertTrue(set(saved) <= {"help", "q", "ai", "status"})
-        self.assertTrue(set(saved.values()) <= {"community", "family", "off"})
+        self.assertTrue(set(saved.values()) <= {"community", "family", "off", "ignore"})
 
     def test_wifi_status_failure_is_not_reported_as_nothing_pending(self):
         # BUG: when `prepperctl wifi-status` fails (corrupt pending file → Python traceback, rc 1) the
@@ -612,18 +622,28 @@ class Secrets(Portal):
 
     def test_channel_link_hidden_over_plain_http(self):
         (self.tmp / "mesh-channel.json").write_text(json.dumps({"url": "https://meshtastic.org/e/#SECRET", "at": 1}))
-        st, raw, _ = self.raw_req("POST", "/api/admin/members", {"op": "mesh_link"}, {"X-Admin-Token": self.admin, **NGINX_HTTP})
+        ana = self.join("AnaLink")
+        st, raw, _ = self.raw_req("GET", "/api/members/radio-link", None, {"X-Member-Token": ana, **NGINX_HTTP})
         self.assertEqual(st, 200)
         self.assertNotIn(b"SECRET", raw)
         self.assertTrue(json.loads(raw)["secret_hidden"])
-        st, r = self.req("POST", "/api/admin/members", {"op": "mesh_link"}, admin=self.admin, headers=NGINX_HTTPS)
+        st, r = self.req("GET", "/api/members/radio-link", member=ana, headers=NGINX_HTTPS)
         self.assertEqual(r["url"], "https://meshtastic.org/e/#SECRET")
+        # CHANGED (red team 4): an admin session alone never gets the family key, https or not
+        for h in (NGINX_HTTP, NGINX_HTTPS, {}):
+            st, raw, _ = self.raw_req("POST", "/api/admin/members", {"op": "mesh_link"}, {"X-Admin-Token": self.admin, **h})
+            self.assertEqual(st, 200)
+            self.assertNotIn(b"SECRET", raw)
+            self.assertTrue(json.loads(raw)["member_only"])
+        self.assertEqual(self.req("GET", "/api/members/radio-link", headers=NGINX_HTTPS)[0], 401)
+        self.assertEqual(self.req("GET", "/api/members/radio-link", admin=self.admin, headers=NGINX_HTTPS)[0], 401)
         st, r = self.req("POST", "/api/admin/members", {"op": "rotate_mesh"}, admin=self.admin)
         (self.tmp / "mesh-rotate-result.json").write_text(json.dumps({"id": r["id"], "ok": True, "url": "https://x/#NEWKEY"}))
-        st, raw, _ = self.raw_req("POST", "/api/admin/members", {"op": "rotate_mesh_status", "rid": r["id"]},
-                                  {"X-Admin-Token": self.admin, **NGINX_HTTP})
-        self.assertNotIn(b"NEWKEY", raw)
-        self.assertFalse(json.loads(raw)["pending"])
+        for h in (NGINX_HTTP, NGINX_HTTPS):
+            st, raw, _ = self.raw_req("POST", "/api/admin/members", {"op": "rotate_mesh_status", "rid": r["id"]},
+                                      {"X-Admin-Token": self.admin, **h})
+            self.assertNotIn(b"NEWKEY", raw)
+            self.assertFalse(json.loads(raw)["pending"])
 
     def test_forged_proto_from_the_network_is_not_https(self):
         h = FakeHandler("10.42.0.9", {"X-Forwarded-Proto": "https"})
@@ -796,7 +816,9 @@ class BoardLimits(Portal):
         try:
             server.OUTBOX_MAX_BYTES = 10
             out.write_text("x" * 50)
-            st, r = self.post({"text": "queue full test", "mesh": True}, ip="10.88.0.2")
+            server._last_post.clear()
+            st, r = self.req("POST", "/api/board", {"text": "queue full test", "mesh": True}, admin=self.admin,
+                             headers={"X-Real-IP": "10.88.0.2"})          # a visitor's would wait for approval
             self.assertEqual(st, 200)
             self.assertIn("queue is full", r["message"])
             self.assertEqual(out.read_text(), "x" * 50)

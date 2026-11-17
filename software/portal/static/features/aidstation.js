@@ -190,6 +190,10 @@
       api("/api/aidstation/entries?" + qs).then(function (r) {
         if (r._status !== 200) { $("aidList").textContent = r.error || "Couldn’t load."; return; }
         renderList($("aidList"), r.entries, emptyMsg, load);
+        if (r.scope === "mine") {
+          var note = document.createElement("p"); note.className = "small muted"; note.textContent = "Showing your own records.";
+          $("aidList").insertBefore(note, $("aidList").firstChild);
+        }
       });
     }
     load();
@@ -254,12 +258,13 @@
     api("/api/aidstation/admin").then(function (d) {
       if (d._status !== 200) { $("aidAdm").textContent = d.error || "Admin login required."; return; }
       var staff = d.staff.map(function (s) {
-        return '<div class="msg"><span class="who">' + esc(s.name) + '</span><span class="when">' + esc(s.device) + " · last seen " + when(s.last_seen) +
-          '</span> <button class="btn ghost" data-rev="' + esc(s.id) + '">Revoke</button></div>';
+        return '<div class="msg"><span class="who">' + esc(s.name) + (s.lead ? " (aid lead)" : "") + '</span><span class="when">' + esc(s.device) + " · last seen " + when(s.last_seen) +
+          '</span> <button class="btn ghost" data-lead="' + esc(s.id) + '" data-on="' + (s.lead ? "0" : "1") + '">' + (s.lead ? "Remove lead" : "Make lead") + '</button> ' +
+          '<button class="btn ghost" data-rev="' + esc(s.id) + '">Revoke</button></div>';
       }).join("") || '<p class="muted">No volunteers yet.</p>';
       $("aidAdm").innerHTML = '<div class="card"><h2>Aid volunteers</h2>' +
         '<p class="small muted">Give each volunteer a one-time code. It works once, on one device, for ' + B.num(d.code_hours) + " hours. They don’t need to be family members. Revoking stops that device at once.</p>" +
-        '<form id="aidInv" class="btns"><input type="text" id="aiN" maxlength="40" placeholder="Volunteer’s name" style="flex:1;min-width:160px"><button class="btn">Create code</button></form><div id="aiOut"></div>' +
+        '<form id="aidInv" class="btns"><input type="text" id="aiN" maxlength="40" placeholder="Volunteer’s name" style="flex:1;min-width:160px"><label class="small" style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="aiLead"> Aid lead (sees every record)</label><button class="btn">Create code</button></form><div id="aiOut"></div>' +
         '<h3 class="section">Signed-in devices</h3>' + staff +
         (d.codes.length ? '<p class="small muted">' + d.codes.length + " unused code(s) waiting.</p>" : "") +
         '<div class="btns section"><button class="btn danger" id="aiAll">End of shift: sign out everyone</button></div></div>' +
@@ -272,12 +277,19 @@
           return '<div class="small">' + when(a.at) + " — " + esc(a.who) + ": " + esc(a.what) + "</div>"; }).join("") || '<p class="muted small">Nothing yet.</p>') + "</div>";
       $("aidInv").onsubmit = function (e) {
         e.preventDefault();
-        api("/api/aidstation/admin", { op: "invite", name: $("aiN").value }).then(function (r) {
+        api("/api/aidstation/admin", { op: "invite", name: $("aiN").value, lead: !!$("aiLead").checked }).then(function (r) {
           $("aiOut").innerHTML = r.ok ? '<div class="card" style="border-color:var(--accent)"><p>Code for <b>' + esc(r.name || "a volunteer") + '</b>:</p><p class="mono" style="font-size:1.6rem">' + esc(r.code) +
             '</p><p class="small">On their phone: join the Badger’s Wi-Fi, open Aid station → “Aid volunteer? Sign in here”, and type the code. Works once, until ' + when(r.expires) + ".</p></div>"
             : '<p class="small">' + esc(r.error || "Failed") + "</p>";
         });
       };
+      box.querySelectorAll("[data-lead]").forEach(function (b) {
+        b.onclick = function () {
+          var on = b.getAttribute("data-on") === "1";
+          if (on && !confirm("An aid lead can see every record, not only their own. Continue?")) return;
+          api("/api/aidstation/admin", { op: "set_lead", id: b.getAttribute("data-lead"), lead: on }).then(function () { adminView(box); });
+        };
+      });
       box.querySelectorAll("[data-rev]").forEach(function (b) {
         b.onclick = function () { api("/api/aidstation/admin", { op: "revoke", id: b.getAttribute("data-rev") }).then(function () { adminView(box); }); };
       });

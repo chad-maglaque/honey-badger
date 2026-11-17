@@ -250,27 +250,59 @@ class SetPin(Ctl):
     def pin_hash(self):
         return tomllib.loads(self.conf.read_text())["portal"]["admin_pin"]
 
-    def test_lengths(self):
-        for bad in ("12345", "a" * 33, "abc def1", "12345!", "--help", "١٢٣٤٥٦"):
+    def verify(self, pin):
+        sys.path.insert(0, str(REPO / "software" / "portal"))
+        os.environ.setdefault("PORTAL_QUIET", "1")
+        import server
+        return server.verify_pin(pin, self.pin_hash())
+
+    def test_policy(self):
+        for bad in ("12345", "abc def1", "short1!", "a" * 129, " leading space ok?", "--help", "١٢٣٤٥٦", ""):
             with self.subTest(pin=bad):
-                self.fails("set-pin", bad, msg="PIN must be")
+                self.fails("set-pin", input=bad + "\n", msg="nothing was changed")
         self.assertEqual(self.pin_hash(), "")
-        self.ok("set-pin", "123456")
+        r = self.ok("set-pin", input="123456\n")           # digits only: accepted, with a warning
+        self.assertIn("warning", r.stderr.lower())
         h6 = self.pin_hash()
-        self.assertTrue(h6.startswith("pbkdf2$"), h6)
-        self.ok("set-pin", "A" * 32)
+        self.assertTrue(h6.startswith("scrypt$"), h6)
+        self.assertTrue(self.verify("123456"))
+        self.ok("set-pin", input="correct horse battery staple\n")
         self.assertNotEqual(self.pin_hash(), h6)
+        self.assertTrue(self.verify("correct horse battery staple"))
         self.assertEqual(self.conf.stat().st_mode & 0o777, 0o640)
         self.assertIn(["restart", "prepper-portal"], self.stubs.argvs("systemctl"))
 
+    def test_never_from_argv(self):
+        # an argument shows in `ps`: refused, and nothing changes
+        self.fails("set-pin", "correct horse battery", msg="never as an argument")
+        self.assertEqual(self.pin_hash(), "")
+        seg = CTL.read_text()[CTL.read_text().index("  set-pin)"):CTL.read_text().index("  upgrade-pin)")]
+        self.assertNotIn('hash-pin "$pin"', seg)
+
     def test_from_stdin_without_newline(self):
         self.ok("set-pin", input="246813")              # firstboot: set-pin < admin_pin.pending
-        self.assertTrue(self.pin_hash().startswith("pbkdf2$"))
+        self.assertTrue(self.pin_hash().startswith("scrypt$"))
 
     def test_inserts_missing_line(self):
         self.write_conf(example_config().replace('admin_pin = ""', "# (no pin line)"))
-        self.ok("set-pin", "246813")
-        self.assertTrue(self.pin_hash().startswith("pbkdf2$"))
+        self.ok("set-pin", input="246813\n")
+        self.assertTrue(self.pin_hash().startswith("scrypt$"))
+
+    def test_upgrade_pin_rehashes_the_same_secret_only(self):
+        sys.path.insert(0, str(REPO / "software" / "portal"))
+        import server
+        legacy = server.legacy_hash_pin("246813", "abcd1234")
+        self.write_conf(example_config().replace('admin_pin = ""', f'admin_pin = "{legacy}"'))
+        before = self.conf.read_text()
+        self.fails("upgrade-pin", sudo_user="prepper", input="999999\n")     # wrong PIN: no oracle, no change
+        self.assertEqual(self.conf.read_text(), before)
+        self.ok("upgrade-pin", sudo_user="prepper", input="246813\n")
+        self.assertTrue(self.pin_hash().startswith("scrypt$"))
+        self.assertTrue(self.verify("246813"))
+        self.assertNotIn(["restart", "prepper-portal"], self.stubs.argvs("systemctl"))
+        now = self.conf.read_text()
+        self.fails("upgrade-pin", sudo_user="prepper", input="246813\n")     # already scrypt: nothing to do
+        self.assertEqual(self.conf.read_text(), now)
 
 
 class Paths(Ctl):
@@ -392,6 +424,15 @@ class Keys(Ctl):
         self.ok("trust", GOOD_KEY)
         self.assertEqual(self.signers(), ['prepper-update namespaces="prepper-update" ' + " ".join(GOOD_KEY.split()[:2])])
 
+    def test_trust_code_scope(self):
+        k12 = " ".join(GOOD_KEY.split()[:2])
+        self.ok("trust", GOOD_KEY)                      # default: content only
+        self.ok("trust", "--code", GOOD_KEY)            # upgraded in place, listed once
+        self.ok("trust", "--code", GOOD_KEY)
+        self.assertEqual(self.signers(), ['prepper-code namespaces="prepper-update" ' + k12])
+        self.fails("trust", "--code")                   # key required
+        self.fails("trust", "--code", "ssh-rsa AAAA x")
+
     def test_trust_rejects(self):
         k = GOOD_KEY.split()[1]
         for bad in ("ssh-rsa " + k, f"ssh-ed25519 {k}\n* namespaces=\"git\" ssh-ed25519 {k}",
@@ -412,9 +453,27 @@ class Keys(Ctl):
     def test_gen_key(self):
         self.ok("gen-key")
         self.ok("gen-key")
-        self.assertTrue((self.root / "etc/prepper/keys/disk_ed25519").exists())
+        key = self.root / "etc/prepper/keys/disk_ed25519"
+        self.assertTrue(key.exists())
         self.assertEqual(len(self.signers()), 1)
+        self.assertTrue(self.signers()[0].startswith('prepper-update namespaces="prepper-update" '))   # content scope
         self.assertTrue((self.root / "etc/prepper/git_allowed_signers").exists())
+        # encrypted: the key file alone signs nothing (red-team finding 8); passphrase in a 0600 file
+        self.assertNotEqual(subprocess.run(["ssh-keygen", "-y", "-P", "", "-f", str(key)], capture_output=True,
+                                           stdin=subprocess.DEVNULL).returncode, 0)
+        self.assertEqual((key.parent / "disk_ed25519.pass").stat().st_mode & 0o777, 0o600)
+
+    @unittest.skipUnless(shutil.which("ssh-keygen"), "needs ssh-keygen")
+    def test_gen_key_encrypts_an_older_plain_key(self):
+        key = self.root / "etc/prepper/keys/disk_ed25519"
+        key.parent.mkdir(parents=True)
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "old", "-f", str(key)], check=True,
+                       stdin=subprocess.DEVNULL)
+        pub = (key.parent / "disk_ed25519.pub").read_text()
+        self.ok("gen-key")
+        self.assertEqual((key.parent / "disk_ed25519.pub").read_text(), pub)          # same identity
+        self.assertNotEqual(subprocess.run(["ssh-keygen", "-y", "-P", "", "-f", str(key)], capture_output=True,
+                                           stdin=subprocess.DEVNULL).returncode, 0)
 
     def test_gen_tls(self):
         if not shutil.which("openssl"):
@@ -425,11 +484,31 @@ class Keys(Ctl):
         self.ok("gen-tls")
         tls = self.root / "etc/prepper/tls"
         self.assertEqual((tls / "server.key").stat().st_mode & 0o777, 0o600)
-        self.assertEqual((tls / "ca.key").stat().st_mode & 0o777, 0o600)
+        # red-team finding 9: the CA key is gone once the server certificate is signed …
+        self.assertFalse((tls / "ca.key").exists())
+        self.assertEqual(sorted(p.name for p in tls.iterdir()), ["ca.crt", "server.crt", "server.key"])
         text = subprocess.run(["openssl", "x509", "-in", str(tls / "server.crt"), "-noout", "-text"],
                               capture_output=True, text=True).stdout
         self.assertIn("DNS:badger.lan", text)
         self.assertIn("IP Address:10.10.10.10", text)
+        verify = subprocess.run(["openssl", "verify", "-CAfile", str(tls / "ca.crt"), str(tls / "server.crt")],
+                                capture_output=True, text=True)
+        self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+        # … and the CA can only vouch for .lan/.local names and the hotspot's subnet, for about two years
+        ca = subprocess.run(["openssl", "x509", "-in", str(tls / "ca.crt"), "-noout", "-text"],
+                            capture_output=True, text=True).stdout
+        self.assertIn("Name Constraints: critical", ca)
+        self.assertIn("DNS:lan", ca)
+        self.assertIn("DNS:local", ca)
+        self.assertRegex(ca, r"IP:10\.10\.10\.0/255\.255\.255\.0")
+        end = subprocess.run(["openssl", "x509", "-in", str(tls / "ca.crt"), "-noout", "-checkend", str(900 * 86400)],
+                             capture_output=True, text=True)
+        self.assertNotEqual(end.returncode, 0, "CA valid for more than ~2.5 years")
+        # running it again makes a NEW CA (there is no key to reuse)
+        first = (tls / "ca.crt").read_bytes()
+        self.ok("gen-tls")
+        self.assertNotEqual((tls / "ca.crt").read_bytes(), first)
+        self.assertFalse((tls / "ca.key").exists())
 
 
 def git_ssh_signing() -> bool:
@@ -887,9 +966,9 @@ class WifiRotate(Ctl):
         conf = tomllib.loads(self.conf.read_text())
         self.assertEqual(conf["network"]["passphrase"], [ln.split(": ", 1)[1] for ln in r.stdout.splitlines() if ln.startswith("passphrase: ")][0])
         self.assertEqual(self.conf.read_text().count("[network]"), 1)
-        self.ok("set-pin", "246813")
+        self.ok("set-pin", input="246813\n")
         self.assertEqual(self.conf.read_text().count("[portal]"), 1)
-        self.assertTrue(tomllib.loads(self.conf.read_text())["portal"]["admin_pin"].startswith("pbkdf2$"))
+        self.assertTrue(tomllib.loads(self.conf.read_text())["portal"]["admin_pin"].startswith("scrypt$"))
 
 
 if __name__ == "__main__":

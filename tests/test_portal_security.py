@@ -630,7 +630,8 @@ services = {{}}
         real_ismount = os.path.ismount
         with unittest.mock.patch.object(server.os.path, "ismount", lambda p: str(p) in mounts or real_ismount(p)), \
                 unittest.mock.patch.object(server, "mount_sources", lambda: sources):
-            st, lst = self.jget("/api/usb")
+            self.assertEqual(self.jget("/api/usb"), (200, []))      # visitors: the family's drives aren't listed
+            st, lst = self.jget("/api/usb", headers={"X-Admin-Token": self.login()})
         self.assertEqual(st, 200)
         eject = {u["path"].removeprefix(str(usb) + "/"): u["eject"] for u in lst}
         self.assertEqual(eject, {"usb-sda1": "usb-sda1",            # udev mount: its name under /media

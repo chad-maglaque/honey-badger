@@ -46,6 +46,7 @@ import satplan  # noqa: E402
 import sdrcommon as C  # noqa: E402
 import sdrlease  # noqa: E402
 import tlefile as tle  # noqa: E402
+import visitor  # noqa: E402
 
 LABEL = {"aircraft": "aircraft scan", "satellite": "satellite pass"}
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
@@ -591,8 +592,8 @@ class Daemon:
                                  done=done)
         clock_bad = any(r.get("loaded") and r.get("age_days", 0) < -3 for r in self.tle_rows)
         sched = {"generated": round(now), "mode": self.mode, "clock_suspect": clock_bad,
-                 "position": ({"lat": round(self.pos["lat"], 2), "lon": round(self.pos["lon"], 2),
-                               "source": self.pos["source"]} if self.pos else None),
+                 # world-readable and shown on the public satellites page: rounded like every visitor view
+                 "position": visitor.coarse_position(self.pos),
                  "tle": self.tle_rows, "passes": self.plan[:60]}
         with contextlib.suppress(OSError):
             C.atomic_write(C.run_dir() / "schedule.json", json.dumps(sched), 0o644)

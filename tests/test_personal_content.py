@@ -637,7 +637,7 @@ _loader.exec_module(pb)
 
 class Builder(unittest.TestCase):
     def args(self, **kw):
-        base = dict(tier="base", langs="eng", hostname="badger", ssid="HoneyBadger", passphrase="", country="US",
+        base = dict(tier="base", langs="eng", hostname="badger", ssid="Garden-Shed", passphrase="correct horse", country="US",
                     timezone="America/Denver", pin=None, uplink=None, relay=None, peer=None, trust_key=None,
                     ssh_key=None, ssh_password=None, mode="auto", for_sale=False)
         base.update(kw)

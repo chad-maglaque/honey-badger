@@ -73,6 +73,8 @@ sys.path.insert(0, str(HERE.parent / "nutime"))
 import nutime  # noqa: E402  (Ke-Shi / Nu:Time conversion core)
 sys.path.insert(0, str(HERE))
 import members as members_mod  # noqa: E402  (family members: invites, device keys, radios)
+sys.path.insert(0, str(HERE.parent / "common"))
+import visitor  # noqa: E402  (what visitors may learn: rounded position, no power/occupancy)
 sys.path.insert(0, str(HERE.parent / "sdr"))
 try:
     import sdrcommon  # noqa: E402  (the radio scheduler's status: weather radio paused, SDR 2)
@@ -167,6 +169,7 @@ class PortalConfig:
     def __init__(self, path: Path):
         raw = tomllib.loads(path.read_text()) if path.exists() else {}
         self.raw = raw                                   # whole config, for feature plugins' own sections
+        self.path = path                                 # (to re-read admin_pin after an upgrade-pin)
         p = raw.get("portal", {})
         self.upd = upd.Config.load(path)
         rel = lambda v: (path.parent / v).resolve() if v and not Path(v).is_absolute() else Path(v)
@@ -194,6 +197,10 @@ class PortalConfig:
         self.power_file = Path(p.get("power_file", "/run/prepper/power.json"))
         self.build_file = rel(p.get("build_file", "/var/lib/prepper/build.json"))
         self.board_file = rel(p.get("board_file", "/var/lib/prepper/portal/board.jsonl"))
+        # Visitors' "send over mesh" requests wait here for a family member or the admin (red-team finding 10):
+        # "approve" (default) or "off" (visitors' posts stay on the board).
+        self.mesh_pending = rel(p.get("mesh_pending") or str(self.board_file.parent / "mesh-pending.json"))
+        self.visitor_mesh = p.get("visitor_mesh", "approve") if p.get("visitor_mesh") in ("approve", "off") else "approve"
         self.mesh_outbox = rel(p.get("mesh_outbox", "/var/lib/prepper/portal/mesh-outbox.jsonl"))
         self.mesh_nodes = rel(p.get("mesh_nodes", "/var/lib/prepper/portal/mesh-nodes.json"))
         # Badgers heard on the mesh + what the mesh courtesy is doing (written by meshbridge, docs/MESH.md)
@@ -202,6 +209,12 @@ class PortalConfig:
         self.mesh_rotate_request = rel(p.get("mesh_rotate_request", "/var/lib/prepper/portal/mesh-rotate.json"))
         self.mesh_rotate_result = rel(p.get("mesh_rotate_result", "/var/lib/prepper/portal/mesh-rotate-result.json"))
         self.mesh_channel_link = rel(p.get("mesh_channel_link", "/var/lib/prepper/portal/mesh-channel.json"))
+        # "!pair CODE" messages heard on the family channel (written by meshbridge): radio pairing proof
+        self.mesh_pair_file = rel(p.get("mesh_pair_file", "/var/lib/prepper/portal/mesh-pair.json"))
+        # the front panel's lock (root-only; the portal only checks whether it exists)
+        self.panel_lock_file = rel(p.get("panel_lock_file", "/etc/prepper/panel-lock.json"))
+        # the admin page "arms" the panel for 10 minutes: only then can a code be set at the knob
+        self.panel_lock_arm = rel(p.get("panel_lock_arm", "/var/lib/prepper/portal/panel-lock-arm.json"))
         self.family_board_file = rel(p.get("family_board_file", "/var/lib/prepper/portal/family-board.jsonl"))
         # One JSON line per telemetry packet heard on the mesh (written by meshbridge, read by features).
         self.mesh_telemetry = rel(os.environ.get("MESH_TELEMETRY")
@@ -229,7 +242,7 @@ class PortalConfig:
         self.time_lon = t.get("longitude")
         # The systemd unit loads /etc/default/prepper, which sets AP_IFACE.
         self.ap_iface = p.get("ap_iface", os.environ.get("AP_IFACE") or "wlan0")
-        self.ssid = raw.get("network", {}).get("ssid", "HoneyBadger")
+        self.ssid = raw.get("network", {}).get("ssid", "Home-Hotspot")
         self.hostname = raw.get("network", {}).get("hostname", "badger")
         self.ctl = p.get("ctl", "sudo -n /opt/prepper/bin/prepperctl")
         # name → probe URL; a renderer whose `requires` probe fails is hidden
@@ -266,10 +279,70 @@ def cached(key: str, ttl: float, fn):
 
 # ─────────────────────────────── helpers ─────────────────────────────────────
 
+# The admin secret: a PIN or (better) a passphrase, stored as scrypt (memory-hard: a copy of
+# prepper.toml is slow to attack even on a GPU). Older installs have "pbkdf2$salt$hash": still
+# accepted, and replaced by an scrypt hash of the same secret at the next successful login.
+PIN_KDF = {"n": 2 ** 15, "r": 8, "p": 1}
+MIN_PASSPHRASE = 10
+MAX_PIN = 128
+
+
 def hash_pin(pin: str, salt: str | None = None) -> str:
-    salt = salt or secrets.token_hex(8)
-    digest = hashlib.pbkdf2_hmac("sha256", pin.encode(), salt.encode(), 200_000).hex()
+    salt = salt or secrets.token_hex(16)
+    n, r, p = PIN_KDF["n"], PIN_KDF["r"], PIN_KDF["p"]
+    digest = hashlib.scrypt(pin.encode("utf-8", "surrogatepass"), salt=salt.encode(), n=n, r=r, p=p,
+                            dklen=32, maxmem=256 * 1024 * 1024).hex()
+    return f"scrypt${n}${r}${p}${salt}${digest}"
+
+
+def legacy_hash_pin(pin: str, salt: str) -> str:
+    digest = hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8", "surrogatepass"), salt.encode(), 200_000).hex()
     return f"pbkdf2${salt}${digest}"
+
+
+def verify_pin(pin: str, stored) -> bool:
+    """Does `pin` match a stored hash (scrypt, or the older PBKDF2)? Odd or absurd parameters: no."""
+    if not isinstance(pin, str) or not isinstance(stored, str) or not pin:
+        return False
+    parts = stored.split("$")
+    try:
+        if parts[0] == "scrypt" and len(parts) == 6:
+            n, r, p = int(parts[1]), int(parts[2]), int(parts[3])
+            if not (2 ** 10 <= n <= 2 ** 20 and n & (n - 1) == 0 and 1 <= r <= 32 and 1 <= p <= 4) \
+                    or 128 * n * r > 256 * 1024 * 1024:
+                return False
+            got = hashlib.scrypt(pin.encode("utf-8", "surrogatepass"), salt=parts[4].encode(), n=n, r=r, p=p,
+                                 dklen=32, maxmem=256 * 1024 * 1024 + 1024 * 1024).hex()
+            return hmac.compare_digest(got, parts[5])
+        if parts[0] == "pbkdf2" and len(parts) == 3:
+            return hmac.compare_digest(legacy_hash_pin(pin, parts[1]), stored)
+    except (ValueError, MemoryError):
+        return False
+    return False
+
+
+def pin_is_legacy(stored) -> bool:
+    return isinstance(stored, str) and stored.startswith("pbkdf2$")
+
+
+def pin_policy(pin) -> tuple[str | None, str | None]:
+    """(error, warning) for a NEW admin secret: a passphrase of 10+ characters, or 6+ digits (allowed,
+    with a warning: digits alone fall quickly to someone who copies the Badger's disk)."""
+    if not isinstance(pin, str) or not pin:
+        return "Enter a passphrase.", None
+    if len(pin) > MAX_PIN:
+        return f"At most {MAX_PIN} characters.", None
+    if any(ord(c) < 32 or ord(c) == 127 for c in pin) or pin != pin.strip():
+        return "No control characters, and no spaces at the start or end.", None
+    if pin.isdigit() and pin.isascii():
+        if len(pin) < MIN_PIN:
+            return f"A PIN of digits needs at least {MIN_PIN} of them (a passphrase of {MIN_PASSPHRASE}+ characters is better).", None
+        return None, (f"A PIN of only digits is quick to guess for anyone who copies the Badger's disk. A passphrase "
+                      f"of {MIN_PASSPHRASE} or more characters (a few words) is much stronger.")
+    if len(pin) < MIN_PASSPHRASE:
+        return (f"Use at least {MIN_PASSPHRASE} characters (a few words make a good passphrase), "
+                f"or a PIN of {MIN_PIN}+ digits."), None
+    return None, None
 
 
 _pin_lock = threading.Lock()          # one PIN check at a time, whatever the thread count
@@ -290,13 +363,32 @@ def reset_login_limits() -> None:
 
 
 def _pin_matches(pin: str) -> bool:
-    if not CFG.admin_pin.startswith("pbkdf2$"):
+    return verify_pin(pin, CFG.admin_pin)
+
+
+_upgrading = threading.Lock()
+
+
+def upgrade_pin_hash(pin: str) -> bool:
+    """After a good login with an older PBKDF2 hash: have prepperctl (root) put an scrypt hash of the same
+    secret into prepper.toml (it checks the PIN against the current hash itself, so this can never set a
+    different PIN), then use it here too. Best effort: on any failure the old hash simply stays."""
+    if not pin_is_legacy(CFG.admin_pin) or not _upgrading.acquire(blocking=False):
         return False
     try:
-        _, salt, _ = CFG.admin_pin.split("$")
-    except ValueError:
+        rc, out = ctl("upgrade-pin", input=pin + "\n")
+        if rc != 0:
+            return False
+        try:
+            new = tomllib.loads(Path(CFG.path).read_text()).get("portal", {}).get("admin_pin", "")
+        except (OSError, ValueError, AttributeError):
+            new = ""
+        if isinstance(new, str) and new.startswith("scrypt$") and verify_pin(pin, new):
+            CFG.admin_pin = new
+            return True
         return False
-    return hmac.compare_digest(hash_pin(pin, salt), CFG.admin_pin)
+    finally:
+        _upgrading.release()
 
 
 def check_pin(pin: str) -> bool:
@@ -493,9 +585,11 @@ def ap_clients() -> int | None:
             return out.count("Station ")
         except (OSError, subprocess.SubprocessError):
             pass
-    leases = Path("/var/lib/misc/dnsmasq.leases")
-    if leases.exists():
+    leases = Path("/run/prepper-dnsmasq/leases")        # in RAM (render.py); usually not readable by us
+    try:
         return sum(1 for line in leases.read_text().splitlines() if line.strip())
+    except OSError:
+        pass
     return None
 
 
@@ -604,12 +698,24 @@ def coord(text: str, name: str, limit: float) -> float:
     return v
 
 
-def nu_time_now(qs: dict | None = None) -> dict:
+def nu_time_now(qs: dict | None = None, coarse: bool = False) -> dict:
+    """coarse=True (visitors): the Badger's own position (GPS or [time] latitude/longitude) is rounded
+    BEFORE anything is computed from it — solar time and sunrise/sunset to the second would otherwise
+    give the exact place away. Coordinates the caller sent in the query are its own and used as given."""
     qs = qs or {}
     one = lambda k: (qs.get(k) or [None])[0]
     gps = gps_fix() or {}
     lat = coord(one("lat"), "lat", 90) if one("lat") else gps.get("lat", CFG.time_lat)
     lon = coord(one("lon"), "lon", 180) if one("lon") else gps.get("lon", CFG.time_lon)
+    own_lon = bool(lon is not None and not one("lon"))
+    if coarse and (own_lon or (lat is not None and not one("lat"))):
+        # snap the Badger's own fix to the visitor grid (both coordinates together: the longitude
+        # step depends on the latitude row); a coordinate the caller sent stays as sent
+        c = visitor.coarse(gps.get("lat", CFG.time_lat), gps.get("lon", CFG.time_lon))
+        if not one("lat"):
+            lat = c[0] if c else None
+        if own_lon:
+            lon = c[1] if c else None
     mode = one("mode") or CFG.time_mode
     if mode in ("solar", "apparent") and lon is None:
         mode = "civil"                                # no location yet: fall back, and say so
@@ -631,6 +737,10 @@ def nu_time_now(qs: dict | None = None) -> dict:
         # time zone (a place given only by coordinates: its mean-solar date).
         place_tz = tz if (one("tz") or not one("lon")) else None
         rec["sunEvents"] = nutime.sun_events_at(now, lat, lon, place_tz)
+        if coarse:
+            rec["sunEvents"] = visitor.sun_view(rec["sunEvents"])    # to the minute
+    if coarse and own_lon and isinstance(rec.get("notes"), dict):
+        rec["notes"].pop("longitudeUsed", None)      # the rounded value is in "location" already
     return rec
 
 
@@ -679,13 +789,9 @@ def sdr_status() -> dict | None:
 
 def coarse_position(gps: dict | None) -> dict | None:
     """What visitors get: the Badger's position to ~10 km (enough for the map and sun times),
-    never the precise spot the family is sheltering at. Members, admins and the panel get it all."""
-    if not isinstance(gps, dict):
-        return None
-    lat, lon = gps.get("lat"), gps.get("lon")
-    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in (lat, lon)):
-        return None
-    return {"lat": round(lat, 1), "lon": round(lon, 1), "mode": gps.get("mode"), "coarse": True}
+    never the precise spot the family is sheltering at. Members, admins and the panel get it all.
+    (The one rule for every public page lives in software/common/visitor.py.)"""
+    return visitor.coarse_position(gps)
 
 
 def mesh_nodes() -> dict:
@@ -771,6 +877,64 @@ def members_db() -> members_mod.Members:
     return _members
 
 
+def family_notice(text: str, key: str) -> None:
+    """A note from the Badger itself on the family board (a device or radio added to someone, a member
+    removed): what an admin does to the family is always visible to the family. Never over the mesh."""
+    try:
+        board_post(f"system:{key}", "", text, False, "family", system="Badger")
+    except Exception as e:  # noqa: BLE001 — the change itself stands even if the note can't be written
+        print(f"[portal] family board note failed: {type(e).__name__}", file=sys.stderr)
+
+
+def check_radio_pairings() -> list[dict]:
+    """Bind radios whose "!pair CODE" the mesh bridge heard on the family channel (CFG.mesh_pair_file:
+    {"confirms": [{"radio", "code", "at"}]}, written by meshbridge, read-only here). Cheap when nothing
+    is waiting; called when members or the admin look at radios."""
+    try:
+        if CFG.mesh_pair_file.stat().st_size > 64 * 1024:
+            return []
+    except OSError:
+        return []
+    raw = read_json(CFG.mesh_pair_file, {}) or {}
+    confirms = raw.get("confirms") if isinstance(raw, dict) else None
+    if not isinstance(confirms, list) or not confirms:
+        return []
+    try:
+        done = members_db().confirm_radios(confirms)
+    except members_mod.StoreError:
+        return []
+    for r in done:
+        family_notice(f"The radio {r['radio']} was linked to {r['name']}. Posts from it on the family channel "
+                      f"now carry that name. If that's not right, tell the Badger's admin.", r["radio"])
+    return done
+
+
+def panel_lock_on() -> bool:
+    """Has the owner set a front-panel code? (The lock file is root-only; existence is all we check.)"""
+    try:
+        return CFG.panel_lock_file.exists()
+    except OSError:
+        return False
+
+
+def mesh_secret(secure: bool) -> dict:
+    """The family radio link (= the channel key) and the radio's Bluetooth PIN, for a family member's own
+    device. Over plain HTTP on the hotspot it is withheld (anyone who knows the Wi-Fi password could read
+    it); the Badger's own screen always shows it."""
+    link = read_json(CFG.mesh_channel_link, {}) or {}
+    url = link.get("url") if isinstance(link, dict) and isinstance(link.get("url"), str) else None
+    at = link.get("at") if isinstance(link, dict) and isinstance(link.get("at"), (int, float)) else None
+    if url and not secure:
+        return {"ok": True, "url": None, "at": at, "secret_hidden": True,
+                "message": "The family radio link holds the channel key, so it isn't sent over this unencrypted "
+                           "connection. Read it on the Badger's own screen (press the knob → Family radio), or "
+                           "open this page with https:// to see it here."}
+    pin = read_json(CFG.mesh_bt_pin_file, {}) or {}
+    pin = pin.get("pin") if isinstance(pin, dict) and isinstance(pin.get("pin"), str) else None
+    return {"ok": bool(url), "url": url, "at": at, "bt_pin": pin,
+            "error": None if url else "The radio bridge hasn't reported the channel link yet."}
+
+
 def board_file(board: str) -> Path:
     return CFG.family_board_file if board == "family" else CFG.board_file
 
@@ -807,7 +971,7 @@ def board_read(limit: int = 200, board: str = "community", for_member: bool = Fa
         lines = tail_lines(board_file(board), limit)
     except OSError:
         return []
-    out, removed = [], None
+    out, removed, decided = [], None, None
     for line in lines:
         try:
             rec = json.loads(line)
@@ -830,8 +994,67 @@ def board_read(limit: int = 200, board: str = "community", for_member: bool = Fa
         if not for_member:
             rec.pop("verified", None)
         rec.pop("member", None)
+        pid = rec.pop("pid", None)
+        if isinstance(pid, str):                       # a visitor asked for the radio: what became of it
+            if decided is None:
+                decided = {i.get("id"): i.get("status") for i in mesh_pending_load()}
+            rec["mesh"] = decided.get(pid) or "expired"
+            if rec["mesh"] == "sent":
+                rec["via"] = "mesh-out"
         out.append(rec)
     return out
+
+
+# ── visitors' "send over mesh": a family member or the admin decides (red-team finding 10) ──
+# The Badger's radio is the household's transmitter: an anonymous visitor must not make it send a lure
+# under any name, or key it at will for a direction-finding team. Members' and the admin's posts go
+# straight out; a visitor's request waits (at most MESH_PENDING_MAX at a time, MESH_PENDING_HOURS each).
+MESH_PENDING_MAX = 30
+MESH_PENDING_HOURS = 24
+
+
+def mesh_pending_load() -> list[dict]:
+    d = read_json(CFG.mesh_pending, {}) or {}
+    items = d.get("items") if isinstance(d, dict) else None
+    return [i for i in items if isinstance(i, dict) and isinstance(i.get("id"), str)] if isinstance(items, list) else []
+
+
+def _mesh_pending_save(items: list[dict]) -> None:
+    """(caller holds _board_lock) Keep every undecided request that hasn't expired and the last 200 decisions."""
+    now = time.time()
+    for i in items:
+        if i.get("status") == "pending" and now - float(i.get("at") or 0) > MESH_PENDING_HOURS * 3600:
+            i["status"] = "expired"
+    waiting = [i for i in items if i.get("status") == "pending"]
+    for i in waiting[:-MESH_PENDING_MAX]:
+        i["status"] = "expired"                      # too many waiting: the oldest lapse
+    CFG.mesh_pending.parent.mkdir(parents=True, exist_ok=True)
+    upd.atomic_write(CFG.mesh_pending, json.dumps({"items": items[-200:]}))
+
+
+def mesh_pending_list() -> list[dict]:
+    """What is waiting, for members and the admin (newest first)."""
+    now = time.time()
+    return [{"id": i["id"], "name": str(i.get("name", ""))[:40], "text": str(i.get("text", ""))[:300], "at": i.get("at")}
+            for i in reversed(mesh_pending_load())
+            if i.get("status") == "pending" and now - float(i.get("at") or 0) <= MESH_PENDING_HOURS * 3600]
+
+
+def mesh_pending_decide(pid: str, send: bool, by: str) -> tuple[int, str]:
+    """Send (or turn down) one visitor's request. by: who decided, kept with the record."""
+    with _board_lock:
+        items = mesh_pending_load()
+        hit = next((i for i in items if i.get("id") == pid), None)
+        if hit is None or hit.get("status") != "pending" or \
+                time.time() - float(hit.get("at") or 0) > MESH_PENDING_HOURS * 3600:
+            return 404, "That request isn't waiting any more."
+        if send:
+            text = f"{hit.get('name')}: {hit.get('text')}"
+            if not outbox_append(outbox_record(text, "community", "community")):
+                return 503, "The radio queue is full right now. Try again later."
+        hit.update(status="sent" if send else "declined", by=str(by)[:40], decided=int(time.time()))
+        _mesh_pending_save(items)
+    return 200, "Sent over the radio." if send else "Not sent. It stays on the board."
 
 
 MESH_KINDS = ("alert", "danger", "family", "reply", "community", "auto")
@@ -879,10 +1102,12 @@ def is_system_poster(member) -> bool:
 
 
 def board_post(ip: str, name: str, text: str, mesh: bool, board: str = "community",
-               member: dict | None = None, system: str | None = None) -> tuple[bool, str]:
+               member: dict | None = None, system: str | None = None, approved: bool = False) -> tuple[bool, str]:
     """A board post. Feature plugins post automatic notes as the Badger with system="Supplies" (or the
     older stand-in member {"id": "feature-<id>", "name": …}): shown with a neutral "Badger" mark,
-    never the ✓ that means "a family member wrote this"."""
+    never the ✓ that means "a family member wrote this".
+    mesh=True goes straight to the radio for a family member, the Badger itself and approved=True (the
+    admin); a visitor's request waits for a member or the admin (mesh_pending_decide)."""
     if not isinstance(board, str) or board not in BOARDS:
         return False, "no such board"
     if system is not None:
@@ -909,6 +1134,11 @@ def board_post(ip: str, name: str, text: str, mesh: bool, board: str = "communit
         if len(_last_post) > 1000:
             for k in [k for k, t in _last_post.items() if now - t >= 5]:
                 del _last_post[k]
+    ask = mesh and not (member or approved)            # a visitor: ask a family member to send it
+    if ask:
+        mesh = False
+        if CFG.visitor_mesh == "off":
+            ask = None
     rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "name": name, "text": text,
            "via": "mesh-out" if mesh else "local"}
     if sys_post:
@@ -919,6 +1149,12 @@ def board_post(ip: str, name: str, text: str, mesh: bool, board: str = "communit
     queued = True
     with _board_lock:
         path.parent.mkdir(parents=True, exist_ok=True)
+        if ask:
+            pid = secrets.token_urlsafe(9)
+            items = mesh_pending_load()
+            items.append({"id": pid, "at": int(time.time()), "name": name, "text": text, "status": "pending"})
+            _mesh_pending_save(items)
+            rec["pid"] = pid
         if mesh:
             queued = outbox_append(outbox_record(f"{name}: {text}", board, board,
                                                  member=bool(member) and not sys_post))
@@ -929,6 +1165,10 @@ def board_post(ip: str, name: str, text: str, mesh: bool, board: str = "communit
         trim_jsonl(path, BOARD_MAX_BYTES)
     if not queued:
         return True, "posted here — but the radio queue is full, so it was not sent over the mesh"
+    if ask:
+        return True, "Posted. A family member will decide whether it also goes out over the radio."
+    if ask is None:
+        return True, "Posted here. Only family members can send messages over this Badger's radio."
     return True, "posted"
 
 
@@ -1463,13 +1703,15 @@ class Handler(SimpleHTTPRequestHandler):
                 self.close_connection = True
             if not self._responded:
                 self.send_json({"error": e.message}, e.status)
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             import traceback
             sys.stderr.write("[portal] error handling %s %s\n%s" % (self.command, self.path, traceback.format_exc()))
             self.close_connection = True
             if not self._responded:
                 try:
-                    self.send_json({"error": "internal error", "detail": f"{type(e).__name__}: {e}"[:300]}, 500)
+                    # No exception text: it can name paths, users and data (it is in the journal for the admin).
+                    self.send_json({"error": "Something went wrong on the Badger. Try again; if it keeps "
+                                             "happening, the admin can look at the Badger's log."}, 500)
                 except OSError:
                     pass
 
@@ -1655,6 +1897,9 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"error": "The family member list can't be read right now. "
                                             "Try again later, or ask the admin to check it.", "member": None,
                                    "key": "unavailable"}, 503)
+        if st == "pending":                              # keep the key: it starts working once approved
+            return self.send_json({"error": "This device is waiting to be approved on one of your other devices "
+                                            "(or at the Badger's own screen).", "member": None, "key": "pending"}, 401)
         return self.send_json({"error": what, "member": None, "key": "unknown" if st == "unknown" else None},
                               401, {"Set-Cookie": self.set_cookie(MEMBER_COOKIE, "", 0)} if st == "unknown" else None)
 
@@ -1751,7 +1996,7 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/status":
             st = status()
             if not self.precise_location_ok():
-                st["gps"] = coarse_position(st.get("gps"))
+                st = visitor.status_view(st)          # no power, occupancy or uplink; position ~11 km
             return self.send_json(st)
         if u.path == "/api/library":
             return self.send_json(library())
@@ -1779,25 +2024,45 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"error": "no such board"}, 404)
             if board == "family" and not me:
                 return self.member_refusal()
+            family = bool(me) or self.is_admin()
             return self.send_json({"messages": board_read(board=board, for_member=bool(me)),
                                    "mesh": services_up().get("mesh", False), "board": board,
-                                   "member": {"name": me["name"]} if me else None})
+                                   "member": {"name": me["name"]} if me else None,
+                                   # visitors' radio requests, for the people who may send them
+                                   "mesh_pending": mesh_pending_list() if family and board == "community" else None,
+                                   "mesh_needs_ok": not family and CFG.visitor_mesh == "approve",
+                                   "mesh_visitors": family or CFG.visitor_mesh == "approve"})
         if u.path == "/api/members/me":
             me = self.member()
             if not me:
                 st = self.member_status()[0]
-                return self.send_json({"member": None, "admin": self.is_admin(),
-                                       "key": {"unknown": "unknown", "unavailable": "unavailable"}.get(st)},
+                pend = members_db().pending_info(self.member_key()) if st == "pending" else None
+                return self.send_json({"member": None, "admin": self.is_admin(), "pending": pend,
+                                       "key": {"unknown": "unknown", "unavailable": "unavailable",
+                                               "pending": "pending"}.get(st)},
                                       503 if st == "unavailable" else 401)
-            return self.send_json({"member": {"name": me["name"], "radios": me["radios"]}, "admin": self.is_admin()})
+            check_radio_pairings()
+            db = members_db()
+            mine = [r for r in db.list()["members"] if r["id"] == me["id"]]
+            return self.send_json({"member": {"name": me["name"], "radios": mine[0]["radios"] if mine else me["radios"],
+                                              "pending_radios": db.pending_radios(me["id"])},
+                                   "admin": self.is_admin(),
+                                   # devices someone added to this member: this device is asked to approve
+                                   "approvals": [{"device": x["device"], "label": x["label"], "created": x["created"]}
+                                                 for x in db.pending_devices(me["id"])]})
+        if u.path == "/api/members/radio-link":
+            if not self.member():
+                return self.member_refusal()
+            return self.send_json(mesh_secret(self.secure_transport()))
+        if u.path == "/api/local/devices":
+            if not self.local_console():
+                return self.send_json({"error": "only from the Badger's own screen"}, 403)
+            return self.send_json({"pending": members_db().pending_devices()})
         if u.path == "/api/time":
             try:
-                rec = nu_time_now(qs)
-                loc = rec.get("location")
-                if rec.get("locationSource") == "gps" and isinstance(loc, dict) and not self.precise_location_ok():
-                    c = coarse_position({"lat": loc.get("latitude"), "lon": loc.get("longitude")}) or {}
-                    loc["latitude"], loc["longitude"] = c.get("lat"), c.get("lon")
-                return self.send_json(rec)
+                # visitors: everything (location, solar time, sun events) from the rounded position,
+                # whether it came from the GPS or from [time] latitude/longitude
+                return self.send_json(nu_time_now(qs, coarse=not self.precise_location_ok()))
             except (ValueError, KeyError, TypeError, OverflowError) as e:
                 return self.send_json({"error": str(e)[:300]}, 400)
         if u.path == "/api/alerts":
@@ -1807,7 +2072,21 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"error": "family members only"}, 401)
             return self.send_json(mesh_nodes())
         if u.path == "/api/usb":
+            # USB sticks are the family's own files (photos, a vault backup, a supplies list): members and
+            # the admin only. A visitor gets an empty list, not an error, so the page simply shows nothing.
+            if not (self.member() or self.is_admin()):
+                return self.send_json([])
             return self.send_json(usb_list())
+        if u.path in ("/api/usb/ls", "/api/usb/file"):
+            if not (self.member() or self.is_admin()):
+                return self.send_json({"error": "USB drives are for family members"}, 401)
+            target = usb_resolve(one("drive"), one("path"))
+            if target is None:
+                return self.send_json({"error": "not found"}, 404)
+            if u.path == "/api/usb/ls":
+                listing = usb_listing(one("drive"), target)
+                return self.send_json(listing) if listing else self.send_json({"error": "not found"}, 404)
+            return self.send_usb_file(target)
         if u.path == "/api/features":
             return self.send_json({"features": features_list()})
         fr = match_feature("GET", u.path)
@@ -1853,8 +2132,19 @@ class Handler(SimpleHTTPRequestHandler):
             if board == "family" and not me:
                 return self.member_refusal("the family board is for family members")
             ok, msg = board_post(self.client_ip(), str(data.get("name", "")), str(data.get("text", "")),
-                                 data.get("mesh") is True, board, me)
+                                 data.get("mesh") is True, board, me, approved=self.is_admin())
             return self.send_json({"ok": ok, "message": msg}, 200 if ok else 400)
+        if u.path == "/api/board/mesh":
+            # a family member (or the admin) sends — or turns down — a visitor's "send over mesh"
+            me = self.member()
+            if not (me or self.is_admin()):
+                return self.send_json({"error": "family members only"}, 401)
+            pid = data.get("id")
+            if not isinstance(pid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,20}", pid) or \
+                    not isinstance(data.get("send"), bool):
+                return self.send_json({"error": "bad request"}, 400)
+            st, msg = mesh_pending_decide(pid, data["send"], me["name"] if me else "admin")
+            return self.send_json({"ok": st == 200, "message": msg}, st)
         if u.path == "/api/members/join":
             try:
                 st, member, key = members_db().join(data.get("code", ""), str(data.get("name", "")),
@@ -1864,8 +2154,13 @@ class Handler(SimpleHTTPRequestHandler):
             if st == "ok":
                 # The key goes into an HttpOnly cookie (the launcher never stores it where scripts can
                 # read it); it is also in the reply, once, for feature tools and older launchers.
-                return self.send_json({"ok": True, "key": key, "member": {"name": member["name"]}},
-                                      headers={"Set-Cookie": self.set_cookie(MEMBER_COOKIE, key, MEMBER_COOKIE_AGE)})
+                res = {"ok": True, "key": key, "member": {"name": member["name"]}}
+                if member.get("pending"):
+                    res.update(pending=True, message=f"Almost done: {member['name']} must approve this device on one "
+                               "of their other devices (a question appears there when they open the Badger app), or "
+                               "someone approves it at the Badger's own screen (knob → Approve device). Until then it "
+                               "can't see family pages.")
+                return self.send_json(res, headers={"Set-Cookie": self.set_cookie(MEMBER_COOKIE, key, MEMBER_COOKIE_AGE)})
             code = {"locked": 429, "name": 400, "full": 409, "taken": 409}.get(st, 403)
             return self.send_json({"ok": False, "error": key}, code, {"Retry-After": "600"} if st == "locked" else None)
         if u.path == "/api/members/adopt":
@@ -1883,6 +2178,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"ok": True, **members_db().create_invite(source="panel")})
             except (ValueError, members_mod.StoreError) as e:
                 return self.send_json({"ok": False, "error": str(e)}, 400)
+        if u.path in ("/api/members/approve", "/api/local/approve"):
+            return self.handle_device_approval(data, panel=u.path == "/api/local/approve")
+        if u.path == "/api/members/radio":
+            return self.handle_my_radio(data)
         if u.path == "/api/members/leave":
             tok = self.member_key()
             try:
@@ -1907,6 +2206,41 @@ class Handler(SimpleHTTPRequestHandler):
             return self.handle_admin(u.path.removeprefix("/api/admin/"), data)
         return self.send_json({"error": "no such endpoint"}, 404)
 
+    def send_usb_file(self, target: Path):
+        """One file from a USB drive, after the member check. Behind nginx it hands the transfer back with
+        X-Accel-Redirect to an internal-only location (ranges, big files); standalone it sends it itself.
+        HTML/SVG/XML never runs on the launcher's origin (sandboxed), nothing is sniffed."""
+        if not target.is_file():
+            return self.send_json({"error": "not found"}, 404)
+        import mimetypes
+        ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        if not CFG.standalone:
+            rel = target.relative_to(CFG.usb_root.resolve())
+            self.send_response(200)
+            self.send_header("X-Accel-Redirect", "/_usb/" + urllib.parse.quote(str(rel)))
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return None
+        size = target.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if ctype.split(";")[0].strip().lower() in SANDBOX_TYPES:
+            self.send_header("Content-Security-Policy", "sandbox")
+        self.end_headers()
+        if self.command == "HEAD":
+            return None
+        with open(target, "rb") as fh:
+            while True:
+                chunk = fh.read(1 << 20)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        return None
+
     def is_local_console(self) -> bool:
         """(older name) — the same single check as local_console()."""
         return self.local_console()
@@ -1930,6 +2264,72 @@ class Handler(SimpleHTTPRequestHandler):
                 "seconds_left": int(secs) if isinstance(secs, (int, float)) and not isinstance(secs, bool)
                 and math.isfinite(secs) else 0}
 
+    def handle_device_approval(self, d: dict, panel: bool):
+        """Approve or refuse a device someone added to an existing member: from one of that member's own
+        (approved) devices, or from the front panel. Then the family board says so."""
+        if panel:
+            if not self.local_console():
+                return self.send_json({"error": "only from the Badger's own screen"}, 403)
+            mid, by = d.get("member"), "front panel"
+        else:
+            me = self.member()
+            if not me:
+                return self.member_refusal()
+            mid, by = me["id"], f"device {me.get('device', '')}"
+        dev, approve = d.get("device"), d.get("approve")
+        if not isinstance(mid, str) or not isinstance(dev, str) or not isinstance(approve, bool):
+            return self.send_json({"ok": False, "error": "send device and approve (true/false)"}, 400)
+        try:
+            res = members_db().approve_device(mid, dev, approve, by=by)
+        except members_mod.StoreError as e:
+            return self.send_json({"ok": False, "error": str(e)}, 503)
+        except ValueError as e:
+            return self.send_json({"ok": False, "error": str(e)}, 400)
+        name, label = res["member"]["name"], res.get("device", {}).get("label") or "device"
+        if approve:
+            family_notice(f"A new device was added to {name} ({label}), approved "
+                          f"{'at the Badger' if panel else 'on one of their devices'}.", dev)
+        return self.send_json({"ok": True, "approved": approve, "member": {"name": name}})
+
+    def handle_my_radio(self, d: dict):
+        """A member links their own radio: {"op": "pair", "radio"} gives a code to send as "!pair CODE"
+        from that radio on the family channel; "status"; "cancel"; "remove" (one of their own radios)."""
+        me = self.member()
+        if not me:
+            return self.member_refusal()
+        db, op = members_db(), d.get("op", "status")
+        try:
+            if op == "pair":
+                res = db.start_radio_pairing(me["id"], d.get("radio", ""))
+                return self.send_json({"ok": True, "pending": True, **res}, 202)
+            if op == "cancel":
+                db.cancel_radio_pairing(me["id"], d.get("radio", ""))
+            elif op == "remove":
+                db.remove_radio(me["id"], str(d.get("radio", "")))
+            elif op != "status":
+                return self.send_json({"ok": False, "error": "unknown radio operation"}, 400)
+            done = check_radio_pairings()
+            mine = [r for r in db.list()["members"] if r["id"] == me["id"]]
+            return self.send_json({"ok": True, "radios": mine[0]["radios"] if mine else [],
+                                   "pending_radios": db.pending_radios(me["id"]),
+                                   "paired": [r["radio"] for r in done if r["member"] == me["id"]]})
+        except members_mod.StoreError as e:
+            return self.send_json({"ok": False, "error": str(e)}, 503)
+        except ValueError as e:
+            return self.send_json({"ok": False, "error": str(e)}, 400)
+
+    def request_mesh_rotation(self) -> dict:
+        """Ask the mesh bridge (it owns the radio's serial link) for a new family channel key; poll with
+        op=rotate_mesh_status. The bridge's own failsafes apply (it refuses on a stale request, etc.)."""
+        rid = secrets.token_hex(6)
+        try:
+            CFG.mesh_rotate_request.parent.mkdir(parents=True, exist_ok=True)
+            upd.atomic_write(CFG.mesh_rotate_request, json.dumps({"id": rid, "at": time.time()}))
+        except OSError as e:
+            return {"ok": False, "error": f"Couldn't ask the radio bridge for a new key ({e.strerror or e}). "
+                                          "Nothing was changed on the radio."}
+        return {"ok": True, "id": rid, "bridge_running": bool(services_up().get("mesh"))}
+
     def handle_members(self, d: dict):
         db, op = members_db(), d.get("op", "list")
         op = op if isinstance(op, str) else "?"
@@ -1939,13 +2339,30 @@ class Handler(SimpleHTTPRequestHandler):
                   "screen (press the knob → {where}), or open this page with https:// to see it here.")
         try:
             if op == "list":
-                return self.send_json({"ok": True, **db.list(), "store": db.status()})
+                check_radio_pairings()
+                return self.send_json({"ok": True, **db.list(), "store": db.status(), "panel_lock": panel_lock_on()})
             if op == "store":
                 return self.send_json({"ok": True, "store": db.status()})
+            if op == "arm_panel_lock":
+                # Setting a panel code needs both: this (an admin) and someone at the knob within 10 minutes.
+                # So a visitor alone at the Badger can't lock the family out of their own panel.
+                until = time.time() + 600
+                try:
+                    CFG.panel_lock_arm.parent.mkdir(parents=True, exist_ok=True)
+                    upd.atomic_write(CFG.panel_lock_arm, json.dumps({"until": until}))
+                except OSError as e:
+                    return self.send_json({"ok": False, "error": f"couldn't save that ({e.strerror or e})"}, 500)
+                return self.send_json({"ok": True, "until": until, "panel_lock": panel_lock_on()})
             if op == "restore_backup":
                 return self.send_json({"ok": True, "store": db.restore_backup()})
             if op == "invite":
-                inv = db.create_invite(str(d.get("name", "")), member_id=(mid or None))
+                # A device for an EXISTING member never works on the admin PIN alone: it waits until one of
+                # that member's own devices (or the front panel) approves it, and the family board says so.
+                inv = db.create_invite(str(d.get("name", "")), member_id=(mid or None), confirm=bool(mid))
+                if mid:
+                    inv.update(needs_approval=True, message="This device starts working once the member approves it "
+                               "on one of their own devices, or someone approves it at the Badger's own screen "
+                               "(knob → Approve device). The family board will say a device was added.")
                 return self.send_json({"ok": True, **inv})
             if op == "cancel_invite":
                 if d.get("all") is True:
@@ -1955,13 +2372,32 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.send_json({"ok": False, "error": "which invite?"}, 400)
                 return self.send_json({"ok": True, "cancelled": db.cancel_invite(iid)})
             if op == "remove":
-                return self.send_json({"ok": True, "member": db.remove(mid)})
+                gone = db.remove(mid)
+                family_notice(f"{gone['name']} was removed from the family on the Badger.", mid)
+                res = {"ok": True, "member": gone}
+                # Their radio (and anyone they showed it to) still has the family channel key: a new key is
+                # part of removing someone (default on), through the same request + failsafes as "New family
+                # radio key". Radios must then get the new link (members' phones, the Badger's screen).
+                if d.get("rotate_key", True) is not False:
+                    res["rotate"] = self.request_mesh_rotation()
+                return self.send_json(res)
             if op == "rename":
-                return self.send_json({"ok": True, "member": db.rename(mid, str(d.get("name", "")))})
+                old = [m["name"] for m in db.list()["members"] if m["id"] == mid]
+                res = db.rename(mid, str(d.get("name", "")))
+                if old and old[0] != res["name"]:
+                    family_notice(f"{old[0]} is now called {res['name']} on the Badger.", mid)
+                return self.send_json({"ok": True, "member": res})
             if op == "revoke_device":
                 return self.send_json({"ok": True, "member": db.revoke_device(mid, str(d.get("device", "")))})
             if op == "add_radio":
-                return self.send_json({"ok": True, "member": db.add_radio(mid, d.get("radio", ""))})
+                # Pending until that radio proves itself: it sends "!pair CODE" on the family channel (the
+                # mesh bridge notes it in mesh-pair.json). 202: nothing is bound yet.
+                res = db.start_radio_pairing(mid, d.get("radio", ""))
+                return self.send_json({"ok": True, "pending": True, **res,
+                                       "message": f"On that radio, send  !pair {res['code']}  on the family channel "
+                                                  "within an hour. The radio is linked when the Badger hears it."}, 202)
+            if op == "cancel_radio":
+                return self.send_json({"ok": True, "member": db.cancel_radio_pairing(mid, d.get("radio", ""))})
             if op == "remove_radio":
                 return self.send_json({"ok": True, "member": db.remove_radio(mid, str(d.get("radio", "")))})
             if op == "rotate_wifi":
@@ -1992,35 +2428,32 @@ class Handler(SimpleHTTPRequestHandler):
                 rc, out = ctl("wifi-confirm" if op == "confirm_wifi" else "wifi-revert")
                 return self.send_json({"ok": rc == 0, "message": out[-300:]}, 200 if rc == 0 else 500)
             if op == "mesh_link":
-                # the family channel link the mesh bridge keeps current: the way to re-share the key any time
-                link = read_json(CFG.mesh_channel_link, {}) or {}
-                url = link.get("url") if isinstance(link, dict) and isinstance(link.get("url"), str) else None
-                at = link.get("at") if isinstance(link, dict) and isinstance(link.get("at"), (int, float)) else None
-                if url and not secure:
-                    return self.send_json({"ok": True, "url": None, "at": at, "secret_hidden": True,
-                                           "message": "The family radio link holds the channel key. "
-                                                      + hidden.format(where="Family radio link")})
-                pin = read_json(CFG.mesh_bt_pin_file, {}) or {}
-                pin = pin.get("pin") if isinstance(pin, dict) and isinstance(pin.get("pin"), str) else None
-                return self.send_json({"ok": bool(url), "url": url, "at": at, "bt_pin": pin,
-                                       "error": None if url else "The radio bridge hasn't reported the channel link yet."})
+                # The family channel link IS the channel key: never to an admin session alone (the PIN would
+                # then hand out family radio access). Members see it on their own device (Settings → Family,
+                # over https), and the Badger's own screen always shows it.
+                st = mesh_secret(False)
+                return self.send_json({"ok": bool(st.get("url") or st.get("secret_hidden")), "url": None,
+                                       "at": st.get("at"), "member_only": True,
+                                       "error": None if st.get("secret_hidden") else st.get("error"),
+                                       "message": "The family radio link holds the channel key, so it is shown only to "
+                                                  "family members on their own phone (Settings → Family → Family radio "
+                                                  "link, over https) and on the Badger's own screen (knob → Family radio)."})
             if op == "rotate_mesh":
-                # the mesh bridge owns the radio's serial link: leave it a request and let it do the work
-                rid = secrets.token_hex(6)
-                CFG.mesh_rotate_request.parent.mkdir(parents=True, exist_ok=True)
-                upd.atomic_write(CFG.mesh_rotate_request, json.dumps({"id": rid, "at": time.time()}))
-                return self.send_json({"ok": True, "id": rid, "bridge_running": bool(services_up().get("mesh"))})
+                res = self.request_mesh_rotation()
+                return self.send_json(res, 200 if res["ok"] else 500)
             if op in ("rotate_mesh_status", "rotate_mesh_cancel"):
                 rid = d.get("rid") if isinstance(d.get("rid"), str) else ""
                 res = read_json(CFG.mesh_rotate_result, {}) or {}
                 if isinstance(res, dict) and rid and res.get("id") == rid:
                     url = res.get("url") if isinstance(res.get("url"), str) else None
-                    out = {"ok": bool(res.get("ok")), "pending": False, "url": url if secure else None,
+                    out = {"ok": bool(res.get("ok")), "pending": False, "url": None, "member_only": True,
                            "error": res.get("error") if isinstance(res.get("error"), str) else None,
                            "warning": res.get("warning") if isinstance(res.get("warning"), str) else None}
-                    if url and not secure:
-                        out.update(secret_hidden=True, message="The family channel has a new key. "
-                                   + hidden.format(where="Family radio link"))
+                    if url:                          # the new key: to members and the Badger's screen, not the admin
+                        out.update(secret_hidden=True, message="The family channel has a new key. Every family radio "
+                                   "needs the new link: family members open it on their own phone (Settings → "
+                                   "Family → Family radio link) or scan it on the Badger's screen (knob → Family "
+                                   "radio), then share it with the other family radios in the Meshtastic app.")
                     return self.send_json(out)
                 req = read_json(CFG.mesh_rotate_request, None)
                 mine = isinstance(req, dict) and req.get("id") == rid and bool(rid)
@@ -2057,7 +2490,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"error": f"PINs shorter than {MIN_PIN} characters are no longer accepted. "
                                             f"If yours is shorter, set a longer one on the Badger: "
                                             f"sudo prepperctl set-pin"}, 400)
-        pin = pin[:128]                          # PBKDF2 of a megabyte "PIN" is a free CPU burner
+        pin = pin[:MAX_PIN]                      # hashing a megabyte "PIN" is a free CPU burner
         time.sleep(0.25)
         result, wait = attempt_login(ip, pin, local)
         if result == "locked":
@@ -2069,8 +2502,12 @@ class Handler(SimpleHTTPRequestHandler):
             tok = secrets.token_urlsafe(24)
             with _auth_lock:
                 TOKENS[tok] = time.time() + ADMIN_TTL
+            if pin_is_legacy(CFG.admin_pin):     # an older PBKDF2 hash: replace it with scrypt (same secret)
+                threading.Thread(target=upgrade_pin_hash, args=(pin,), daemon=True).start()
+            err, warn = pin_policy(pin)
             # The launcher uses the HttpOnly cookie; the token in the body is for tools and plugins.
-            return self.send_json({"token": tok}, headers={"Set-Cookie": self.set_cookie(ADMIN_COOKIE, tok, ADMIN_TTL)})
+            return self.send_json({"token": tok, "weak_pin": bool(err or warn)},
+                                  headers={"Set-Cookie": self.set_cookie(ADMIN_COOKIE, tok, ADMIN_TTL)})
         return self.send_json({"error": "wrong PIN"}, 403)
 
     def handle_ask(self, q: str, brief: bool = False):
@@ -2200,11 +2637,11 @@ class Handler(SimpleHTTPRequestHandler):
                 cur["display_time"] = d["display_time"]
             mc = d.get("mesh_commands")
             if isinstance(mc, dict):                    # who may use each mesh radio command
-                levels = ("community", "family", "off")
+                levels = ("community", "family", "off", "ignore")
                 clean = {k: v for k, v in mc.items() if k in ("help", "q", "ai", "status")
                          and isinstance(v, str) and v in levels}
                 if clean.get("help") == "off":
-                    clean["help"] = "community"          # !help always answers: it lists what's available
+                    clean["help"] = "family"             # never reopen !help to strangers
                 prev = cur.get("mesh_commands") if isinstance(cur.get("mesh_commands"), dict) else {}
                 cur["mesh_commands"] = {**prev, **clean}
             if isinstance(rd, dict):
@@ -2327,16 +2764,71 @@ def usb_list() -> list[dict]:
         du = shutil.disk_usage(p)
         out.append({"name": p.name, "path": str(p), "free": du.free, "total": du.total,
                     "bundle": (p / "manifest.json").exists(), "eject": eject,
-                    "url": "/files/" + urllib.parse.quote(str(p.relative_to(root)))})
+                    "drive": str(p.relative_to(root))})
     return out
+
+
+def usb_resolve(drive: str, rel: str) -> Path | None:
+    """A file or folder on a mounted USB drive (drive = its name under usb_root, as usb_list gives it),
+    symlinks resolved and kept inside that drive; None for anything else."""
+    if not isinstance(drive, str) or not drive or "\x00" in drive or "\x00" in (rel or ""):
+        return None
+    root = CFG.usb_root
+    if drive not in {d["drive"] for d in usb_list()}:
+        return None
+    base = (root / drive).resolve()
+    target = safe_join(base, rel or "")
+    return target if target is not None and target.exists() else None
+
+
+def usb_listing(drive: str, target: Path) -> dict | None:
+    if not target.is_dir():
+        return None
+    base = (CFG.usb_root / drive).resolve()
+    entries = []
+    try:
+        names = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))[:2000]
+    except OSError:
+        return None
+    for p in names:
+        if p.name.startswith("."):
+            continue
+        real = safe_join(base, str(p.relative_to(base)))
+        if real is None or not real.exists():
+            continue                                   # a link off the drive, or a dangling one
+        rel = str(p.relative_to(base))
+        q = urllib.parse.urlencode({"drive": drive, "path": rel})
+        if real.is_dir():
+            entries.append({"name": p.name, "dir": True, "path": rel})
+            continue
+        try:
+            size = real.stat().st_size
+        except OSError:
+            continue
+        entries.append({"name": p.name, "dir": False, "path": rel, "size": size, "url": "/api/usb/file?" + q})
+    return {"drive": drive, "path": str(target.relative_to(base)) if target != base else "", "entries": entries}
 
 
 def main() -> None:
     global CFG
-    if len(sys.argv) >= 3 and sys.argv[1] == "hash-pin":
-        if len(sys.argv[2]) < MIN_PIN:
-            sys.exit(f"PIN must be at least {MIN_PIN} characters")
-        print(hash_pin(sys.argv[2])); return
+    if len(sys.argv) >= 2 and sys.argv[1] == "hash-pin":
+        # The secret comes on stdin (prepperctl set-pin): an argument would show in `ps` to every local
+        # user. (An argument still works for development fixtures.) Policy problems → exit 2.
+        pin = sys.argv[2] if len(sys.argv) >= 3 else sys.stdin.readline().rstrip("\r\n")
+        err, warn = pin_policy(pin)
+        if err:
+            print(f"error: {err}", file=sys.stderr); sys.exit(2)
+        if warn:
+            print(f"warning: {warn}", file=sys.stderr)
+        print(hash_pin(pin)); return
+    if len(sys.argv) == 2 and sys.argv[1] == "rehash-pin":
+        # prepperctl upgrade-pin: stdin = the stored hash, then the PIN. Prints an scrypt hash of the SAME
+        # PIN only if the stored one is the older PBKDF2 kind and the PIN matches it; else exit 1.
+        stored = sys.stdin.readline().strip()
+        pin = sys.stdin.readline().rstrip("\r\n")[:MAX_PIN]
+        if not pin_is_legacy(stored) or not verify_pin(pin, stored):
+            sys.exit(1)
+        print(hash_pin(pin)); return
     cfg_path = Path(os.environ.get("PREPPER_CONFIG", upd.DEFAULT_CONFIG))
     CFG = PortalConfig(cfg_path)
     load_features()

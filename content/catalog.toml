@@ -1990,7 +1990,9 @@ priority = 7
 license = "GPL-3.0"
 use = "any"
 description = "Lets a browser open ZIM files directly."
-source = { type = "git", url = "https://github.com/kiwix/kiwix-js.git", ref = "HEAD" }
+# Code that runs on the family's phones (on the apps origin): pinned to a release tag AND its commit.
+# upd installs exactly this commit or nothing; a moved tag changes nothing until this pin is updated.
+source = { type = "git", url = "https://github.com/kiwix/kiwix-js.git", ref = "refs/tags/4.4.0", commit = "e2c89eb692cf9c58b36986b6f42eecf7a59c7357" }
 
 
 # ════════ files ════════

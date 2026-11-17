@@ -110,8 +110,13 @@ def country(c: dict) -> str:
     return _match(COUNTRY_RE, c["network"].get("country", "US"), "network.country")
 
 
+DEFAULT_SSID = "Home-Hotspot"
+# A Wi-Fi name that says "prepared household with a stocked server" to every wardriver.
+PRODUCT_SSID_RE = re.compile(r"honey\s*-?_?badger|prepper", re.I)
+
+
 def ssid(c: dict) -> str:
-    s = c["network"].get("ssid", "HoneyBadger")
+    s = c["network"].get("ssid", DEFAULT_SSID)
     if not isinstance(s, str) or not s:
         _fail("network.ssid must be a non-empty string")
     if len(s.encode()) > 32:
@@ -126,8 +131,41 @@ def passphrase(c: dict) -> str:
     if not isinstance(psk, str):
         _fail("network.passphrase must be a string")
     if psk and not (8 <= len(psk) <= 63 and all(0x20 <= ord(ch) <= 0x7E for ch in psk)):
-        _fail("network.passphrase must be 8–63 printable ASCII characters (or empty for an open network)")
+        _fail("network.passphrase must be 8–63 printable ASCII characters (or empty for no password)")
     return psk
+
+
+SECURITY_MODES = ("auto", "wpa2", "owe", "open", "owe-transition")
+BRIDGE = "br-prepper"        # owe-transition: both BSSes are ports of this bridge, which holds the AP address
+OWE_IFACE = "ap-owe"         # owe-transition: the hidden OWE BSS (hostapd creates it)
+
+
+def security(c: dict) -> str:
+    """The hotspot's protection: "wpa2" (a password), "owe" (Enhanced Open: no password, but every
+    phone's traffic is encrypted — phones from about 2019 on: iOS 13+, Android 10+) or "open" (no
+    password, no encryption: anyone in range reads everything). [network] security = "auto" (the
+    default) means wpa2 with a passphrase, owe without one; "open" must be asked for by name.
+    "owe" is OWE-ONLY: a phone older than ~2019 does not see a network it can join. "owe-transition"
+    (EXPERIMENTAL, USB adapter only) adds an open twin for those phones; see hostapd()."""
+    mode = c["network"].get("security", "auto")
+    if mode not in SECURITY_MODES:
+        _fail(f"network.security must be one of {', '.join(SECURITY_MODES)}")
+    psk = passphrase(c)
+    if mode == "auto":
+        return "wpa2" if psk else "owe"
+    if mode == "wpa2" and not psk:
+        _fail("network.security = \"wpa2\" needs a network.passphrase (8–63 characters)")
+    return mode
+
+
+def bridged(c: dict, iface: str) -> bool:
+    """owe-transition on a USB adapter runs two BSSes bridged together; the onboard radio can't do OWE at all."""
+    return security(c) == "owe-transition" and iface != "wlan0"
+
+
+def l3_iface(c: dict, iface: str) -> str:
+    """The interface that carries the AP address, DHCP and the firewall rules."""
+    return BRIDGE if bridged(c, iface) else iface
 
 
 def data_root(c: dict) -> str:
@@ -140,7 +178,7 @@ def data_root(c: dict) -> str:
 def check(c: dict, iface: str) -> None:
     """Validate everything the renderers below use; raises ConfigError."""
     _match(IFACE_RE, iface, "AP interface")
-    hostname(c); ap_address(c); dhcp_range(c); country(c); ssid(c); passphrase(c); data_root(c)
+    hostname(c); ap_address(c); dhcp_range(c); country(c); ssid(c); passphrase(c); security(c); data_root(c)
     n, ai = c["network"], c.get("ai", {})
     _int(n.get("max_clients", 64), "network.max_clients", 1, 2007)
     _int(n.get("channel_24ghz", 6), "network.channel_24ghz", 1, 14)
@@ -211,11 +249,14 @@ def hostapd(c: dict, iface: str, force_24ghz: bool = False) -> str:
     else:
         # Spaces at the ends or non-ASCII: hostapd's hex form is unambiguous.
         ssid_lines = [f"ssid2={name.encode().hex()}"] + (["utf8_ssid=1"] if not name.isascii() else [])
+    max_sta = _int(n.get('max_clients', 64), 'network.max_clients', 1, 2007)
     lines = [
         f"interface={iface}", "driver=nl80211", *ssid_lines,
         f"country_code={country(c)}", "ieee80211d=1",
-        f"max_num_sta={_int(n.get('max_clients', 64), 'network.max_clients', 1, 2007)}",
-        "wmm_enabled=1", "ignore_broadcast_ssid=0", "ap_isolate=0",
+        f"max_num_sta={max_sta}",
+        # ap_isolate: phones on the hotspot talk only to the Badger, never to each other (no ARP spoofing or
+        # port scans of the family's phones by a visitor; the launcher and captive portal only need the Badger)
+        "wmm_enabled=1", "ignore_broadcast_ssid=0", "ap_isolate=1",
     ]
     if five:
         cap = ht40(ch5)
@@ -225,8 +266,31 @@ def hostapd(c: dict, iface: str, force_24ghz: bool = False) -> str:
     else:
         lines += ["hw_mode=g", f"channel={_int(n.get('channel_24ghz', 6), 'network.channel_24ghz', 1, 14)}",
                   "ieee80211n=1"]
-    psk = passphrase(c)
-    if psk:
+    psk, mode = passphrase(c), security(c)
+    if mode == "owe-transition" and not usb:
+        lines.append("# security = owe-transition needs the USB adapter: the onboard radio runs an open network (no password)")
+    elif mode == "owe-transition":
+        # EXPERIMENTAL (untested on hardware). OWE transition mode (RFC 8110 / Wi-Fi Enhanced Open): this
+        # first BSS is OPEN under the real name, so phones older than ~2019 can join; its twin below is a
+        # HIDDEN OWE BSS that newer phones are steered to (they get a per-phone key). Both are ports of one
+        # bridge (prepperctl net-up creates it) so they share the AP subnet, DHCP and captive portal, and
+        # both isolate their clients from each other. A phone that joins the open twin is NOT encrypted.
+        owe_name = ("OWE-" + name).encode()[:32]
+        lines += [f"bridge={BRIDGE}", f"owe_transition_ifname={OWE_IFACE}"]
+        lines += ["", f"bss={OWE_IFACE}", f"ssid2={owe_name.hex()}", "ignore_broadcast_ssid=1",
+                  f"max_num_sta={max_sta}", "wmm_enabled=1", "ap_isolate=1", f"bridge={BRIDGE}",
+                  "wpa=2", "wpa_key_mgmt=OWE", "rsn_pairwise=CCMP", "ieee80211w=2", "owe_groups=19",
+                  f"owe_transition_ifname={iface}"]
+    elif mode == "owe" and not usb:
+        # The onboard brcmfmac radio can't do OWE in AP mode: it would refuse to start, leaving no hotspot
+        # at all. Run open instead (the portal treats owe and open alike: no secrets over plain http).
+        lines.append("# security = owe is not supported by the onboard radio: open network (no password)")
+    elif mode == "owe":
+        # Enhanced Open (OWE, RFC 8110): no password, but each phone gets its own encryption key, so nobody
+        # in range can read another phone's traffic. Management frames protected (required by OWE).
+        # OWE-only: a phone older than ~2019 can't join (use "owe-transition" for those, experimental).
+        lines += ["wpa=2", "wpa_key_mgmt=OWE", "rsn_pairwise=CCMP", "ieee80211w=2", "owe_groups=19"]
+    if mode == "wpa2":
         lines += ["wpa=2", f"wpa_passphrase={psk}", "rsn_pairwise=CCMP"]
         if usb:
             # WPA2 + WPA3 transition: old phones join with WPA2, new ones use SAE.
@@ -244,9 +308,11 @@ def dnsmasq(c: dict, iface: str) -> str:
     addr, host = ap_address(c), hostname(c)
     lo, hi = dhcp_range(c)
     out = [
-        f"interface={iface}", "bind-dynamic", "domain-needed", "bogus-priv",
+        f"interface={l3_iface(c, iface)}", "bind-dynamic", "domain-needed", "bogus-priv",
         f"dhcp-range={lo},{hi},255.255.255.0,12h", f"dhcp-option=option:router,{addr}",
         f"dhcp-option=option:dns-server,{addr}", "dhcp-authoritative",
+        # leases (with each phone's name) in RAM only, and no per-phone DHCP lines in the log
+        "dhcp-leasefile=/run/prepper-dnsmasq/leases", "quiet-dhcp",
         "domain=lan", "local=/lan/", f"address=/{host}.lan/{addr}", f"address=/{host}.local/{addr}",
         f"address=/box.lan/{addr}",
     ]
@@ -283,6 +349,47 @@ def app_csp(prefix: str) -> str:
             f'worker-src {own} blob:; frame-ancestors \'self\'" always;')
 
 
+APPS_PORT, APPS_TLS_PORT = 8088, 8443
+
+
+def apps_server(data: str, tls: bool) -> str:
+    """The web apps under data_root/apps (pdf.js, foliate-js, Kiwix JS, …) on their OWN origin
+    (another port): code fetched from upstream (or a peer) must never run on the launcher's origin,
+    where it could open the launcher in a window and script it with the family's sign-in. Here it can
+    read the library (/content/, public anyway) and nothing else; the launcher's /apps/ links redirect."""
+    ssl = (f"""    listen {APPS_TLS_PORT} ssl;
+    listen [::]:{APPS_TLS_PORT} ssl;
+    ssl_certificate     /etc/prepper/tls/server.crt;
+    ssl_certificate_key /etc/prepper/tls/server.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+""" if tls else "")
+    return f"""server {{
+    listen {APPS_PORT};
+    listen [::]:{APPS_PORT};
+{ssl}    server_name _;
+    access_log off;
+    root /nonexistent;
+    charset utf-8;
+    location /apps/    {{ alias {data}/apps/; disable_symlinks off; {APPS_CSP} add_header X-Content-Type-Options nosniff always; }}
+    location /content/ {{
+        alias {data}/;
+        disable_symlinks off;
+        add_header X-Content-Type-Options nosniff always;
+        location ~ /\\.(staging|git) {{ deny all; }}
+        location ~ ^/content/kolibri(/|$) {{ deny all; }}
+        {SANDBOX}
+    }}
+    location / {{ return 404; }}
+}}
+"""
+
+
+# The apps' own origin: they may fetch from it (the library under /content/), frame only themselves,
+# and are never framed by another page.
+APPS_CSP = ('add_header Content-Security-Policy "connect-src \'self\' blob: data:; frame-ancestors \'self\'; '
+            'form-action \'self\'" always;')
+
+
 def nginx(c: dict, tls_ready: bool = True) -> str:
     n = c["network"]
     data = data_root(c)
@@ -297,9 +404,10 @@ def nginx(c: dict, tls_ready: bool = True) -> str:
         else:
             probes.append(f'    location = {path} {{ default_type {ctype}; return 200 {_nginx_str(body)}; }}')
     tls = ""
+    https = n.get("https", True) is not False and tls_ready
     # Only with a certificate on disk: "listen 443 ssl" without one stops
     # nginx from starting at all (prepperctl gen-tls re-renders once it exists).
-    if n.get("https", True) is not False and tls_ready:
+    if https:
         tls = """    listen 443 ssl default_server;
     listen [::]:443 ssl default_server;
     ssl_certificate     /etc/prepper/tls/server.crt;
@@ -307,10 +415,17 @@ def nginx(c: dict, tls_ready: bool = True) -> str:
     ssl_protocols TLSv1.2 TLSv1.3;
 """
     return f"""# Rendered by /opt/prepper/os/render.py — edit prepper.toml, not this file.
+map $scheme $prepper_apps_port {{ https {APPS_TLS_PORT if https else APPS_PORT}; default {APPS_PORT}; }}
+
+{apps_server(data, https)}
 server {{
     listen 80 default_server;
     listen [::]:80 default_server;
 {tls}    server_name _;
+    # No visit diary: no access log (visitor addresses, phone models, every URL incl. one-time
+    # download links), and only serious errors in the error log.
+    access_log off;
+    error_log /var/log/nginx/error.log crit;
     root /opt/prepper/software/portal/static;
     index index.html;
     charset utf-8;
@@ -372,10 +487,13 @@ server {{
         {SANDBOX}
     }}
     location /sync/   {{ alias {data}/sync/; disable_symlinks off; add_header X-Content-Type-Options nosniff always; {SANDBOX} }}     # peer Badgers pull from here
-    # /apps/ holds the vendored viewers (pdf.js, foliate-js): trusted, they need the launcher's origin.
-    location /apps/   {{ alias {data}/apps/; disable_symlinks off; }}
+    # /apps/ (pdf.js, foliate-js, Kiwix JS…) lives on its own origin (apps_server above), never here.
+    location /apps/   {{ return 302 $scheme://$host:$prepper_apps_port$request_uri; }}
     location /vendor/ {{ alias /opt/prepper/vendor/; expires 30d; }}
-    location /files/  {{ alias /media/; autoindex on; add_header X-Content-Type-Options nosniff always; {SANDBOX} }}   # USB drives (read-only share)
+    # USB drives are the family's files: browsed in the launcher (USB & files) by members and the admin.
+    # The portal checks who is asking, then hands the transfer to /_usb/ (internal: no direct URL).
+    location /files/  {{ return 302 /#/files; }}
+    location /_usb/   {{ internal; alias /media/; disable_symlinks on; add_header X-Content-Type-Options nosniff always; {SANDBOX} }}
 
     location /ai/ {{
         # No trailing slash: llama-server runs with --api-prefix /ai, so the
@@ -407,6 +525,9 @@ def env_file(c: dict, iface: str) -> str:
     return "\n".join([
         "PREPPER_CONFIG=/etc/prepper/prepper.toml",
         f"AP_IFACE={iface}",
+        f"AP_LINK_IFACE={l3_iface(c, iface)}",
+        f"AP_BRIDGE={1 if bridged(c, iface) else 0}",
+        f"AP_OWE_IFACE={OWE_IFACE}",
         f"AP_ADDRESS={ap_address(c)}",
         f"AP_SUBNET={ap_subnet(c)}",
         f"AP_DEFER_HOURS={float(n.get('ap_defer_hours', 12)):g}",
@@ -425,7 +546,7 @@ def env_file(c: dict, iface: str) -> str:
     ])
 
 
-def network_manager(iface: str, wlan0_is_ap: bool) -> str:
+def network_manager(iface: str, wlan0_is_ap: bool, bridge: bool = False) -> str:
     """Hand the AP radio to hostapd. The onboard wlan0 is released only once
     `prepperctl net-up` has decided it becomes the hotspot (it writes the
     ap-wlan0 marker): while provisioning it may be our only download link, and
@@ -434,7 +555,8 @@ def network_manager(iface: str, wlan0_is_ap: bool) -> str:
     _match(IFACE_RE, iface, "AP interface")
     if iface == "wlan0" and not wlan0_is_ap:
         return "[keyfile]\n# wlan0 stays with NetworkManager (uplink) until the hotspot takes it over.\n"
-    return f"[keyfile]\nunmanaged-devices=interface-name:{iface}\n"
+    extra = f";interface-name:{BRIDGE};interface-name:{OWE_IFACE}" if bridge else ""
+    return f"[keyfile]\nunmanaged-devices=interface-name:{iface}{extra}\n"
 
 
 def chrony_gps(c: dict) -> str:
@@ -469,6 +591,16 @@ def render_all(c: dict, root: Path, iface: str, force_24ghz: bool = False) -> No
     c.setdefault("network", {}); c.setdefault("upd", {})
     check(c, iface)                  # nothing is written unless everything is valid
     print(f"render: AP on {iface}")
+    if PRODUCT_SSID_RE.search(ssid(c)):
+        print(f"render: the Wi-Fi name {ssid(c)!r} tells everyone in range what this box is — consider a "
+              "neutral one ([network] ssid)", file=sys.stderr)
+    if security(c) == "owe-transition":
+        print("render: security = owe-transition is EXPERIMENTAL (open twin + hidden OWE twin, bridged); "
+              "untested on hardware" + ("" if iface != "wlan0" else " — and the onboard radio runs an open network"),
+              file=sys.stderr)
+    if security(c) != "wpa2":
+        print(f"render: the hotspot has no password (security = {security(c)}) — family secrets are only "
+              "sent over https://", file=sys.stderr)
     write(root, "/etc/hostapd/prepper.conf", hostapd(c, iface, force_24ghz), 0o600)
     write(root, "/etc/dnsmasq.d/prepper.conf", dnsmasq(c, iface))
     tls = root / "etc/prepper/tls"
@@ -478,7 +610,7 @@ def render_all(c: dict, root: Path, iface: str, force_24ghz: bool = False) -> No
     write(root, "/etc/nginx/sites-available/prepper", nginx(c, tls_ready))
     write(root, "/etc/default/prepper", env_file(c, iface))
     wlan0_is_ap = (root / "var/lib/prepper/ap-wlan0").exists()
-    write(root, "/etc/NetworkManager/conf.d/99-prepper.conf", network_manager(iface, wlan0_is_ap))
+    write(root, "/etc/NetworkManager/conf.d/99-prepper.conf", network_manager(iface, wlan0_is_ap, bridged(c, iface)))
     write(root, "/etc/chrony/conf.d/prepper-gps.conf", chrony_gps(c))
     write(root, "/etc/systemd/system/upd-apply.timer.d/prepper-window.conf", update_timer(c))
     host, addr = hostname(c), ap_address(c)

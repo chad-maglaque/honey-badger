@@ -84,6 +84,11 @@ satellite V-dipole) and a small 1090 MHz whip for the SDR 2 jack.
 ## Privacy and limits
 
 - ADS-B is public broadcast data; the Badger only listens and never transmits. The aircraft list is
-  readable by anyone on the Badger's Wi-Fi (rate-limited). The Badger's own position is shown rounded.
+  readable by anyone on the Badger's Wi-Fi (rate-limited). Where the Badger is, is not: exact plane
+  positions plus each plane's distance and bearing from the Badger would pin down the house. So for
+  visitors the Badger's position is snapped to a grid cell of at least 10 km, and every distance and
+  bearing they see is measured from that cell's centre (planes are also kept or dropped by their
+  distance from it). Family members and the admin get distances from the real position. Who started
+  a scan is shown to family members and the admin only.
 - Nothing is stored long-term: the live list lives in memory/`/run` only.
 - Position decoding and distances are approximate; don't use this for navigation or air-traffic safety.

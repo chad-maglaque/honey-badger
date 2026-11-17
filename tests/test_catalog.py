@@ -32,7 +32,7 @@ SOURCE_KEYS = {                     # what each resolver in upd.py reads from `s
     "kiwix": ({"name"}, {"name", "path"}),
     "http": (set(), {"url", "filename", "index", "pattern", "download_base", "sha256_url"}),
     "hf": ({"repo", "file"}, {"repo", "file", "revision"}),
-    "git": ({"url"}, {"url", "ref"}),
+    "git": ({"url"}, {"url", "ref", "commit"}),
     "rsync": ({"url"}, {"url"}),
     "pmtiles": (set(), {"builds", "base", "bbox", "maxzoom"}),
     "manual": (set(), set()),
@@ -79,6 +79,17 @@ class CatalogTest(unittest.TestCase):
             keys = set(src) - {"type"}
             self.assertLessEqual(need, keys, f"{i['id']}: source needs {need - keys}")
             self.assertLessEqual(keys, allowed, f"{i['id']}: unknown source keys {keys - allowed}")
+
+    def test_git_code_is_pinned_to_a_commit(self):
+        # red-team finding 8: web apps run on the families' phones, so a git checkout of code is pinned to a
+        # full commit id (upd.resolve_git installs that commit or nothing). prepper_software is exempt: its
+        # commits must carry a maintainer signature (prepperctl self-update-hook).
+        import re
+        for i in self.raw:
+            src = i["source"]
+            if src["type"] == "git" and i["id"] != "prepper_software":
+                self.assertRegex(src.get("commit", ""), re.compile(r"^[0-9a-f]{40}$"), i["id"])
+                self.assertNotEqual(src.get("ref", "HEAD"), "HEAD", i["id"])
 
     def test_source_details(self):
         for i in self.each():

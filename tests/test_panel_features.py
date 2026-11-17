@@ -79,6 +79,13 @@ class Base(unittest.TestCase):
         p.spawn = lambda fn: fn()                           # background reads run inline in tests
         return p
 
+    def test_wifi_qr_nopass_for_owe_and_open(self):
+        for sec in ("owe", "open", "owe-transition"):
+            p = self.make({"network": {"ssid": "Home-7Q4K", "passphrase": "leftover-secret", "security": sec}})
+            self.assertEqual(p.wifi_qr(), "WIFI:T:nopass;S:Home-7Q4K;;", sec)
+        p = self.make({"network": {"ssid": "Home-7Q4K", "passphrase": "pass1234", "security": "wpa2"}})
+        self.assertEqual(p.wifi_qr(), "WIFI:T:WPA;S:Home-7Q4K;P:pass1234;;")
+
     # files
     def write(self, path: Path, obj, raw: bytes | None = None):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -800,6 +807,209 @@ class Knob(Base):
         self.assertEqual(panel.fmt_reading("flood", 0.2), "dry")
         self.assertEqual(panel.fmt_reading("pressure", 1013.25, us=True), "29.92 inHg")
         self.assertTrue(all(len(x) <= panel.W for x in panel.wrap("y" * 100)))
+
+
+# ───────────────────────────── panel lock + device approval ─────────────────────────────
+
+class PanelLockKnob(Base):
+    """Red team 5: the optional panel code (default off), entered with the knob."""
+
+    def setUp(self):
+        super().setUp()
+        self.lockf, self.arm = TMP / "panel-lock.json", TMP / "panel-lock-arm.json"
+        for f in (self.lockf, self.arm):
+            f.unlink(missing_ok=True)
+        panel._file_cache.clear()
+
+    def make(self, cfg=None):
+        c = {"panel": {"lock_file": str(self.lockf)},
+             "portal": {"features_data": str(self.feat), "panel_lock_arm": str(self.arm)}}
+        c.update(cfg or {})
+        return super().make(c)
+
+    def enter(self, p, code):
+        for digit in code:
+            p.code_sel = int(digit)
+            p.press()
+        p.code_sel = p.code_choices().index("OK")
+        p.press()
+
+    def test_default_off_changes_nothing(self):
+        p = self.make()
+        menu = dict(p.root())
+        menu["Services"]()
+        self.assertEqual((p.screen, p.stack[-1][0]), ("menu", "Services"))
+        p.stack = [("Menu", list(menu.items()))]
+        menu["Invite member (QR)"]()
+        self.assertEqual(p.screen, "confirm")
+
+    def test_set_with_the_knob_only_when_armed_then_unlock_and_relock_on_sleep(self):
+        p = self.make()
+        p.stack = [("Menu", [])]
+        p.lock_menu()
+        self.assertEqual([r for r, _ in p.stack[-1][1]][0], "Off. To set a code,")
+        self.arm.write_text(json.dumps({"until": time.time() + 600}))
+        panel._file_cache.clear()
+        p.lock_menu()
+        dict(p.stack[-1][1])["Set a code"]()
+        self.assertEqual((p.screen, p.code_mode), ("code", "set1"))
+        self.enter(p, "13579")
+        self.assertEqual(p.code_mode, "set2")
+        self.enter(p, "13579")
+        self.assertIn("Recovery code", self.d.texts[-1][0][0])
+        rec = "".join(self.d.texts[-1][0][1].split())
+        self.assertRegex(rec, r"^\d{12}$")
+        self.assertTrue(p.plock.is_set())
+        # now guarded: wrong code refused, Cancel goes back, right code opens
+        menu = dict(p.root())
+        p.stack = [("Menu", list(menu.items()))]
+        menu["Services"]()
+        self.assertEqual(p.screen, "code")
+        self.enter(p, "1111")
+        self.assertEqual((p.screen, self.d.texts[-1][0][0]), ("msg", "Wrong code."))
+        menu["Services"]()
+        p.code_sel = p.code_choices().index("Cancel")
+        p.press()
+        self.assertEqual(p.screen, "menu")
+        menu["Services"]()
+        p.code_sel = 1; p.press()
+        p.code_sel = p.code_choices().index("Del"); p.press()           # Del removes the slip
+        self.assertEqual(p.code_buf, "")
+        self.enter(p, "13579")
+        self.assertEqual((p.screen, p.stack[-1][0]), ("menu", "Services"))
+        menu["Invite member (QR)"]()                                     # unlocked for a while: no second prompt
+        self.assertEqual(p.screen, "confirm")
+        p.last_input -= p.sleep_after + 1
+        p.tick()                                                         # asleep = locked again
+        p.wake()
+        p.stack = [("Menu", list(menu.items()))]
+        menu["Services"]()
+        self.assertEqual(p.screen, "code")
+        # Forgot? → recovery code → the lock is gone
+        p.code_sel = p.code_choices().index("Forgot?"); p.press()
+        self.assertEqual(p.code_mode, "recover")
+        self.enter(p, rec)
+        self.assertFalse(p.plock.is_set())
+
+    def test_change_and_off_need_the_code_and_mismatch_changes_nothing(self):
+        panel.PanelLock(self.lockf).set("2468")
+        p = self.make()
+        p.stack = [("Menu", [])]
+        p.lock_menu()
+        items = dict(p.stack[-1][1])
+        items["Turn lock off"]()
+        self.assertEqual(p.screen, "code")
+        self.enter(p, "2468")
+        self.assertEqual(p.screen, "confirm")
+        p.sel = 1
+        p.press()
+        self.assertFalse(p.plock.is_set())
+        panel.PanelLock(self.lockf).set("2468")
+        p = self.make()
+        p.stack = [("Menu", [])]
+        p.lock_menu()
+        dict(p.stack[-1][1])["Change code"]()
+        self.enter(p, "2468")
+        self.assertEqual(p.code_mode, "set1")
+        self.enter(p, "9999")
+        self.enter(p, "9998")
+        self.assertIn("differ", self.d.texts[-1][0][1])
+        self.assertEqual(panel.PanelLock(self.lockf).check("2468")[0], "ok")
+        self.assertEqual(p.code_choices()[:10], [str(i) for i in range(10)])
+
+    def test_damaged_lock_file_stays_locked_and_the_console_reset_clears_it(self):
+        self.lockf.write_text("{not json")
+        p = self.make()
+        menu = dict(p.root())
+        p.stack = [("Menu", list(menu.items()))]
+        menu["Family radio"]()
+        self.assertEqual(p.screen, "msg")
+        self.assertIn("damaged", " ".join(self.d.texts[-1][0]))
+        cfg = TMP / "panel-reset.toml"
+        cfg.write_text(f'[panel]\nlock_file = "{self.lockf}"\ndisplay = "none"\n')
+        r = subprocess.run([sys.executable, str(REPO / "software/panel/panel.py"), "--reset-lock"],
+                           env={**os.environ, "PREPPER_CONFIG": str(cfg)}, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.lockf.exists())
+
+    def test_protect_list_is_configurable_and_bogus_keys_ignored(self):
+        panel.PanelLock(self.lockf).set("2468")
+        p = self.make({"panel": {"lock_file": str(self.lockf), "lock_protect": ["wifi_join", "nonsense"]}})
+        self.assertEqual(p.protect, {"wifi_join"})
+        menu = dict(p.root())
+        menu["Join Wi-Fi (QR)"]()
+        self.assertEqual(p.screen, "code")
+        p.stack = [("Menu", list(menu.items()))]
+        menu["Services"]()
+        self.assertEqual(p.screen, "menu")
+
+    def test_arm_window_is_bounded(self):
+        now = time.time()
+        for rec, want in (({"until": now + 600}, True), ({"until": now - 1}, False), ({"until": now + 86400}, False),
+                          ({"until": "soon"}, False), ([1], False)):
+            self.arm.write_text(json.dumps(rec))
+            panel._file_cache.clear()
+            self.assertEqual(panel.lock_armed(self.arm, now), want, rec)
+
+
+class ApproveDevice(Base):
+    def setUp(self):
+        super().setUp()
+        self.pending = [{"member": "m_1", "name": "Mom", "device": "d_1", "label": "new phone"}]
+        self.posted = []
+        me = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def reply(self, obj):
+                raw = json.dumps(obj).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(raw))); self.end_headers()
+                self.wfile.write(raw)
+
+            def do_GET(self):
+                self.reply({"pending": me.pending} if self.path == "/api/local/devices" else {})
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                me.posted.append((self.path, body))
+                me.pending = []
+                self.reply({"ok": True})
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        panel.API = f"http://127.0.0.1:{self.srv.server_address[1]}"
+
+    def tearDown(self):
+        self.srv.shutdown(); self.srv.server_close()
+        super().tearDown()
+
+    def test_panel_lists_and_approves(self):
+        lockf = TMP / "approve-lock.json"
+        lockf.unlink(missing_ok=True)
+        p = self.make({"panel": {"lock_file": str(lockf)}})
+        menu = dict(p.root())
+        self.assertIn("Approve device (1)", menu)
+        p.stack = [("Menu", list(menu.items()))]
+        menu["Approve device (1)"]()
+        dict(p.stack[-1][1])["Mom: new phone"]()
+        dict(p.stack[-1][1])["Approve"]()
+        p.sel = 1
+        p.press()
+        self.assertEqual(self.posted, [("/api/local/approve", {"member": "m_1", "device": "d_1", "approve": True})])
+        self.assertNotIn("Approve device (1)", dict(p.root()))
+
+    def test_guarded_by_the_panel_code(self):
+        lockf = TMP / "approve-lock.json"
+        panel.PanelLock(lockf).set("2468")
+        try:
+            p = self.make({"panel": {"lock_file": str(lockf)}})
+            menu = dict(p.root())
+            p.stack = [("Menu", list(menu.items()))]
+            menu["Approve device (1)"]()
+            self.assertEqual(p.screen, "code")
+        finally:
+            lockf.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

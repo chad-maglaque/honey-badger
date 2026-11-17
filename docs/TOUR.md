@@ -26,22 +26,38 @@ The Badger also has a small screen, a knob and a power button of its own. With t
 Home (turn to flip pages · press for menu · hold 3 s to shut down)
 ├─ Join Wi-Fi (QR)      phones scan this to join; the whole password is printed beside it
 ├─ Open app (QR)        phones scan this to open badger.lan
-├─ Invite member (QR)   a one-time family invite to scan (works once, for 24 h)
+├─ Invite member (QR)   a one-time family invite to scan (works once, for 24 h)               🔒
+├─ Approve device (n)   a device the admin added to someone's name, waiting for a yes         🔒
+│                       (only shown when there is one)
 ├─ Family radio         Channel link (QR) — scan with the Meshtastic app (holds the family key)
-│                       Bluetooth PIN — of the Badger's radio, if the Badger changed it
+│                       Bluetooth PIN — of the Badger's radio, if the Badger changed it     🔒
 ├─ Status               battery %, time left, storage, temperature, users, pending updates, GPS fix (scroll with the knob)
 ├─ Sensors              alerts first ("!! Water 310 cm"), then readings — shown when sensors are connected
 ├─ Radio                weather radio listening / PAUSED, SDR 2 (aircraft / recording a satellite pass / missing),
 │                       latest forecast, SDR 2 antenna: ADS-B whip · Satellite · Both
 ├─ Neighbourhood        aid station open/closed, missing people (names on the next page)
 ├─ Power mode           Endurance · Balanced · Full
-├─ Services             AI · Courses · Mesh radio · Weather alerts — on/off
-├─ Updates              Check now · Download now · Import from USB · Export to USB
+├─ Services             AI · Courses · Mesh radio · Weather alerts — on/off                   🔒
+├─ Updates              Check now · Download now · Import from USB 🔒 · Export to USB
 ├─ Time format          Local · UTC · Nu:Time™ (used everywhere on the screen)
 ├─ USB: eject
-├─ Wi-Fi                Turn on · Turn off
-└─ System               Restart · Shut down
+├─ Wi-Fi                Turn on · Turn off 🔒
+└─ System               Restart 🔒 · Shut down 🔒 · Panel lock (set · change · turn off · lock now)
 ```
+
+🔒 = asks for the **panel code** first, if you set one (it is off until you do). The code is 4–8
+digits: turn the knob to pick a digit, press to add it, then choose *OK* (*Del* removes the last
+digit, *Cancel* goes back). After the right code the panel stays open for 5 minutes, or until the
+screen goes dark. Wrong codes make it wait longer and longer (up to an hour).
+
+- **Setting a code:** in the app, Settings → Badger administration → *Set up panel code*; then,
+  within 10 minutes, at the Badger: System → Panel lock → *Set a code*. Write down the 12-digit
+  **recovery code** it shows and keep it with your recovery card.
+- **Forgot the code?** On the code screen choose *Forgot?* and enter the recovery code. Or hold the
+  knob down while the Badger starts: it opens the recovery screen directly. No recovery code
+  either? At the console: `sudo python3 /opt/prepper/software/panel/panel.py --reset-lock`.
+- *Join Wi-Fi* and *Open app* never ask for the code (the way onto the network); `[panel]
+  lock_protect` in `prepper.toml` changes which entries ask.
 
 ## Rear panel
 
@@ -96,7 +112,7 @@ Wi-Fi, LoRa and GPS antennas are **built in** under the lid. Plastic doesn't blo
 
 1. **Power.** Plug in USB-C or 12 V, or just run on the internal battery, and press the power button.
 2. **Wait about a minute.** When the status light goes solid, it's ready.
-3. **Join** the **HoneyBadger** Wi-Fi. Scan *Join Wi-Fi (QR)* on the Badger's screen, or pick it from your phone's Wi-Fi list.
+3. **Join** your Badger's Wi-Fi (the name and password were set when it was built). Scan *Join Wi-Fi (QR)* on the Badger's screen, or pick it from your phone's Wi-Fi list.
 4. **Open** **http://badger.lan.** Most phones pop it open by themselves after joining.
 5. **Use it:**
    - **Search** everything from the top bar.

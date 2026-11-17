@@ -14,7 +14,9 @@ the OS image or the content on the laptop.
   clone   point a Badger at another Badger on the LAN and pull everything from it
 
 Typical first unit (Badger plugged into your router by Ethernet):
-  sudo ./builder/prepper-build flash /dev/disk4 --tier base --ssid HoneyBadger --pin 246813
+  sudo ./builder/prepper-build flash /dev/disk4 --tier base --ssid Garden-Shed --pin 246813
+(The Wi-Fi gets a random WPA2 password unless you give --passphrase; it is printed at the end and shown
+on the Badger's front panel. A name like "HoneyBadger" is refused: it tells passers-by what is inside.)
   ./builder/prepper-build watch badger.local
 Badgers you will SELL: add --for-sale. Content licensed for personal / non-commercial
 use only (catalog `use = "personal"`: iFixit, Khan Academy, LibreTexts, TED, …) is then
@@ -376,6 +378,41 @@ def wifi_psk(value: str, what: str) -> str:
     return value
 
 
+# A hotspot named after the product is a beacon for "prepared household, stocked server inside".
+PRODUCT_SSID_RE = re.compile(r"honey\s*-?_?badger|prepper", re.I)
+_PW_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"          # no 0/o, 1/l/i: easy to read off the panel
+
+
+def neutral_ssid() -> str:
+    return "Home-" + "".join(secrets.choice("ABCDEFGHJKMNPQRSTUVWXYZ23456789") for _ in range(4))
+
+
+def random_passphrase() -> str:
+    """12 random characters (~59 bits) in three groups: easy to type on a phone, far beyond
+    guessing — offline WPA2 cracking of a captured handshake is the attack it has to stand."""
+    return "-".join("".join(secrets.choice(_PW_ALPHABET) for _ in range(4)) for _ in range(3))
+
+
+def wifi_defaults(a) -> None:
+    """Fill in the hotspot name, password and mode: a neutral name, a random WPA2 password unless the
+    owner chose Enhanced Open (owe) or an open network by name."""
+    if getattr(a, "ssid", None) is None:
+        a.ssid = neutral_ssid()
+        a.ssid_generated = True
+    sec = getattr(a, "wifi_security", None) or "wpa2"
+    if a.passphrase == "" and sec == "wpa2":
+        die("--passphrase \"\" no longer means an open network. For no password use --wifi-security owe "
+            "(each phone still encrypted; phones from ~2019 on) or --wifi-security open (no encryption at all).")
+    if sec in ("owe", "owe-transition", "open"):
+        if a.passphrase:
+            die(f"--wifi-security {sec} has no password: leave out --passphrase")
+        a.passphrase = ""
+    elif a.passphrase is None:
+        a.passphrase = random_passphrase()
+        a.passphrase_generated = True
+    a.wifi_security = sec
+
+
 def validate(a) -> None:
     """Every unit option, checked before the long write and before any file is made."""
     if not HOSTNAME_RE.fullmatch(a.hostname) or a.hostname.isdigit():
@@ -386,7 +423,11 @@ def validate(a) -> None:
         die(f"--country {a.country!r}: expected a two-letter code such as US")
     if not all(LANG_RE.fullmatch(x) for x in a.langs.split(",")):
         die(f"--langs {a.langs!r}: expected ISO 639-3 codes such as eng,spa")
+    wifi_defaults(a)
     wifi_name(a.ssid, "--ssid")
+    if PRODUCT_SSID_RE.search(a.ssid):
+        die(f"--ssid {a.ssid!r} names the product: every passer-by would know what is in the house. "
+            f"Pick a neutral name, e.g. --ssid {neutral_ssid()} (or leave --ssid out for one like it).")
     wifi_psk(a.passphrase or "", "--passphrase")
     if a.pin is not None and not PIN_RE.fullmatch(a.pin):
         die("--pin must be 6–32 letters/digits (the Badger refuses anything shorter)")
@@ -469,6 +510,7 @@ def render_config(a) -> str:
     setv("network", "hostname", a.hostname)
     setv("network", "ssid", a.ssid)
     setv("network", "passphrase", a.passphrase or "")
+    setv("network", "security", a.wifi_security)
     setv("network", "country", a.country)
     setv("upd", "tier", a.tier)
     setv("upd", "languages", a.langs.split(","))
@@ -604,6 +646,12 @@ def inject(boot: Path, a) -> None:
     print(f" injected: software ({human(len(tgz))}), prepper.toml, first-boot ({mode})"
           + (", relay proxy" if a.relay else "") + (f", {len(keys)} SSH key(s)" if keys else ", password SSH")
           + (", for sale (no personal-use content)" if getattr(a, "for_sale", False) else ""))
+    wifi = {"wpa2": f"password  {a.passphrase}" if getattr(a, "passphrase_generated", False) else "your password",
+            "owe": "no password (Enhanced Open: each phone encrypted; phones before ~2019 can't join)",
+            "owe-transition": "no password (Enhanced Open plus an open twin for older phones; EXPERIMENTAL)",
+            "open": "no password, NO encryption (anyone in range can read it)"}[a.wifi_security]
+    print(f" Wi-Fi: {a.ssid!r}, {wifi}" + (" — write it down (also on the front panel: Join Wi-Fi)"
+                                           if getattr(a, "passphrase_generated", False) else ""))
 
 
 def cmd_inject(a) -> int:
@@ -789,8 +837,14 @@ def main() -> int:
         p.add_argument("--tier", choices=TIERS, default="base")
         p.add_argument("--langs", default="eng", help="comma list of ISO 639-3 codes, e.g. eng,spa")
         p.add_argument("--hostname", default="badger")
-        p.add_argument("--ssid", default="HoneyBadger")
-        p.add_argument("--passphrase", default="", help="Wi-Fi password (8+ chars); empty = open network")
+        p.add_argument("--ssid", default=None, help="Wi-Fi name (default: a neutral random one like Home-K7QX; "
+                                                       "names saying Badger/prepper are refused)")
+        p.add_argument("--passphrase", default=None, help="Wi-Fi password, 8–63 chars (default: a random one, printed "
+                                                           "at the end and shown on the front panel)")
+        p.add_argument("--wifi-security", choices=("wpa2", "owe", "owe-transition", "open"), default="wpa2",
+                       help="wpa2 (default): a password · owe: Enhanced Open, no password but each phone's traffic is "
+                            "encrypted (phones from ~2019 on) · owe-transition: EXPERIMENTAL, owe plus an open twin network so older "
+                            "phones can join too (those are not encrypted) · open: no password, no encryption")
         p.add_argument("--country", default="US")
         p.add_argument("--timezone", default="America/Denver")
         p.add_argument("--pin", help="admin PIN for the launcher's Settings page")

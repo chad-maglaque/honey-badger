@@ -21,7 +21,17 @@ hold 3 s on the home screen = shut down (with confirmation).
   Updates      check · download · import from USB · export to USB
   USB          safely eject
   Wi-Fi        on / off
-  System       restart · shut down
+  System       restart · shut down · panel lock
+
+Panel lock (optional, off until the owner sets it): a code of 4–8 digits entered with the knob
+(turn to pick a digit, press to add it, then OK). It guards Invite / Approve device, Family radio,
+Services on/off, Wi-Fi off, USB import and Restart / Shut down; Join Wi-Fi and Open app stay open
+([panel] lock_protect changes the list). Wrong codes slow down (30 s, then doubling, up to an hour,
+kept across restarts). A code can only be SET while the admin page has armed it (10 minutes), so a
+visitor can't lock the family out. Forgot it? "Forgot?" on the code screen takes the 12-digit
+recovery code shown when the code was set; or at the console:
+    sudo python3 /opt/prepper/software/panel/panel.py --reset-lock
+Holding the knob down while the Badger starts opens the recovery screen directly.
 
 `python3 panel.py --console` runs the same menus in a terminal
 (a/d = turn, space = press, h = hold, q = quit) for testing on a laptop.
@@ -29,6 +39,7 @@ hold 3 s on the home screen = shut down (with confirmation).
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -58,6 +69,9 @@ API = os.environ.get("PREPPER_API", "http://127.0.0.1:8000")
 PANEL_KEY = Path(os.environ.get("PANEL_KEY", "/etc/prepper/panel.key"))
 PANEL_KEY_HASH = Path(os.environ.get("PANEL_KEY_HASH", "/etc/prepper/panel.key.sha256"))
 _key_cache: dict = {}
+PANEL_LOCK = Path(os.environ.get("PANEL_LOCK", "/etc/prepper/panel-lock.json"))
+# Written by the portal when the admin taps "Set up a panel code" (setting one is allowed for 10 min).
+PANEL_LOCK_ARM = Path(os.environ.get("PANEL_LOCK_ARM", "/var/lib/prepper/portal/panel-lock-arm.json"))
 
 
 # ───────────────────────────── data ──────────────────────────────────────────
@@ -343,6 +357,137 @@ def write_antenna(value: str, now: float, by: str = "front panel") -> str | None
         os.close(dfd)
 
 
+# ───────────────────────────── panel lock ────────────────────────────────────
+
+LOCK_KEYS = ("invite", "radio", "services", "wifi_off", "usb_import", "shutdown",      # guarded by default
+             "wifi_join", "app", "power", "updates", "usb_export", "eject", "time", "status")
+DEFAULT_PROTECT = LOCK_KEYS[:6]
+LOCK_KDF = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32, "maxmem": 64 * 1024 * 1024}
+LOCK_FREE_TRIES, LOCK_BASE_WAIT, LOCK_MAX_WAIT = 3, 30.0, 3600.0
+UNLOCK_FOR = 300.0                      # an unlocked panel locks again after 5 min (or when it sleeps)
+CODE_MIN, CODE_MAX, RECOVERY_LEN = 4, 8, 12
+
+
+def _lock_hash(code: str, salt: str) -> str:
+    return hashlib.scrypt(code.encode(), salt=salt.encode(), **LOCK_KDF).hex()
+
+
+class PanelLock:
+    """The front panel's optional code. One root-only file (0600): salted scrypt hashes of the code and
+    of a recovery code, and the wrong-try counter (so a restart doesn't reset the slow-down). The portal
+    only sees whether the file exists. A damaged file locks (fail closed): the console reset clears it."""
+
+    def __init__(self, path: Path = PANEL_LOCK, clock=time.time):
+        self.path, self.clock = Path(path), clock
+
+    def _read(self) -> dict | None:
+        """The lock record; None = no lock; {"damaged": True} = there but unreadable."""
+        try:
+            fd = os.open(self.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return {"damaged": True}
+        try:
+            with os.fdopen(fd, "rb") as fh:
+                d = json.loads(fh.read(65536))
+        except (OSError, ValueError, RecursionError):
+            return {"damaged": True}
+        ok = isinstance(d, dict) and all(isinstance(d.get(k), str) and d[k] for k in ("salt", "hash", "rsalt", "rhash"))
+        return d if ok else {"damaged": True}
+
+    def _write(self, d: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.{secrets.token_hex(3)}")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(json.dumps(d))
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def is_set(self) -> bool:
+        return self._read() is not None
+
+    def damaged(self) -> bool:
+        return bool((self._read() or {}).get("damaged"))
+
+    def wait(self) -> float:
+        d = self._read() or {}
+        until = finite(d.get("until")) or 0.0
+        now = self.clock()
+        return max(0.0, min(until, now + LOCK_MAX_WAIT) - now)
+
+    @staticmethod
+    def valid_code(code: str) -> bool:
+        return isinstance(code, str) and code.isdigit() and code.isascii() and CODE_MIN <= len(code) <= CODE_MAX
+
+    def set(self, code: str) -> str:
+        """Set (or change) the code; returns a new 12-digit recovery code to write down."""
+        if not self.valid_code(code):
+            raise ValueError(f"the code must be {CODE_MIN}–{CODE_MAX} digits")
+        rec = "".join(secrets.choice("0123456789") for _ in range(RECOVERY_LEN))
+        salt, rsalt = secrets.token_hex(16), secrets.token_hex(16)
+        self._write({"v": 1, "salt": salt, "hash": _lock_hash(code, salt), "rsalt": rsalt,
+                     "rhash": _lock_hash(rec, rsalt), "fails": 0, "until": 0, "set_at": self.clock()})
+        return rec
+
+    def _try(self, code: str, which: str) -> tuple[str, float]:
+        d = self._read()
+        if d is None:
+            return "ok", 0.0
+        if d.get("damaged"):
+            return "damaged", 0.0
+        wait = self.wait()
+        if wait > 0:
+            return "wait", wait
+        salt, want = (d["salt"], d["hash"]) if which == "code" else (d["rsalt"], d["rhash"])
+        good = isinstance(code, str) and code.isdigit() and 0 < len(code) <= RECOVERY_LEN \
+            and hmac.compare_digest(_lock_hash(code, salt), want)
+        if good:
+            if d.get("fails"):
+                d.update(fails=0, until=0)
+                self._write(d)
+            return "ok", 0.0
+        n = int(finite(d.get("fails")) or 0) + 1
+        d["fails"] = n
+        if n >= LOCK_FREE_TRIES:
+            d["until"] = self.clock() + min(LOCK_MAX_WAIT, LOCK_BASE_WAIT * 2 ** (n - LOCK_FREE_TRIES))
+        self._write(d)
+        return "bad", self.wait()
+
+    def check(self, code: str) -> tuple[str, float]:
+        """("ok"|"bad"|"wait"|"damaged", seconds to wait)."""
+        return self._try(code, "code")
+
+    def recover(self, code: str) -> tuple[str, float]:
+        """The recovery code: right → the lock is removed (set a new one when you like)."""
+        st, w = self._try(code, "recovery")
+        if st == "ok":
+            self.clear()
+        return st, w
+
+    def clear(self) -> None:
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def lock_armed(path: Path = PANEL_LOCK_ARM, now: float | None = None) -> bool:
+    """May a panel code be SET now? Only within the 10 minutes after the admin page asked for it."""
+    d = read_json_file(path, 4096)
+    until = finite(d.get("until")) if isinstance(d, dict) else None
+    now = time.time() if now is None else now
+    return until is not None and now <= until <= now + 900
+
+
 def fmt_reading(metric: str, v: float, us: bool = False) -> str:
     unit, digits, _ = SENSOR_METRICS[metric]
     if metric == "flood":
@@ -506,7 +651,9 @@ class Panel:
     def __init__(self, disp, cfg: dict):
         self.d, self.cfg = disp, cfg
         net = cfg.get("network", {})
-        self.ssid, self.psk = net.get("ssid", "HoneyBadger"), net.get("passphrase", "")
+        self.ssid, self.psk = net.get("ssid", "Home-Hotspot"), net.get("passphrase", "")
+        if net.get("security") in ("owe", "open", "owe-transition"):
+            self.psk = ""         # a password-free network: the QR must say nopass even if a passphrase is left in the file
         self.url = f"http://{net.get('hostname', 'badger')}.lan"
         portal = cfg.get("portal", {})
         self.link_file = Path(portal.get("mesh_channel_link", "/var/lib/prepper/portal/mesh-channel.json"))
@@ -531,6 +678,15 @@ class Panel:
         self.clock = time.time                # wall clock, for the other services' timestamps (tests swap it)
         self.spawn = lambda fn: threading.Thread(target=fn, daemon=True).start()
         self.polls = {"aidstation": Poll(fetch_aid), "missing": Poll(fetch_missing)}
+        pc = cfg.get("panel", {}) if isinstance(cfg.get("panel"), dict) else {}
+        lf = pc.get("lock_file")
+        self.plock = PanelLock(Path(lf) if isinstance(lf, str) and os.path.isabs(lf) else PANEL_LOCK)
+        af = portal.get("panel_lock_arm") if isinstance(portal, dict) else None
+        self.arm_file = Path(af) if isinstance(af, str) and os.path.isabs(af) else PANEL_LOCK_ARM
+        prot = pc.get("lock_protect")
+        self.protect = {k for k in prot if k in LOCK_KEYS} if isinstance(prot, list) else set(DEFAULT_PROTECT)
+        self.unlocked_until = 0.0         # monotonic; 0 = locked (when a code is set)
+        self.code_buf, self.code_sel, self.code_mode, self.code_then, self.code_first = "", 0, "unlock", None, ""
 
     # — menu tree (built fresh so labels show current state) —
     def root(self) -> list:
@@ -539,32 +695,183 @@ class Panel:
         onoff = lambda k: "on " if svc.get(k) else "off"
         return [
             # the password is printed too: this screen is the way back in if a new password was lost
-            ("Join Wi-Fi (QR)", self.wifi_screen),
-            ("Open app (QR)", lambda: self.show_qr(self.url, "Open\n" + self.url.replace("http://", ""))),
-            ("Invite member (QR)", lambda: self.confirm("New family\ninvite?", self.invite_qr)),
-            ("Family radio", [("Channel link (QR)", lambda: self.confirm("Show radio\nkey QR?", self.radio_link_qr)),
-                              ("Bluetooth PIN", self.bt_pin)]),
-            ("Status", self.status_rows),
+            ("Join Wi-Fi (QR)", self.guard("wifi_join", self.wifi_screen)),
+            ("Open app (QR)", self.guard("app", lambda: self.show_qr(self.url, "Open\n" + self.url.replace("http://", "")))),
+            ("Invite member (QR)", self.guard("invite", lambda: self.confirm("New family\ninvite?", self.invite_qr))),
+            *self.approve_entries(),
+            ("Family radio", self.guard("radio", lambda: self.show_list("Family radio", [
+                ("Channel link (QR)", lambda: self.confirm("Show radio\nkey QR?", self.radio_link_qr)),
+                ("Bluetooth PIN", self.bt_pin)]))),
+            ("Status", self.guard("status", self.status_rows)),
             *self.feature_entries(),
-            ("Power mode", [("Endurance", lambda: self.run("power-mode", "endurance")),
-                            ("Balanced", lambda: self.run("power-mode", "balanced")),
-                            ("Full", lambda: self.run("power-mode", "full"))]),
-            ("Services", [(f"AI  [{onoff('llama')}]", lambda: self.toggle("llama", svc)),
-                          (f"Courses [{onoff('kolibri')}]", lambda: self.toggle("kolibri", svc)),
-                          (f"Mesh [{onoff('mesh')}]", lambda: self.toggle("mesh", svc)),
-                          (f"Alerts [{onoff('alerts')}]", lambda: self.toggle("alerts", svc))]),
-            ("Updates", [("Check now", lambda: self.run("update-check")),
-                         ("Download now", lambda: self.run("update-apply")),
-                         ("Import from USB", self.import_usb),
-                         ("Export to USB", self.export_usb)]),
-            ("Time format", [(f"{'● ' if self.time_mode(s) == m else '  '}{l}", (lambda m=m: self.set_timefmt(m)))
+            ("Power mode", self.guard("power", lambda: self.show_list("Power mode", [
+                ("Endurance", lambda: self.run("power-mode", "endurance")),
+                ("Balanced", lambda: self.run("power-mode", "balanced")),
+                ("Full", lambda: self.run("power-mode", "full"))]))),
+            ("Services", self.guard("services", lambda: self.show_list("Services", [
+                (f"AI  [{onoff('llama')}]", lambda: self.toggle("llama", svc)),
+                (f"Courses [{onoff('kolibri')}]", lambda: self.toggle("kolibri", svc)),
+                (f"Mesh [{onoff('mesh')}]", lambda: self.toggle("mesh", svc)),
+                (f"Alerts [{onoff('alerts')}]", lambda: self.toggle("alerts", svc))]))),
+            ("Updates", [("Check now", self.guard("updates", lambda: self.run("update-check"))),
+                         ("Download now", self.guard("updates", lambda: self.run("update-apply"))),
+                         ("Import from USB", self.guard("usb_import", self.import_usb)),
+                         ("Export to USB", self.guard("usb_export", self.export_usb))]),
+            ("Time format", [(f"{'● ' if self.time_mode(s) == m else '  '}{l}",
+                              self.guard("time", (lambda m=m: self.set_timefmt(m))))
                              for m, l in (("local", "Local"), ("utc", "UTC"), ("nutime", "Nu:Time™"))]),
-            ("USB: eject", self.eject_usb),
+            ("USB: eject", self.guard("eject", self.eject_usb)),
             ("Wi-Fi", [("Turn on", lambda: self.run("wifi-on")),
-                       ("Turn off", lambda: self.confirm("Wi-Fi off?", lambda: self.run("wifi-off")))]),
-            ("System", [("Restart", lambda: self.confirm("Restart?", lambda: self.run("reboot"))),
-                        ("Shut down", lambda: self.confirm("Shut down?", lambda: self.run("shutdown")))]),
+                       ("Turn off", self.guard("wifi_off", lambda: self.confirm("Wi-Fi off?", lambda: self.run("wifi-off"))))]),
+            ("System", [("Restart", self.guard("shutdown", lambda: self.confirm("Restart?", lambda: self.run("reboot")))),
+                        ("Shut down", self.guard("shutdown", lambda: self.confirm("Shut down?", lambda: self.run("shutdown")))),
+                        ("Panel lock", self.lock_menu)]),
         ]
+
+    # — panel lock —
+    def locked(self, key: str) -> bool:
+        """Does `key` need the code right now?"""
+        if key not in self.protect or time.monotonic() < self.unlocked_until:
+            return False
+        return self.plock.is_set()
+
+    def guard(self, key: str, action):
+        """`action`, behind the panel code when `key` is protected and the panel is locked."""
+        def run():
+            if self.locked(key):
+                return self.ask_code("unlock", action)
+            return action()
+        return run
+
+    def ask_code(self, mode: str, then=None):
+        """The code screen: turn = pick a digit (or OK / Del / Forgot? / Cancel), press = take it."""
+        if mode in ("unlock", "recover") and self.plock.damaged():
+            return self.show_msg("Panel lock file\nis damaged. At the\nconsole: panel.py\n--reset-lock")
+        wait = self.plock.wait() if mode in ("unlock", "recover") else 0
+        if wait > 0:
+            return self.show_msg(f"Too many wrong\ncodes. Try again\nin {int(wait // 60) + 1} min.")
+        self.code_mode, self.code_then, self.code_buf, self.code_sel = mode, then, "", 0
+        self.screen = "code"
+        self.draw()
+
+    def code_choices(self) -> list[str]:
+        extra = ["OK", "Del"] + (["Forgot?"] if self.code_mode == "unlock" else []) + ["Cancel"]
+        return [str(i) for i in range(10)] + extra
+
+    def code_press(self):
+        ch = self.code_choices()[self.code_sel % len(self.code_choices())]
+        limit = RECOVERY_LEN if self.code_mode == "recover" else CODE_MAX
+        if ch.isdigit():
+            if len(self.code_buf) < limit:
+                self.code_buf += ch
+            return self.draw()
+        if ch == "Del":
+            self.code_buf = self.code_buf[:-1]
+            return self.draw()
+        if ch == "Cancel":
+            self.code_buf, self.code_then = "", None
+            self.screen = "menu" if self.stack else "home"
+            return self.draw()
+        if ch == "Forgot?":
+            return self.ask_code("recover", self.code_then)
+        code, self.code_buf = self.code_buf, ""         # OK
+        mode, then = self.code_mode, self.code_then
+        if mode == "unlock":
+            st, wait = self.plock.check(code)
+            if st == "ok":
+                self.unlocked_until = time.monotonic() + UNLOCK_FOR
+                self.screen = "menu" if self.stack else "home"
+                return then() if then else self.draw()
+            return self.code_refused(st, wait)
+        if mode == "recover":
+            st, wait = self.plock.recover(code)
+            if st == "ok":
+                self.unlocked_until = 0.0
+                return self.show_msg("Recovery code OK.\nPanel lock is off.\nSet a new code:\nSystem → Panel lock")
+            return self.code_refused(st, wait)
+        if mode == "set1":
+            if not PanelLock.valid_code(code):
+                return self.show_msg(f"Use {CODE_MIN} to {CODE_MAX}\ndigits.")
+            self.code_first = code
+            return self.ask_code("set2")
+        if mode == "set2":
+            first, self.code_first = self.code_first, ""
+            if code != first:
+                return self.show_msg("The two codes\ndiffer. Nothing\nwas changed.")
+            try:
+                rec = self.plock.set(code)
+            except (OSError, ValueError) as e:
+                return self.show_msg("Couldn't save:\n" + str(e)[:40])
+            self.unlocked_until = 0.0
+            return self.show_msg("Recovery code:\n" + " ".join(rec[i:i + 4] for i in range(0, len(rec), 4)) +
+                                 "\nWrite it down! It\nclears a lost code.")
+        return self.draw()
+
+    def code_refused(self, st: str, wait: float):
+        if st == "damaged":
+            return self.show_msg("Panel lock file\nis damaged. At the\nconsole: panel.py\n--reset-lock")
+        if wait > 0:
+            return self.show_msg(f"Wrong code.\nTry again in\n{int(wait // 60) + 1} min.")
+        return self.show_msg("Wrong code.")
+
+    def lock_menu(self):
+        """System → Panel lock: set (only while the admin page has armed it), change, turn off, lock now."""
+        if not self.plock.is_set():
+            if not lock_armed(self.arm_file):
+                return self.show_list("Panel lock", [
+                    ("Off. To set a code,", None), ("open the Badger app:", None), ("Settings → admin →", None),
+                    ("Set up panel code", None)])
+            return self.show_list("Panel lock", [("Set a code", lambda: self.ask_code("set1"))])
+        return self.show_list("Panel lock", [
+            ("Lock now", self.lock_now),
+            ("Change code", self.guard_always(lambda: self.ask_code("set1"))),
+            ("Turn lock off", self.guard_always(lambda: self.confirm("Turn the panel\nlock off?", self.lock_off)))])
+
+    def guard_always(self, action):
+        """Changing or removing the code needs the code (or the recovery code), whatever lock_protect says."""
+        def run():
+            if self.plock.is_set() and time.monotonic() >= self.unlocked_until:
+                return self.ask_code("unlock", action)
+            return action()
+        return run
+
+    def lock_now(self):
+        self.unlocked_until = 0.0
+        self.show_msg("Panel locked.")
+
+    def lock_off(self):
+        self.plock.clear()
+        self.unlocked_until = 0.0
+        self.show_msg("Panel lock is off.")
+
+    # — devices waiting for approval (a device the admin added to an existing member) —
+    def approve_entries(self) -> list:
+        try:
+            pend = api("/api/local/devices", 65536).get("pending")
+        except Exception:  # noqa: BLE001
+            pend = None
+        if not isinstance(pend, list) or not pend:
+            return []
+        return [(f"Approve device ({len(pend)})", self.guard("invite", lambda: self.approve_screen(pend)))]
+
+    def approve_screen(self, pend: list):
+        rows = []
+        for x in pend[:10]:
+            if not isinstance(x, dict) or not isinstance(x.get("member"), str) or not isinstance(x.get("device"), str):
+                continue
+            label = f"{clean(x.get('name'), 10)}: {clean(x.get('label'), 9)}"
+            rows.append((label, (lambda x=x: self.show_list(clean(x.get("name"), 16), [
+                (f"New device: {clean(x.get('label'), 9)}", None),
+                ("Approve", lambda: self.confirm("Approve this\ndevice?", lambda: self.approve(x, True))),
+                ("Refuse", lambda: self.approve(x, False))]))))
+        self.show_list("Approve device", rows or [("Nothing waiting", None)])
+
+    def approve(self, x: dict, yes: bool):
+        r = api_post("/api/local/approve", {"member": x["member"], "device": x["device"], "approve": yes})
+        if isinstance(r, dict) and r.get("ok"):
+            return self.show_msg("Approved. The\nfamily board says\nso." if yes else "Refused. That\ndevice is removed.")
+        err = r.get("error") if isinstance(r, dict) else None
+        self.show_msg("Didn't work:\n" + (err if isinstance(err, str) else "?")[:40])
 
     def time_mode(self, s: dict) -> str:
         return self.timefmt or (s.get("clock") or {}).get("display", "local")
@@ -586,17 +893,23 @@ class Panel:
     def wifi_screen(self):
         """QR + the whole password beside it, 9 characters a line (WPA allows 63: up to 7 lines,
         which the display draws in a smaller font)."""
+        if self.locked("wifi_join"):
+            return self.ask_code("unlock", self.wifi_screen)
         if not self.psk:
             return self.show_qr(self.wifi_qr(), f"{self.ssid[:9]}\nopen")
         self.show_qr(self.wifi_qr(), f"{self.ssid[:9]}\n" + "\n".join(self.psk[i:i + 9] for i in range(0, len(self.psk), 9)))
 
     def radio_link_qr(self):
+        if self.locked("radio"):
+            return self.ask_code("unlock", self.radio_link_qr)
         url = read_secret_json(self.link_file, "url")
         if not url:
             return self.show_msg("No radio link\nyet: is the mesh\nradio plugged in?")
         self.show_qr(url, "Family\nradio\nchannel\nScan in\nMeshtastic")
 
     def bt_pin(self):
+        if self.locked("radio"):
+            return self.ask_code("unlock", self.bt_pin)
         pin = read_secret_json(self.bt_pin_file, "pin")
         self.show_msg(f"Radio Bluetooth\nPIN: {pin}" if pin else "Radio Bluetooth\nPIN: unchanged\n(see the radio's\nown screen/manual)")
 
@@ -606,6 +919,8 @@ class Panel:
 
     def invite_qr(self):
         """A one-time family invite, as a QR code the new member scans on the Badger's Wi-Fi."""
+        if self.locked("invite"):
+            return self.ask_code("unlock", self.invite_qr)
         r = api_post("/api/local/invite")
         r = r if isinstance(r, dict) else {"error": "odd reply from the launcher"}
         code = r.get("code")
@@ -1072,6 +1387,12 @@ class Panel:
                              title=title, sel=self.sel - start)
             elif self.screen == "confirm":
                 self.d.lines(["No", "Yes"], title=getattr(self, "confirm_q", "Sure?").replace("\n", " "), sel=self.sel)
+            elif self.screen == "code":
+                ch = self.code_choices()
+                cur = ch[self.code_sel % len(ch)]
+                title = {"unlock": "Panel code", "recover": "Recovery code", "set1": "New code",
+                         "set2": "Same again"}.get(self.code_mode, "Code")
+                self.d.lines([("•" * len(self.code_buf)) or "-", f"‹ {cur} ›", "turn · press", ""], title=title, sel=1)
 
     # — input —
     def wake(self) -> bool:
@@ -1090,6 +1411,8 @@ class Panel:
                 self.sel = (self.sel + step) % n
             elif self.screen == "confirm":
                 self.sel = 1 - self.sel
+            elif self.screen == "code":
+                self.code_sel = (self.code_sel + step) % len(self.code_choices())
             elif self.screen == "home":
                 self.home_page += step
             self.draw()
@@ -1102,6 +1425,8 @@ class Panel:
                 self.stack, self.sel, self.screen = [("Menu", self.root())], 0, "menu"
             elif self.screen in ("qr", "msg"):
                 self.screen = "menu" if self.stack else "home"
+            elif self.screen == "code":
+                return self.code_press()
             elif self.screen == "confirm":
                 act, self.confirm_action = self.confirm_action, None
                 self.screen = "menu"
@@ -1125,7 +1450,7 @@ class Panel:
         self.wake()
         if self.screen == "home":
             self.stack = [("Menu", [])]
-            self.confirm("Shut down?", lambda: self.run("shutdown"))
+            self.guard("shutdown", lambda: self.confirm("Shut down?", lambda: self.run("shutdown")))()
 
     def tick(self):
         try:
@@ -1133,8 +1458,9 @@ class Panel:
         except Exception:  # noqa: BLE001
             pass
         if not self.asleep and time.monotonic() - self.last_input > self.sleep_after:
-            if self.screen in ("msg", "qr", "confirm", "menu"):
+            if self.screen in ("msg", "qr", "confirm", "menu", "code"):
                 self.screen, self.stack = "home", []
+            self.unlocked_until, self.code_buf, self.code_then = 0.0, "", None    # asleep = locked again
             self.asleep = True; self.d.sleep(True)
             return
         if not self.asleep and self.screen == "home":
@@ -1185,6 +1511,10 @@ def run_hardware(p: Panel, cfg: dict):
         else:
             p.press()
     btn.when_released = released
+    if btn.is_pressed and p.plock.is_set():
+        # held down while the Badger starts: straight to the recovery-code screen (lost panel code)
+        held["v"] = True                                # this press is not a menu press
+        p.ask_code("recover")
     while True:
         update_led()
         time.sleep(5)
@@ -1213,6 +1543,16 @@ def main() -> int:
     cfg = tomllib.loads(cfg_path.read_text()) if cfg_path.exists() else {}
     if "--make-key" in sys.argv:                     # install.sh: set up the panel key once, as root
         return 0 if ensure_panel_key() else 1
+    if "--reset-lock" in sys.argv:                   # console recovery: a lost panel code (root only)
+        lf = (cfg.get("panel") or {}).get("lock_file") if isinstance(cfg.get("panel"), dict) else None
+        lock = PanelLock(Path(lf) if isinstance(lf, str) and os.path.isabs(lf) else PANEL_LOCK)
+        try:
+            lock.clear()
+        except OSError as e:
+            print(f"panel: could not remove {lock.path} ({e}); run this with sudo", file=sys.stderr)
+            return 1
+        print("panel: the front-panel code is removed; set a new one from the admin page + System → Panel lock")
+        return 0
     if os.geteuid() == 0:
         ensure_panel_key()
     if "--console" in sys.argv:

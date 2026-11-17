@@ -7,7 +7,7 @@
 | | Detail |
 |---|---|
 | Hardware | Pi 4B 2 GB, 512 GB SD card, aluminium case 3.5 × 2.75 × 1 in, USB-C power, one USB port |
-| Network | Own Wi-Fi "HoneyBadger", up to 20 devices, http://10.10.10.10 |
+| Network | Own Wi-Fi (neutral name you choose, random WPA2 password by default, optional password-free OWE/open), up to 20 devices, http://10.10.10.10 |
 | Content | 16 modules: Wikipedia (EN, 6–7 M articles), Gutenberg (60k), TED (farming/weather), wikiHow (90k+), Stack Exchange (outdoors/sustainability), Ready.gov/FEMA, medical wikis (50k+), survival bookshelf, Ky Furneaux guides, exclusive eBooks, RepeaterBook, Morse decoder, phrase translator (6 languages), street maps + satellite (NA/EU/Oceania), 63 National Park maps, iFixit; plus USB file hosting |
 | Software | Internet-in-a-Box + Kiwix, web console, unified search |
 | Updates | Free via the web console; yearly paid content packs on SD |

@@ -764,8 +764,47 @@ def _vault(ctx) -> Vault:
         return _V
 
 
+def hotspot_has_password(ctx) -> bool:
+    """WPA2 with a passphrase ([network] security auto/wpa2), as os/render.py configures hostapd.
+    "owe" (Enhanced Open) and "open" have no password: owe stops passive listeners but anyone can
+    set up a look-alike hotspot in front of it, so it counts as no password here."""
+    net = (ctx.raw_config() or {}).get("network") or {}
+    psk = net.get("passphrase", "")
+    return isinstance(psk, str) and bool(psk) and net.get("security", "auto") in ("auto", "wpa2")
+
+
+def plain_http(req) -> bool:
+    """Plain http:// from a phone. nginx always says which (X-Forwarded-Proto); a request on the Badger
+    itself (loopback, no proxy headers) counts as secure, like Handler.secure_transport."""
+    if req is None or req.secure_transport():
+        return False
+    proto = (req.headers.get("X-Forwarded-Proto") or "").strip().lower()
+    return proto == "http" or req.client_address[0] not in ("127.0.0.1", "::1")
+
+
+def transport_refusal(req, ctx) -> str | None:
+    """The vault never takes a passphrase or hands out a document over plain http on a hotspot without a
+    password: every frame there can be read by anyone in range, no need to even join (red-team finding 2)."""
+    if not plain_http(req) or hotspot_has_password(ctx):
+        return None
+    net = (ctx.raw_config() or {}).get("network") or {}
+    host = str(net.get("hostname") or "badger")
+    https = net.get("https", True) is not False
+    return ("This Wi-Fi has no password, so anyone nearby could read the vault over this connection. "
+            + (f"Open https://{host}.lan/#/vault instead (install the Badger certificate first: "
+               "Phones & laptops page), or ask the admin to set a Wi-Fi password."
+               if https else "Ask the admin to set a Wi-Fi password (or turn on https)."))
+
+
+TRANSPORT_WARNING = ("You're on plain http://. Anyone who knows the Wi-Fi password could read the vault over "
+                     "this connection; https:// is safer.")
+
+
 def _api(fn):
     def h(req, ctx, args):
+        why = transport_refusal(req, ctx)
+        if why and fn.__name__ != "h_lock":           # locking is always allowed
+            return 403, {"ok": False, "error": why, "insecure": True}
         try:
             return fn(req, ctx, args, _vault(ctx))
         except Refused as e:
@@ -793,7 +832,10 @@ def _tail(args, prefix: str) -> str:
 
 @_api
 def h_status(req, ctx, args, v):
-    return v.status(args["member"], args["ip"])
+    st = v.status(args["member"], args["ip"])
+    if plain_http(req):
+        st["warning"] = TRANSPORT_WARNING
+    return st
 
 
 @_api

@@ -296,12 +296,15 @@ class Log(Base):
         self.add(key, person="old", help=["food"], at=now - 3 * 86400)
         self.add(key, person="a", help=["water", "first_aid"], count=2)
         self.add(key, person="b", help=["water"], followup=True)
-        s = self.req("GET", f"/api/aidstation/summary?since={now - 3600}", aid=key)[1]
+        s = self.req("GET", f"/api/aidstation/summary?since={now - 3600}", admin=self.admin)[1]
         self.assertEqual((s["visits"], s["people"], s["help"]["water"], s["help"]["first_aid"], s["help"]["food"]),
                          (2, 3, 2, 1, 0))
         self.assertEqual((s["followups_open"], s["total_records"]), (1, 3))
-        s = self.req("GET", "/api/aidstation/summary?since=nonsense", aid=key)[1]      # falls back to local midnight
+        s = self.req("GET", "/api/aidstation/summary?since=nonsense", admin=self.admin)[1]   # falls back to local midnight
         self.assertGreaterEqual(s["visits"], 2)
+        # CHANGED (red team 12): a volunteer always gets today's counts, whatever `since` says, and no totals
+        s = self.req("GET", f"/api/aidstation/summary?since={now - 30 * 86400}", aid=key)[1]
+        self.assertEqual((s["scope"], s["help"]["food"], "total_records" in s), ("today", 0, False))
 
     def test_validation(self):
         key = self.staff()
@@ -441,6 +444,72 @@ class Units(unittest.TestCase):
         self.assertEqual(m.norm_code(" k7qx-m2pd_9z "), "K7QXM2PD9Z")
         self.assertEqual(m.norm_code(None), "")
         self.assertEqual(len(m.norm_code("A" * 100)), 32)
+
+
+class Scoping(Base):
+    """Red team 12: a volunteer at the table can't read out the whole aid log."""
+
+    def test_volunteer_sees_and_changes_only_their_own_records(self):
+        maria, juan = self.staff("Maria", "10.0.3.1"), self.staff("Juan", "10.0.3.2")
+        a = self.add(maria, person="Ana Ruiz", needs="insulin", followup=True)[1]["entry"]
+        b = self.add(juan, person="Bea Soto", needs="dialysis", followup=True)[1]["entry"]
+        self.req("POST", "/api/aidstation/entry", {"person": "Walk-in (admin)"}, admin=self.admin)
+        mine = self.req("GET", "/api/aidstation/entries", aid=maria)[1]
+        self.assertEqual(([e["person"] for e in mine["entries"]], mine["total"], mine["scope"]), (["Ana Ruiz"], 1, "mine"))
+        self.assertEqual(self.req("GET", "/api/aidstation/entries?q=dialysis", aid=maria)[1]["total"], 0)
+        self.assertEqual(self.req("GET", "/api/aidstation/entries?followup=open", aid=maria)[1]["total"], 1)
+        for path, body in (("/api/aidstation/entry", {"id": b["id"], "notes": "x"}),
+                           ("/api/aidstation/followup", {"id": b["id"], "done": True}),
+                           ("/api/aidstation/delete", {"id": b["id"]})):
+            self.assertEqual(self.req("POST", path, body, aid=maria)[0], 404, path)       # not even "it exists"
+        st, body, _ = self.req("GET", "/api/aidstation/export.csv", aid=maria)
+        self.assertEqual(st, 200)
+        self.assertIn("Ana Ruiz", body.decode())
+        self.assertNotIn("Bea Soto", body.decode())
+        self.assertNotIn("Walk-in", body.decode())
+        audit = self.req("GET", "/api/aidstation/admin", admin=self.admin)[1]["audit"]
+        self.assertIn("their own", audit[0]["what"])
+        full = self.req("GET", "/api/aidstation/entries", admin=self.admin)[1]
+        self.assertEqual((full["total"], full["scope"]), (3, "all"))
+        self.assertEqual(self.req("POST", "/api/aidstation/entry", {"id": a["id"], "notes": "ok"}, aid=maria)[0], 200)
+        # a record from before this change (no writer id) belongs to no volunteer
+        self.mod._s(self.ctx)["log"].update(lambda d: (d["entries"].append(
+            {"id": "e_old1234", "at": time.time(), "person": "Old Record", "by": "Maria"}), True))
+        self.assertEqual(self.req("GET", "/api/aidstation/entries?q=old", aid=maria)[1]["total"], 0)
+
+    def test_aid_lead_sees_everything_and_the_role_is_audited(self):
+        maria = self.staff("Maria", "10.0.3.3")
+        self.add(maria, person="Ana Ruiz")
+        st, j, _ = self.req("POST", "/api/aidstation/admin", {"op": "invite", "name": "Lena", "lead": True}, admin=self.admin)
+        self.assertEqual((st, j["lead"]), (200, True))
+        lena = self.req("POST", "/api/aidstation/join", {"code": j["code"]}, ip="10.0.3.4")[1]["key"]
+        self.assertEqual(self.req("GET", "/api/aidstation/me", aid=lena)[1]["staff"], {"name": "Lena", "lead": True})
+        e = self.req("GET", "/api/aidstation/entries", aid=lena)[1]["entries"][0]
+        self.assertEqual(e["person"], "Ana Ruiz")
+        self.assertEqual(self.req("POST", "/api/aidstation/entry", {"id": e["id"], "notes": "seen by lead"}, aid=lena)[0], 200)
+        s = self.req("GET", f"/api/aidstation/summary?since={time.time() - 86400 * 2}", aid=lena)[1]
+        self.assertIn("total_records", s)
+        staff = self.req("GET", "/api/aidstation/admin", admin=self.admin)[1]["staff"]
+        mid = [x["id"] for x in staff if x["name"] == "Maria"][0]
+        self.assertEqual(self.req("POST", "/api/aidstation/admin", {"op": "set_lead", "id": mid, "lead": True}, admin=self.admin)[0], 200)
+        self.add(lena, person="Bo")
+        self.assertEqual(self.req("GET", "/api/aidstation/entries", aid=maria)[1]["total"], 2)
+        self.req("POST", "/api/aidstation/admin", {"op": "set_lead", "id": mid, "lead": False}, admin=self.admin)
+        self.assertEqual(self.req("GET", "/api/aidstation/entries", aid=maria)[1]["total"], 1)
+        for bad in ({"op": "set_lead", "id": "s_nope", "lead": True}, {"op": "set_lead", "id": mid, "lead": "yes"}):
+            self.assertIn(self.req("POST", "/api/aidstation/admin", bad, admin=self.admin)[0], (400, 404))
+        self.assertEqual(self.req("POST", "/api/aidstation/admin", {"op": "set_lead", "id": mid, "lead": True}, aid=lena)[0], 401)
+        what = [a["what"] for a in self.req("GET", "/api/aidstation/admin", admin=self.admin)[1]["audit"]]
+        self.assertTrue(any("aid-lead code" in w for w in what) and any("made a volunteer aid lead" in w for w in what))
+
+    def test_codes_are_stored_salted_and_slow(self):
+        code = self.code()
+        raw = json.loads((self.data / "staff.json").read_text())
+        self.assertTrue(all(k.startswith("s1$") for k in raw["codes"]))
+        self.assertRegex(raw["code_salt"], r"^[0-9a-f]{32}$")
+        import hashlib
+        self.assertNotIn(hashlib.sha256(code.replace("-", "").encode()).hexdigest(), json.dumps(raw))
+        self.assertEqual(self.req("POST", "/api/aidstation/join", {"code": code.lower(), "name": "x"}, ip="10.0.3.9")[0], 200)
 
 
 if __name__ == "__main__":

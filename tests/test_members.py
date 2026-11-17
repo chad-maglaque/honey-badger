@@ -58,6 +58,29 @@ class MembersUnit(unittest.TestCase):
         self.assertNotIn(code.replace("-", ""), raw)
         self.assertEqual((self.tmp / "members.json").stat().st_mode & 0o777, 0o600)
 
+    def test_invite_codes_are_salted_scrypt_and_old_sha256_invites_still_work(self):
+        code = self.db.create_invite()["code"]
+        raw = json.loads((self.tmp / "members.json").read_text())
+        self.assertTrue(all(k.startswith("s1$") for k in raw["invites"]))
+        self.assertRegex(raw["code_salt"], r"^[0-9a-f]{32}$")
+        self.assertNotIn(members._h(members.norm_code(code)), json.dumps(raw))
+        # an invite written before this change (plain SHA-256 key) still redeems during its 24 h
+        raw["invites"][members._h("AAAABBBBCC")] = {"id": "i_old", "expires": self.clock.t + 3600, "created": self.clock.t,
+                                                     "member": None, "name": "Old", "source": "admin"}
+        (self.tmp / "members.json").write_text(json.dumps(raw))
+        self.assertEqual(self.db.join("aaaa-bbbb-cc", "", "phone")[0], "ok")
+        self.assertEqual(self.db.join(code, "New", "phone")[0], "ok")
+
+    def test_pending_device_expires_unapproved(self):
+        ana = self.db.join(self.db.create_invite()["code"], "Ana", "phone")[1]
+        st, m, key = self.db.join(self.db.create_invite(member_id=ana["id"], confirm=True)["code"], "", "tablet")
+        self.assertEqual((st, m["pending"], self.db.auth_status(key)[0]), ("ok", True, "pending"))
+        self.assertEqual(self.db.pending_info(key)["name"], "Ana")
+        self.clock.t += members.PENDING_TTL + 1
+        self.assertEqual(self.db.auth_status(key)[0], "unknown")
+        self.assertEqual(self.db.pending_devices(), [])
+        self.assertRaises(ValueError, self.db.approve_device, ana["id"], m["device"], True)
+
     def test_invite_expires(self):
         code = self.db.create_invite()["code"]
         self.clock.t += members.INVITE_TTL + 1
@@ -276,8 +299,10 @@ services = {{}}
         st, r = self.req("POST", "/api/admin/settings", {"mesh_commands": {"ai": "community", "status": "off",
                                                                             "help": "off", "evil": "community", "q": "root"}}, admin=self.admin)
         self.assertEqual(st, 200, r)
-        self.assertEqual(r["settings"]["mesh_commands"], {"ai": "community", "status": "off", "help": "community"})
+        self.assertEqual(r["settings"]["mesh_commands"], {"ai": "community", "status": "off", "help": "family"})
         self.assertEqual(self.req("POST", "/api/admin/settings", {"mesh_commands": {"ai": "family"}})[0], 401)   # admins only
+        st, r = self.req("POST", "/api/admin/settings", {"mesh_commands": {"q": "ignore", "help": "ignore"}}, admin=self.admin)
+        self.assertEqual((r["settings"]["mesh_commands"]["q"], r["settings"]["mesh_commands"]["help"]), ("ignore", "ignore"))
 
     def test_join_brute_force_and_leave(self):
         server._members = None                        # fresh guess counters
@@ -330,7 +355,7 @@ class MeshRouting(unittest.TestCase):
         c = mb.Commands(lambda t, d: said.append(t), clock=lambda: 0.0, library=lambda q: "LIB", ai=lambda q: "AI",
                         status=lambda: "STATUS", spawn=lambda fn: fn())
         c.handle("!status", "!stranger", trusted=False, reply=said.append)
-        self.assertIn("is for family radios", said[-1])
+        self.assertEqual(said, [])            # CHANGED (red team finding 6): strangers get no refusal at all
         c.handle("!q water", "!other", trusted=False, reply=said.append)
         self.assertEqual(said[-1], "LIB")
         c.handle("!status", "!family", trusted=True, reply=said.append)
@@ -340,11 +365,14 @@ class MeshRouting(unittest.TestCase):
         self.assertEqual(mb.command_access({}), mb.DEFAULT_ACCESS)
         cfg = {"mesh_commands": {"ai": "community", "status": "off", "q": "family", "bogus": "community", "help": "weird"}}
         acc = mb.command_access(cfg)
-        self.assertEqual((acc["!ai"], acc["!status"], acc["!q"], acc["!help"]), ("community", "off", "family", "community"))
+        # CHANGED (red team finding 6): !help defaults to "family" (strangers are ignored)
+        self.assertEqual((acc["!ai"], acc["!status"], acc["!q"], acc["!help"]), ("community", "off", "family", "family"))
         self.assertNotIn("!bogus", acc)
-        # what the admin set in the launcher wins over prepper.toml; help can't be switched off
+        # what the admin set in the launcher wins over prepper.toml; help can't be switched off for family radios
         acc = mb.command_access(cfg, {"ai": "family", "help": "off"})
-        self.assertEqual((acc["!ai"], acc["!help"]), ("family", "community"))
+        self.assertEqual((acc["!ai"], acc["!help"]), ("family", "family"))
+        acc = mb.command_access(cfg, {"help": "community", "q": "ignore"})
+        self.assertEqual((acc["!help"], acc["!q"]), ("community", "ignore"))
 
     def test_levels_apply_live(self):
         said, levels = [], {"!help": "community", "!q": "community", "!ai": "community", "!status": "off"}
@@ -357,8 +385,9 @@ class MeshRouting(unittest.TestCase):
         c.handle("!help", "!stranger", trusted=False, reply=said.append)
         self.assertIn("!ai", said[-1]); self.assertNotIn("!status", said[-1])
         levels["!q"] = "family"                                                  # changed by the admin: applies at once
-        c.handle("!q water", "!stranger", trusted=False, reply=said.append)
-        self.assertIn("is for family radios", said[-1])
+        n = len(said)
+        c.handle("!q water", "!stranger2", trusted=False, reply=said.append)
+        self.assertEqual(len(said), n)        # CHANGED (red team finding 6): silently ignored, no refusal
         self.assertIn("no radio commands", mb.help_text({"!q": "off", "!ai": "off", "!status": "off"}, False))
 
     def test_board_add_goes_to_the_right_file(self):
@@ -477,10 +506,14 @@ class Failsafes(PortalBoards):
         self.assertTrue(self.admin_op({"op": "rotate_mesh_status", "rid": r["id"]})[1]["pending"])
         (self.tmp / "mesh-rotate-result.json").write_text(json.dumps({"id": r["id"], "ok": True, "url": "https://meshtastic.org/e/#X"}))
         done = self.admin_op({"op": "rotate_mesh_status", "rid": r["id"]})[1]
-        self.assertEqual((done["pending"], done["url"]), (False, "https://meshtastic.org/e/#X"))
+        # CHANGED (red team 4): the new key goes to members and the Badger's screen, never to an admin session
+        self.assertEqual((done["pending"], done["ok"], done["url"]), (False, True, None))
+        self.assertIn("needs the new link", done["message"])
         self.assertFalse(self.admin_op({"op": "mesh_link"})[1]["ok"])        # not reported yet
         (self.tmp / "mesh-channel.json").write_text(json.dumps({"url": "https://meshtastic.org/e/#Y", "at": 1}))
-        self.assertEqual(self.admin_op({"op": "mesh_link"})[1]["url"], "https://meshtastic.org/e/#Y")
+        self.assertIsNone(self.admin_op({"op": "mesh_link"})[1]["url"])
+        gil = self.invite_and_join("Gil")
+        self.assertEqual(self.req("GET", "/api/members/radio-link", member=gil)[1]["url"], "https://meshtastic.org/e/#Y")
 
     def test_front_panel_invite_only_from_the_badger_itself(self):
         st, r = self.req("POST", "/api/local/invite", {})                    # straight to the port, as the panel does
@@ -492,6 +525,275 @@ class Failsafes(PortalBoards):
         resp.read()
         self.assertEqual(resp.status, 403)
         c.close()
+
+
+class InsiderProtections(Failsafes):
+    """Red team 4 and 11: the admin PIN is not a master key over the family."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        server.CFG.mesh_pair_file = cls.tmp / "mesh-pair.json"
+
+    def setUp(self):
+        server._last_post.clear()
+        for f in ("mesh-pair.json", "mesh-rotate.json"):
+            try:
+                (self.tmp / f).unlink()
+            except FileNotFoundError:
+                pass
+
+    def mid(self, name):
+        return [m["id"] for m in self.admin_op({"op": "list"})[1]["members"] if m["name"] == name and not m["removed"]][0]
+
+    def family(self, member):
+        return self.req("GET", "/api/board?board=family", member=member)[1]["messages"]
+
+    def extra_device(self, name, label="new phone"):
+        st, inv = self.admin_op({"op": "invite", "id": self.mid(name)})
+        self.assertEqual(st, 200, inv)
+        self.assertTrue(inv["needs_approval"])
+        st, j = self.req("POST", "/api/members/join", {"code": inv["code"], "name": "", "device": label})
+        self.assertEqual(st, 200, j)
+        self.assertTrue(j["pending"])
+        return j["key"]
+
+    def test_device_for_an_existing_member_waits_for_their_approval(self):
+        mom = self.invite_and_join("Mom")
+        kid = self.invite_and_join("Kid")
+        rogue = self.extra_device("Mom", "rogue phone")
+        st, me = self.req("GET", "/api/members/me", member=rogue)
+        self.assertEqual((st, me["member"], me["key"], me["pending"]["name"]), (401, None, "pending", "Mom"))
+        server._last_post.clear()
+        st, r = self.post({"board": "family", "text": "Meet at the old mill"}, member=rogue)
+        self.assertEqual((st, r["key"]), (401, "pending"))                  # nothing posted, key kept
+        self.assertEqual(self.req("GET", "/api/board?board=family", member=rogue)[0], 401)
+        self.assertEqual(self.req("GET", "/api/mesh/nodes", member=rogue)[0], 401)
+        self.assertEqual(self.req("GET", "/api/members/radio-link", member=rogue)[0], 401)
+        self.assertFalse(any("old mill" in m["text"] for m in self.family(mom)))
+        # Mom's own phone is asked; Kid's is not, and Kid can't approve Mom's device
+        appr = self.req("GET", "/api/members/me", member=mom)[1]["approvals"]
+        self.assertEqual([a["label"] for a in appr], ["rogue phone"])
+        self.assertEqual(self.req("GET", "/api/members/me", member=kid)[1]["approvals"], [])
+        st, r = self.req("POST", "/api/members/approve", {"device": appr[0]["device"], "approve": True}, member=kid)
+        self.assertEqual(st, 400)
+        st, r = self.req("POST", "/api/members/approve", {"device": appr[0]["device"], "approve": True}, member=rogue)
+        self.assertEqual(st, 401)                                            # it can't approve itself
+        st, r = self.req("POST", "/api/members/approve", {"device": appr[0]["device"], "approve": "yes"}, member=mom)
+        self.assertEqual(st, 400)
+        # Mom says no: the device is gone for good
+        st, r = self.req("POST", "/api/members/approve", {"device": appr[0]["device"], "approve": False}, member=mom)
+        self.assertEqual((st, r["approved"]), (200, False))
+        st, me = self.req("GET", "/api/members/me", member=rogue)
+        self.assertEqual((st, me["key"]), (401, "unknown"))
+        self.assertFalse(any("added to Mom (" in m["text"] for m in self.family(mom)))
+
+    def test_approved_device_works_and_the_family_board_says_so(self):
+        mom = self.invite_and_join("Mona")
+        tablet = self.extra_device("Mona", "tablet")
+        dev = self.req("GET", "/api/members/me", member=mom)[1]["approvals"][0]["device"]
+        st, r = self.req("POST", "/api/members/approve", {"device": dev, "approve": True}, member=mom)
+        self.assertEqual((st, r["approved"]), (200, True))
+        self.assertEqual(self.req("GET", "/api/members/me", member=tablet)[1]["member"]["name"], "Mona")
+        note = [m for m in self.family(tablet) if "A new device was added to Mona" in m["text"]]
+        self.assertEqual(len(note), 1)
+        self.assertTrue(note[0].get("system"))
+        self.assertNotIn("verified", note[0])
+        self.assertEqual(self.req("POST", "/api/members/approve", {"device": dev, "approve": True}, member=mom)[0], 400)
+
+    def test_front_panel_can_approve_when_no_device_is_left(self):
+        self.invite_and_join("Opa")
+        lost = self.mid("Opa")
+        devs = [d["id"] for m in self.admin_op({"op": "list"})[1]["members"] if m["id"] == lost for d in m["devices"]]
+        self.admin_op({"op": "revoke_device", "id": lost, "device": devs[0]})        # the phone was lost
+        new = self.extra_device("Opa", "replacement")
+        st, r = self.req("GET", "/api/local/devices")                       # loopback, no nginx: the panel
+        self.assertEqual(st, 200, r)
+        pend = [x for x in r["pending"] if x["member"] == lost]
+        self.assertEqual(pend[0]["label"], "replacement")
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)  # relayed for a LAN client: refused
+        c.request("POST", "/api/local/approve", json.dumps({"member": lost, "device": pend[0]["device"], "approve": True}),
+                  {"Content-Type": "application/json", "X-Real-IP": "10.10.10.77"})
+        resp = c.getresponse(); resp.read(); c.close()
+        self.assertEqual(resp.status, 403)
+        st, r = self.req("POST", "/api/local/approve", {"member": lost, "device": pend[0]["device"], "approve": True})
+        self.assertEqual(st, 200, r)
+        self.assertEqual(self.req("GET", "/api/members/me", member=new)[1]["member"]["name"], "Opa")
+        self.assertTrue(any("added to Opa" in m["text"] and "at the Badger" in m["text"] for m in self.family(new)))
+
+    def test_new_members_still_join_on_the_admin_pin_alone(self):
+        st, inv = self.admin_op({"op": "invite", "name": "Newcomer"})
+        self.assertNotIn("needs_approval", inv)
+        st, j = self.req("POST", "/api/members/join", {"code": inv["code"], "name": "", "device": "phone"})
+        self.assertEqual((st, j.get("pending")), (200, None))
+        self.assertEqual(self.req("GET", "/api/members/me", member=j["key"])[0], 200)
+
+    def test_radio_is_bound_only_after_it_sends_the_code_on_the_family_channel(self):
+        dad = self.invite_and_join("Dad")
+        dad_id = self.mid("Dad")
+        st, r = self.admin_op({"op": "add_radio", "id": dad_id, "radio": "!DEADBEEF"})
+        self.assertEqual(st, 202, r)
+        self.assertRegex(r["code"], r"^[A-Z2-9]{6}$")
+        self.assertIn(f"!pair {r['code']}", r["message"])
+        row = [m for m in self.admin_op({"op": "list"})[1]["members"] if m["id"] == dad_id][0]
+        self.assertEqual((row["radios"], [x["radio"] for x in row["pending_radios"]]), ([], ["!deadbeef"]))
+        self.assertNotIn("!deadbeef", members.radio_registry(self.tmp / "members.json"))   # the bridge sees nothing yet
+        pair = self.tmp / "mesh-pair.json"
+        now = time.time()
+        for wrong in ([{"radio": "!deadbeef", "code": "ZZZZZZ", "at": now}],            # wrong code
+                      [{"radio": "!0badf00d", "code": r["code"], "at": now}],           # right code, other radio
+                      [{"radio": "!deadbeef", "code": r["code"], "at": now - 7200}],    # heard before it was made
+                      [{"radio": ["!deadbeef"], "code": r["code"], "at": now}], "junk", [1, None]):
+            pair.write_text(json.dumps({"confirms": wrong}))
+            row = [m for m in self.admin_op({"op": "list"})[1]["members"] if m["id"] == dad_id][0]
+            self.assertEqual(row["radios"], [], wrong)
+        pair.write_text(json.dumps({"confirms": [{"radio": "!deadbeef", "code": r["code"].lower(), "at": now}]}))
+        st, me = self.req("GET", "/api/members/me", member=dad)
+        self.assertEqual((me["member"]["radios"], me["member"]["pending_radios"]), (["!deadbeef"], []))
+        self.assertEqual(members.radio_registry(self.tmp / "members.json")["!deadbeef"]["name"], "Dad")
+        notes = [m for m in self.family(dad) if "!deadbeef was linked to Dad" in m["text"]]
+        self.assertEqual(len(notes), 1)
+        self.admin_op({"op": "list"})                                        # the same confirm again: no second note
+        self.assertEqual(len([m for m in self.family(dad) if "!deadbeef was linked" in m["text"]]), 1)
+
+    def test_radio_code_expires_and_members_pair_their_own(self):
+        eli = self.invite_and_join("Eli")
+        st, r = self.req("POST", "/api/members/radio", {"op": "pair", "radio": "!12345678"}, member=eli)
+        self.assertEqual(st, 202, r)
+        st, s = self.req("POST", "/api/members/radio", {"op": "status"}, member=eli)
+        self.assertEqual([x["radio"] for x in s["pending_radios"]], ["!12345678"])
+        db = server.members_db()
+        real = db.clock
+        try:
+            db.clock = lambda: real() + members.RADIO_PAIR_TTL + 5
+            (self.tmp / "mesh-pair.json").write_text(json.dumps({"confirms": [
+                {"radio": "!12345678", "code": r["code"], "at": real() + members.RADIO_PAIR_TTL + 1}]}))
+            st, s = self.req("POST", "/api/members/radio", {"op": "status"}, member=eli)
+            self.assertEqual((s["radios"], s["pending_radios"]), ([], []))
+        finally:
+            db.clock = real
+        st, r = self.req("POST", "/api/members/radio", {"op": "pair", "radio": "!12345678"}, member=eli)
+        (self.tmp / "mesh-pair.json").write_text(json.dumps({"confirms": [{"radio": "!12345678", "code": r["code"], "at": time.time()}]}))
+        st, s = self.req("POST", "/api/members/radio", {"op": "status"}, member=eli)
+        self.assertEqual((s["radios"], s["paired"]), (["!12345678"], ["!12345678"]))
+        st, s = self.req("POST", "/api/members/radio", {"op": "remove", "radio": "!12345678"}, member=eli)
+        self.assertEqual(s["radios"], [])
+        for bad in ({"op": "pair", "radio": "!xyz"}, {"op": "pair"}, {"op": "explode"}):
+            self.assertEqual(self.req("POST", "/api/members/radio", bad, member=eli)[0], 400)
+        self.assertEqual(self.req("POST", "/api/members/radio", {"op": "status"})[0], 401)
+
+    def test_removing_a_member_rotates_the_family_key_by_default(self):
+        self.invite_and_join("Ex")
+        st, r = self.admin_op({"op": "remove", "id": self.mid("Ex")})
+        self.assertEqual(st, 200, r)
+        self.assertTrue(r["rotate"]["ok"])
+        self.assertEqual(json.loads((self.tmp / "mesh-rotate.json").read_text())["id"], r["rotate"]["id"])
+        mon = self.invite_and_join("Monitor")
+        self.assertTrue(any("Ex was removed" in m["text"] for m in self.family(mon)))
+        (self.tmp / "mesh-rotate.json").unlink()
+        self.invite_and_join("Ex2")
+        st, r = self.admin_op({"op": "remove", "id": self.mid("Ex2"), "rotate_key": False})
+        self.assertEqual((st, "rotate" in r), (200, False))
+        self.assertFalse((self.tmp / "mesh-rotate.json").exists())
+
+    def test_admin_page_learns_whether_the_panel_is_locked(self):
+        self.assertFalse(self.admin_op({"op": "list"})[1]["panel_lock"])
+        lock = self.tmp / "panel-lock.json"
+        server.CFG.panel_lock_file = lock
+        lock.write_text("{}")
+        try:
+            self.assertTrue(self.admin_op({"op": "list"})[1]["panel_lock"])
+        finally:
+            lock.unlink()
+        server.CFG.panel_lock_arm = self.tmp / "panel-lock-arm.json"
+        st, r = self.admin_op({"op": "arm_panel_lock"})
+        self.assertEqual(st, 200, r)
+        rec = json.loads((self.tmp / "panel-lock-arm.json").read_text())
+        self.assertAlmostEqual(rec["until"], time.time() + 600, delta=30)
+        self.assertEqual(self.req("POST", "/api/admin/members", {"op": "arm_panel_lock"})[0], 401)
+
+
+class AdminSecret(unittest.TestCase):
+    """Passphrases, scrypt, and the move from the older PBKDF2 hashes."""
+
+    def test_policy(self):
+        for bad in ("", "12345", "abc123", "short pa", "x" * 129, " leading", "tab\there12345"):
+            self.assertIsNotNone(server.pin_policy(bad)[0], bad)
+        self.assertEqual(server.pin_policy("correct horse battery"), (None, None))
+        err, warn = server.pin_policy("246810")
+        self.assertIsNone(err)
+        self.assertIn("passphrase", warn)
+
+    def test_scrypt_and_legacy_verify(self):
+        h = server.hash_pin("correct horse battery")
+        self.assertTrue(h.startswith("scrypt$32768$8$1$"))
+        self.assertTrue(server.verify_pin("correct horse battery", h))
+        self.assertFalse(server.verify_pin("correct horse batterY", h))
+        old = server.legacy_hash_pin("246810", "abcd")
+        self.assertTrue(server.verify_pin("246810", old) and server.pin_is_legacy(old))
+        self.assertFalse(server.verify_pin("246811", old))
+        for junk in ("", "scrypt$", "scrypt$1048577$8$1$s$00", "scrypt$1073741824$8$1$s$00", "scrypt$3$8$1$s$00",
+                     "scrypt$16384$64$1$s$00", "pbkdf2$x", "md5$x$y", None, 5):
+            self.assertFalse(server.verify_pin("246810", junk), junk)
+
+    def test_hash_pin_cli_reads_stdin_and_rehash_needs_the_old_pin(self):
+        import subprocess
+        py, srv = sys.executable, str(REPO / "software/portal/server.py")
+        r = subprocess.run([py, srv, "hash-pin"], input="correct horse battery\n", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(server.verify_pin("correct horse battery", r.stdout.strip()))
+        r = subprocess.run([py, srv, "hash-pin"], input="short\n", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        old = server.legacy_hash_pin("246810", "abcd")
+        r = subprocess.run([py, srv, "rehash-pin"], input=f"{old}\n246810\n", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(server.verify_pin("246810", r.stdout.strip()))
+        for stdin in (f"{old}\n999999\n", f"{r.stdout.strip()}\n246810\n", "\n246810\n"):
+            self.assertEqual(subprocess.run([py, srv, "rehash-pin"], input=stdin, capture_output=True, text=True).returncode, 1)
+
+
+class PinUpgradeOverHTTP(PortalBoards):
+    def test_old_pbkdf2_hash_is_upgraded_at_the_next_login(self):
+        legacy = server.legacy_hash_pin("135791", "s4lt")
+        cfg_text = server.CFG.path.read_text()
+        saved = server.CFG.admin_pin
+        calls = []
+
+        def fake_ctl(*args, input=None):  # noqa: A002 — what prepperctl upgrade-pin does, in-process
+            calls.append((args, input))
+            stored = __import__("tomllib").loads(server.CFG.path.read_text())["portal"]["admin_pin"]
+            pin = (input or "").rstrip("\n")
+            if args != ("upgrade-pin",) or not server.pin_is_legacy(stored) or not server.verify_pin(pin, stored):
+                return 2, "not upgraded"
+            server.CFG.path.write_text(server.CFG.path.read_text().replace(stored, server.hash_pin(pin)))
+            return 0, "admin PIN hash upgraded"
+        real_ctl = server.ctl
+        try:
+            server.CFG.path.write_text(cfg_text.replace(saved, legacy))
+            server.CFG.admin_pin = legacy
+            server.ctl = fake_ctl
+            server.reset_login_limits()
+            self.assertEqual(self.req("POST", "/api/admin/login", {"pin": "135799"})[0], 403)
+            self.assertEqual(calls, [])                                     # a wrong PIN never reaches prepperctl
+            st, r = self.req("POST", "/api/admin/login", {"pin": "135791"})
+            self.assertEqual(st, 200, r)
+            self.assertTrue(r["weak_pin"])
+            for _ in range(100):
+                if server.CFG.admin_pin.startswith("scrypt$"):
+                    break
+                time.sleep(0.05)
+            self.assertTrue(server.CFG.admin_pin.startswith("scrypt$"))
+            self.assertEqual(calls[0][1], "135791\n")                       # on stdin, never in argv
+            self.assertNotIn("135791", " ".join(calls[0][0]))
+            self.assertIn("scrypt$", server.CFG.path.read_text())
+            server.reset_login_limits()
+            self.assertEqual(self.req("POST", "/api/admin/login", {"pin": "135791"})[0], 200)
+            self.assertEqual(len(calls), 1)                                 # nothing left to upgrade
+        finally:
+            server.ctl = real_ctl
+            server.CFG.path.write_text(cfg_text)
+            server.CFG.admin_pin = saved
+            server.reset_login_limits()
 
 
 if __name__ == "__main__":

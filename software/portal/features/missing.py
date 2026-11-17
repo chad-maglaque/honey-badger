@@ -12,7 +12,7 @@ without any APP1–APP15/COM segments (EXIF, GPS, XMP, comments), stores it unde
 (mode 0600) and serves it only as image/jpeg.
 
 Mesh: a poster can ask for a short radio announcement ("MISSING: Ana Ruiz, 8, red jacket, last
-seen Elm St 14:00 — see Badger board"); nothing goes on air until the admin approves it, and
+seen Elm St 14:00 — see the community board"); nothing goes on air until the admin approves it, and
 approvals are rate-limited (default 3 per hour) because LoRa airtime is shared and slow. When a
 person who was announced is marked found safe, a FOUND SAFE announcement is queued for approval.
 """
@@ -50,7 +50,7 @@ RANK = {"missing": 0, "safe": 1, "lost": 2, "found": 2, "closed": 3, "returned":
 PHOTO_ID = re.compile(r"^([A-Za-z0-9_-]{12,32})\.jpg$")
 MAX_UPLOAD = 1_250_000                       # route cap; [missing] max_photo_kb is the real limit (default 1200)
 MAX_FLAGS = 20
-MESH_TAIL = " — see Badger board"
+MESH_TAIL = " — see the community board"
 
 
 def _now() -> float:
@@ -161,7 +161,8 @@ def _fit(s: str, nbytes: int) -> str:
 
 
 def mesh_text(p: dict) -> str | None:
-    """'MISSING: Ana Ruiz, 8, red jacket, last seen Elm St 14:00 — see Badger board' (≤200 bytes)."""
+    """'MISSING: Ana Ruiz, 8, red jacket, last seen Elm St 14:00 — see the community board' (≤200 bytes).
+    Over the air: never names the device."""
     prefix = ANNOUNCE.get(p.get("status"))
     if not prefix:
         return None

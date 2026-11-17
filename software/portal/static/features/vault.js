@@ -23,14 +23,17 @@
       if (s._status === 401) return B.needMember("Document vault");
       if (s._status !== 200) return B.h('<h1>🔐 Document vault</h1><p class="warnbox">' + B.esc(s.error || "The vault isn’t available right now.") + "</p>");
       (s.categories || []).forEach(function (c) { catLabels[c.id] = c.label; });
+      statusWarning = typeof s.warning === "string" ? s.warning : "";
       if (!s.setup) return setupView(s);
       if (!s.unlocked) return unlockView(s);
       mainView(s);
     });
   }
 
+  var statusWarning = "";      // e.g. "you're on plain http" (status.warning), shown on every vault page
   function head(sub) {
-    return '<h1>🔐 Document vault</h1>' + (sub ? '<p class="muted small">' + sub + "</p>" : "");
+    return '<h1>🔐 Document vault</h1>' + (statusWarning ? '<p class="warnbox small">' + B.esc(statusWarning) + "</p>" : "") +
+      (sub ? '<p class="muted small">' + sub + "</p>" : "");
   }
 
   // ── first time ──

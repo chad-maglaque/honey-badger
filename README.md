@@ -32,7 +32,7 @@ It is a superset of [Prepper Disk Premium](https://www.prepperdisk.com/pages/pre
 
 ```bash
 ./builder/prepper-build plan --tier base --langs eng,spa -v
-sudo ./builder/prepper-build flash /dev/disk4 --tier base --ssid HoneyBadger --pin 246813
+sudo ./builder/prepper-build flash /dev/disk4 --tier base --ssid Home-7Q4K --pin 246813
 ./builder/prepper-build watch badger.local
 ```
 

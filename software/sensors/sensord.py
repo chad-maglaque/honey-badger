@@ -11,6 +11,8 @@ Polls the sensors in [sensors] (plus any it can find safely by itself), stores t
     Tagged for the mesh courtesy (docs/MESH.md): a danger alert is kind "danger" (right after NOAA
     alerts), the periodic summary "auto" (lowest priority, local hop limit, deferred on a busy
     channel), other alerts/clears the board's kind. No dedupe key: local readings are unique.
+    By default they go on the FAMILY channel ([sensors] mesh_board = "family"; "community" is the
+    owner's explicit choice) and start "Sensors: " — over the air nothing names the device.
   * boards: every alert/clear goes into events.jsonl; the portal's sensors feature posts them
     to the community or family board (ctx.board_post) and catches up on anything written
     while it was down. The board file format stays the portal's business.
@@ -507,7 +509,7 @@ class Sensord:
         gap = self.mesh_gap_danger if any(m.get("urgent") for m in batch) else self.mesh_gap
         if self.mesh_sent and now - max(self.mesh_sent) < gap:
             return False
-        text = sl.cut_bytes("Badger sensors: " + " · ".join(m["text"] for m in batch), 200)
+        text = sl.cut_bytes(sl.MESH_PREFIX + " · ".join(m["text"] for m in batch), 200)
         kind = mesh_kind(batch, board)
         try:
             self.outbox.parent.mkdir(parents=True, exist_ok=True)

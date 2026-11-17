@@ -42,6 +42,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import stat
@@ -61,6 +62,13 @@ VERSION = "1.0.0"
 UA = f"ultimate-prepper-disk-upd/{VERSION}"
 DEFAULT_CONFIG = "/etc/prepper/prepper.toml"
 SIG_NAMESPACE = "prepper-update"
+# Trust is scoped by what an item can do (red-team finding 8). A peer/bundle signer listed in allowed_signers
+# as "prepper-update" may bring CONTENT (ZIMs, maps, documents, datasets: shown sandboxed or parsed as data);
+# only one listed as "prepper-code" may also bring CODE — web apps, Android APKs, AI models — and even then a
+# file must match the catalog's own pin where the catalog has one. Items pinned to a git commit never come
+# from a peer at all (a copied tree can't prove its commit): they come from upstream, checked against the pin.
+CODE_KINDS = frozenset({"app", "apk", "model"})
+SCOPE_PRINCIPALS = (("code", "prepper-code"), ("content", "prepper-update"))
 
 KIND_DIRS = {
     "zim": "zim", "pmtiles": "maps", "pdfset": "docs", "epubset": "books",
@@ -869,18 +877,45 @@ def resolve_hf(item: Item, cfg: Config) -> Remote:
                   size=size, sha256=sha, comparable=False)
 
 
+GIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+
+
 def resolve_git(item: Item, cfg: Config) -> Remote:
+    """A git item: the commit its ref points at. With `commit = "<40 hex>"` in the catalog (code we run on
+    the family's phones, e.g. Kiwix JS) that commit is the only one ever installed: if upstream's ref has
+    moved — a new release, or someone else's code — nothing changes until the catalog is updated."""
     if not have("git"):
         raise Offline("git not installed")
     ref = item.source.get("ref", "HEAD")
+    pin = item.source.get("commit")
+    if pin is not None and not (isinstance(pin, str) and GIT_COMMIT_RE.fullmatch(pin)):
+        raise ValueError(f"catalog: {item.id} commit must be a full 40-character commit id")
     try:
-        out = subprocess.run(["git", "ls-remote", item.source["url"], ref], capture_output=True,
+        out = subprocess.run(["git", "ls-remote", item.source["url"], ref, ref + "^{}"], capture_output=True,
                              text=True, timeout=cfg.timeout, check=True).stdout
     except (subprocess.SubprocessError, OSError) as e:
         raise Offline(str(e)) from e
-    sha = out.split()[0] if out.strip() else ""
+    rows = [ln.split() for ln in out.splitlines() if len(ln.split()) == 2]
+    peeled = [sha for sha, name in rows if name.endswith("^{}")]
+    sha = (peeled or [r[0] for r in rows] or [""])[0]
+    if pin:
+        if sha != pin:
+            raise ValueError(f"{item.id}: upstream {ref} is now {sha[:12] or 'missing'}, not the pinned commit "
+                             f"{pin[:12]} — not installed (update the catalog pin after checking the release)")
+        sha = pin
     return Remote(version=sha[:12], filename=item.id, url=item.source["url"], comparable=False,
-                  meta={"ref": ref, "commit": sha})
+                  meta={"ref": ref, "commit": sha, **({"pinned": True} if pin else {})})
+
+
+def git_checkout_ok(target: Path, commit: str) -> None:
+    """After a fetch/clone: HEAD must be the pinned commit and the work tree exactly its tree."""
+    head = subprocess.run(["git", "-C", str(target), "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    dirty = subprocess.run(["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all"],
+                           capture_output=True, text=True, check=True).stdout.strip()
+    if head != commit or dirty:
+        raise RuntimeError(f"git checkout is {head[:12]}{' with local changes' if dirty else ''}, "
+                           f"not the pinned {commit[:12]}")
 
 
 def resolve_rsync(item: Item, cfg: Config) -> Remote:
@@ -933,19 +968,28 @@ RESOLVERS = {
 
 # ───────────────────────── peers & bundles (offline) ─────────────────────────
 
-def verify_bytes(data: bytes, sig: bytes | None, cfg: Config) -> bool:
-    """Is `sig` a trusted signature over exactly these bytes? The caller then
-    parses the same bytes, so nothing can swap the file between check and use.
-    (ssh-keygen wants the signature as a file: it goes in a private temp dir.)"""
+def signer_scope(data: bytes, sig: bytes | None, cfg: Config) -> str | None:
+    """Who may have signed exactly these bytes: "code" (a "prepper-code" signer), "content" (a
+    "prepper-update" signer) or None (nobody we trust). The caller then parses the same bytes, so
+    nothing can swap the file between check and use. (ssh-keygen wants the signature as a file: it
+    goes in a private temp dir.)"""
     if not sig or not cfg.allowed_signers.exists() or not have("ssh-keygen"):
-        return False
+        return None
     with tempfile.TemporaryDirectory(prefix="upd-verify-") as d:
         sigp = Path(d) / "manifest.json.sig"
         sigp.write_bytes(sig)
-        res = subprocess.run(["ssh-keygen", "-Y", "verify", "-f", str(cfg.allowed_signers),
-                              "-I", "prepper-update", "-n", SIG_NAMESPACE, "-s", str(sigp)],
-                             input=data, capture_output=True, check=False)
-    return res.returncode == 0
+        for scope, principal in SCOPE_PRINCIPALS:
+            res = subprocess.run(["ssh-keygen", "-Y", "verify", "-f", str(cfg.allowed_signers),
+                                  "-I", principal, "-n", SIG_NAMESPACE, "-s", str(sigp)],
+                                 input=data, capture_output=True, check=False)
+            if res.returncode == 0:
+                return scope
+    return None
+
+
+def verify_bytes(data: bytes, sig: bytes | None, cfg: Config) -> bool:
+    """Is `sig` a trusted signature (any scope) over exactly these bytes?"""
+    return signer_scope(data, sig, cfg) is not None
 
 
 def verify_signature(manifest: Path, cfg: Config) -> bool:
@@ -971,15 +1015,28 @@ def sign_file(path: Path, cfg: Config) -> bool:
             with contextlib.suppress(FileNotFoundError):
                 p.unlink()
         shutil.copyfile(path, scratch)
+        env, ask_dir = None, None
+        pass_file = cfg.signing_key.with_name(cfg.signing_key.name + ".pass")
+        if pass_file.is_file():
+            # prepperctl gen-key encrypts the device key; its passphrase file goes to ssh-keygen through
+            # SSH_ASKPASS (never argv, never the environment)
+            ask_dir = tempfile.mkdtemp(prefix="upd-ask-")
+            ask = Path(ask_dir) / "ask"
+            ask.write_text("#!/bin/sh\nexec cat " + shlex.quote(str(pass_file)) + "\n")
+            ask.chmod(0o700)
+            env = dict(os.environ, SSH_ASKPASS=str(ask), SSH_ASKPASS_REQUIRE="force", DISPLAY="none")
         try:
             res = subprocess.run(["ssh-keygen", "-Y", "sign", "-f", str(cfg.signing_key),
                                   "-n", SIG_NAMESPACE, str(scratch)],
-                                 capture_output=True, stdin=subprocess.DEVNULL,
+                                 capture_output=True, stdin=subprocess.DEVNULL, env=env,
                                  start_new_session=True, timeout=60)   # no tty: never wait on a passphrase prompt
             err = res.stderr.decode(errors="replace").strip()
             ok = res.returncode == 0
         except subprocess.TimeoutExpired:
             ok, err = False, "ssh-keygen timed out (passphrase-protected key?)"
+        finally:
+            if ask_dir:
+                shutil.rmtree(ask_dir, ignore_errors=True)
         # The scratch .sig did not exist before this run, so if it exists now it is new.
         if not ok or not scratch_sig.exists() or scratch_sig.stat().st_size == 0:
             log(f"signing {path.name} failed: {err}")
@@ -1071,7 +1128,8 @@ def load_offer(base: str, cfg: Config, tmpdir: Path | None = None) -> dict[str, 
     except _net_errors() + (FileNotFoundError,) as e:
         log(f"offer {base}: unreachable ({e})")
         return {}
-    signed = verify_bytes(raw, sig, cfg)
+    scope = signer_scope(raw, sig, cfg)
+    signed = scope is not None
     if cfg.require_signed_peers and not signed:
         log(f"offer {base}: manifest not signed by a trusted key — ignored")
         return {}
@@ -1137,7 +1195,7 @@ def load_offer(base: str, cfg: Config, tmpdir: Path | None = None) -> dict[str, 
         r = Remote(version=rec["version"], filename=rec["filename"], url=url, size=_nonneg_int(rec.get("size")),
                    sha256=sha, comparable=comparable is not False,   # missing/null: like a fresh record
                    origin=origin,
-                   meta={"obtained": rec.get("obtained"), "signed": signed,
+                   meta={"obtained": rec.get("obtained"), "signed": signed, "scope": scope,
                          "manifest_generated": generated, "disk_id": disk_id,
                          **({"tree_sha256": tree} if is_dir else {})})
         diffs = rec.get("diffs") or []
@@ -1230,6 +1288,24 @@ def choose_method(item: Item, local: dict | None, r: Remote, cfg: Config) -> tup
     return "http", r.size
 
 
+def offer_refused(item: Item, offer: Remote, cfg: Config) -> str | None:
+    """Why a peer/bundle offer may not be used for this item (None: it may). See CODE_KINDS.
+    With require_signed_peers = false the owner has said "take whatever is plugged in": unsigned offers
+    then count as fully trusted (documented in docs/SECURITY.md); a signed one keeps its signer's scope."""
+    if item.source.get("commit"):
+        return "pinned to a git commit — only installed from upstream, checked against the pin"
+    pin = item.source.get("sha256")
+    if isinstance(pin, str) and pin:
+        return None if offer.sha256 == pin else "its file does not match the catalog's sha256 pin"
+    scope = offer.meta.get("scope")
+    if scope is None and not offer.meta.get("signed") and not cfg.require_signed_peers:
+        scope = "code"
+    if item.kind in CODE_KINDS and scope != "code":
+        return ("it is code (app, APK or AI model) and the signer is trusted for content only "
+                "(allowed_signers \"prepper-update\"; code needs \"prepper-code\")")
+    return None
+
+
 def build_plan(cfg: Config, offline: bool = False, only: set[str] | None = None,
                offers: dict[str, Remote] | None = None) -> list[PlanEntry]:
     items = load_catalog(cfg.catalog)
@@ -1264,6 +1340,10 @@ def build_plan(cfg: Config, offline: bool = False, only: set[str] | None = None,
                 plan.append(PlanEntry(item, local, None, "error", note=f"{type(e).__name__}: {e}"))
                 continue
         offer = peer_offers.get(item.id)
+        why = offer_refused(item, offer, cfg) if offer else None
+        if why:
+            log(f"not taking {item.id} from {offer.origin}: {why}")
+            offer = None
         vouched = True              # upstream (or a sortable version) says this is current
         if offer and (remote is None or offer.version == remote.version
                       or (offer.comparable and remote.comparable and vnewer(offer.version, remote.version))):
@@ -1555,13 +1635,21 @@ def transfer(p: PlanEntry, cfg: Config, staging: Path) -> Path:
         rsync(["-r", "--delete", *link, r.rsync_url, str(dest) + "/"], cfg)
     elif p.method == "git-delta":
         target = cfg.data_root / item.dir / item.id
+        ref = r.meta.get("ref", "HEAD")
+        pin = r.meta.get("commit") if r.meta.get("pinned") else None
+        fsck = ["-c", "transfer.fsckObjects=true"]          # every object checked against its hash
         if (target / ".git").exists():
-            subprocess.run(["git", "-C", str(target), "fetch", "--depth", "1", "origin",
-                            r.meta.get("ref", "HEAD")], check=True)
+            subprocess.run(["git", *fsck, "-C", str(target), "fetch", "--depth", "1", "origin", ref], check=True)
             subprocess.run(["git", "-C", str(target), "reset", "--hard", "FETCH_HEAD"], check=True)
+            if pin:
+                subprocess.run(["git", "-C", str(target), "clean", "-fdx"], check=True)
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["git", "clone", "--depth", "1", r.url, str(target)], check=True)
+            branch = ["--branch", ref.removeprefix("refs/tags/").removeprefix("refs/heads/")] \
+                if ref != "HEAD" and pin else []
+            subprocess.run(["git", *fsck, "clone", "--depth", "1", *branch, r.url, str(target)], check=True)
+        if pin:
+            git_checkout_ok(target, pin)
         return target
     elif p.method == "pmtiles-extract":
         if not have("pmtiles"):

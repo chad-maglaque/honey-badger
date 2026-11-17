@@ -613,7 +613,8 @@ class RecordPass(unittest.TestCase):
     def test_real_plan_on_sdr2(self):
         d, sched = self.plan_with('[radio]\nsdr2_antenna = "satellite"\n', ["BADGER-SDR1", "BADGER-SDR2"])
         self.assertEqual(sched["mode"]["device"], "sdr2")
-        self.assertEqual(sched["position"], {"lat": 39.74, "lon": -104.99, "source": "settings"})
+        # rounded like every visitor view (red-team finding 1)
+        self.assertEqual(sched["position"], {"lat": 39.7, "lon": -105.0, "source": "settings", "coarse": True})
         self.assertGreaterEqual(len(sched["passes"]), 6)                  # two polar orbiters, 24 h
         rec = [p for p in sched["passes"] if p["decision"] == "record"]
         self.assertTrue(rec)
@@ -762,7 +763,13 @@ longitude = -104.99
             "generated": time.time(), "mode": {"device": "weather", "why": "High passes…"},
             "position": {"lat": 39.74, "lon": -104.99, "source": "settings"},
             "passes": [p, {"aos": "x"}, "junk", {"aos": 1, "los": 2, "max_elev": float("nan")}]}))
+        # Visitors never see the Badger's own plan (predicted from the real position): their passes are
+        # predicted from the snapped visitor-grid point (red-team finding 1) — none here, no orbit data.
         st, j, _ = self.req("GET", "/api/satellites")
+        self.assertEqual(st, 200)
+        self.assertEqual(j["passes"], [])
+        self.assertEqual(j["position"], {"lat": 39.7, "lon": -105.0, "source": "settings", "coarse": True})
+        st, j, _ = self.req("GET", "/api/satellites", member=self.member, ip="10.1.0.99")
         self.assertEqual(st, 200)
         self.assertEqual(len(j["passes"]), 2)
         self.assertEqual(j["passes"][0]["decision"], "record")

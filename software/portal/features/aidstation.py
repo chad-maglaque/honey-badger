@@ -1,13 +1,16 @@
 """
 Aid-station log: who came to the neighbourhood aid station and what help they got.
 
-The records are sensitive (names, health needs), so only two kinds of people can read or
-write them:
-  * the Badger's admin (admin PIN), and
-  * aid staff: volunteers the admin appoints with a one-time code (24 h, single use). Each
-    device that redeems a code gets its own random key (kept in that browser, sent as the
-    X-Aid-Token header). Only a SHA-256 of the key is stored. The admin can revoke one
-    volunteer or everyone at once ("end of shift"). Wrong codes lock an address out for 10 min.
+The records are sensitive (names, health needs), so only these people can read or write them:
+  * the Badger's admin (admin PIN) and aid leads (a volunteer the admin marks as lead):
+    every record;
+  * aid staff: volunteers the admin appoints with a one-time code (24 h, single use). A
+    volunteer sees, edits and exports only the records THEY wrote, plus today's station-wide
+    counts (the summary). A volunteer at the table can't read out everyone's visits and needs.
+    Each device that redeems a code gets its own random key (kept in that browser, sent as the
+    X-Aid-Token header). Only a SHA-256 of the key is stored; codes are stored as a salted
+    scrypt hash. The admin can revoke one volunteer or everyone at once ("end of shift").
+    Wrong codes lock an address out for 10 min.
 Volunteers are often not family members, so this is separate from members.py (same design).
 
 Records are deleted automatically after N days (default 30, admin can change it). CSV export
@@ -18,6 +21,7 @@ to everyone; it says nothing about who came.
 from __future__ import annotations
 
 import csv
+import hashlib
 import hmac
 import importlib.util
 import io
@@ -73,6 +77,15 @@ def norm_code(code) -> str:
     return re.sub(r"[\s\-_.]", "", str(code or "")).upper()[:32]
 
 
+CODE_KDF = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32, "maxmem": 64 * 1024 * 1024}
+
+
+def code_hash(code: str, salt: str) -> str:
+    """A volunteer code as stored: scrypt with the file's salt (slow: a stolen file can't be brute-forced
+    while the codes are still valid)."""
+    return "s1$" + hashlib.scrypt(code.encode("utf-8", "surrogatepass"), salt=salt.encode(), **CODE_KDF).hex()
+
+
 # ─────────────────────────────── staff codes ─────────────────────────────────
 
 class Staff:
@@ -91,10 +104,25 @@ class Staff:
             del d["codes"][k]
         return bool(dead)
 
-    def create_code(self, name: str, ttl: float, max_staff: int) -> dict:
+    def salt(self) -> str:
+        """The file's code salt (made once)."""
+        s = self.store.view(lambda d: d.get("code_salt"))
+        if isinstance(s, str) and re.fullmatch(r"[0-9a-f]{32}", s):
+            return s
+
+        def f(d):
+            cur = d.get("code_salt")
+            if isinstance(cur, str) and re.fullmatch(r"[0-9a-f]{32}", cur):
+                return cur, False
+            d["code_salt"] = secrets.token_hex(16)
+            return d["code_salt"], True
+        return self.store.update(f)
+
+    def create_code(self, name: str, ttl: float, max_staff: int, lead: bool = False) -> dict:
         nm = C.clean_text(name, 40, label="Volunteer name")
         raw = "".join(secrets.choice(ALPHABET) for _ in range(10))
         now = _now()
+        hashed = code_hash(norm_code(raw), self.salt())
 
         def f(d):
             self._prune(d, now)
@@ -102,10 +130,10 @@ class Staff:
                 raise C.FieldError(f"At most {max_staff} volunteer devices (including open codes). Revoke some first.")
             if len(d["codes"]) >= MAX_CODES:
                 raise C.FieldError("Too many open codes: cancel them or wait for them to expire.")
-            d["codes"][C.hash_token(norm_code(raw))] = {"expires": now + ttl, "created": now, "name": nm}
+            d["codes"][hashed] = {"expires": now + ttl, "created": now, "name": nm, "lead": bool(lead)}
             return None, True
         self.store.update(f)
-        return {"code": f"{raw[:4]}-{raw[4:8]}-{raw[8:]}", "expires": now + ttl, "name": nm}
+        return {"code": f"{raw[:4]}-{raw[4:8]}-{raw[8:]}", "expires": now + ttl, "name": nm, "lead": bool(lead)}
 
     def join_wait(self, ip: str) -> float:
         with self.flock:
@@ -134,12 +162,16 @@ class Staff:
             dev = C.clean_text(device, 40, label="This device") or "device"
         except C.FieldError as e:
             return "name", {}, str(e)
-        key = C.hash_token(norm_code(code))
+        code = norm_code(code)
+        salt = self.store.view(lambda d: d.get("code_salt"))
+        key = code_hash(code, salt) if isinstance(salt, str) and salt else None     # (slow: outside the lock)
+        legacy = C.hash_token(code)                    # a code made before codes were salted (lives ≤ 24 h)
         now = _now()
 
         def f(d):
             changed = self._prune(d, now)
-            inv = d["codes"].get(key)
+            k = key if key and key in d["codes"] else (legacy if legacy in d["codes"] else None)
+            inv = d["codes"].get(k) if k else None
             if not inv:
                 return ("bad", {}, "That code isn't valid or has expired. Ask the Badger's owner for a new one."), changed
             nm = inv.get("name") or nm_in
@@ -147,9 +179,10 @@ class Staff:
                 return ("name", {}, "Enter your name."), changed
             dev_key = secrets.token_urlsafe(32)
             sid = "s_" + secrets.token_hex(5)
-            d["staff"][sid] = {"name": nm, "device": dev, "key": C.hash_token(dev_key), "created": now, "last_seen": now}
-            del d["codes"][key]                        # one use only
-            return ("ok", {"id": sid, "name": nm}, dev_key), True
+            d["staff"][sid] = {"name": nm, "device": dev, "key": C.hash_token(dev_key), "created": now, "last_seen": now,
+                               "lead": inv.get("lead") is True}
+            del d["codes"][k]                          # one use only
+            return ("ok", {"id": sid, "name": nm, "lead": inv.get("lead") is True}, dev_key), True
         res = self.store.update(f)
         if res[0] == "bad":
             self._failed(ip)
@@ -166,12 +199,12 @@ class Staff:
         def find(d):
             for sid, s in d["staff"].items():
                 if isinstance(s, dict) and hmac.compare_digest(str(s.get("key", "")), want):
-                    return sid, s.get("name", "")
+                    return sid, s.get("name", ""), s.get("lead") is True
             return None
         hit = self.store.view(find)
         if not hit:
             return None
-        sid, name = hit
+        sid, name, lead = hit
         now = _now()
         if now - self._seen.get(sid, 0) > 300:          # don't rewrite the file on every request
             self._seen[sid] = now
@@ -182,7 +215,7 @@ class Staff:
                     s["last_seen"] = now
                 return None, bool(s)
             self.store.update(seen)
-        return {"id": sid, "name": name}
+        return {"id": sid, "name": name, "lead": lead}
 
     def leave(self, raw) -> bool:
         me = self.auth(raw)
@@ -194,6 +227,15 @@ class Staff:
                 del d["staff"][sid]
                 return True, True
             return False, False
+        return self.store.update(f)
+
+    def set_lead(self, sid: str, lead: bool) -> bool:
+        def f(d):
+            s = d["staff"].get(sid)
+            if not isinstance(s, dict):
+                return False, False
+            s["lead"] = bool(lead)
+            return True, True
         return self.store.update(f)
 
     def revoke_all(self) -> int:
@@ -208,9 +250,9 @@ class Staff:
 
         def f(d):
             staff = [{"id": sid, "name": s.get("name", ""), "device": s.get("device", ""),
-                      "created": s.get("created"), "last_seen": s.get("last_seen")}
+                      "created": s.get("created"), "last_seen": s.get("last_seen"), "lead": s.get("lead") is True}
                      for sid, s in d["staff"].items() if isinstance(s, dict)]
-            codes = [{"name": v.get("name", ""), "expires": v.get("expires")}
+            codes = [{"name": v.get("name", ""), "expires": v.get("expires"), "lead": v.get("lead") is True}
                      for v in d["codes"].values() if isinstance(v, dict) and v.get("expires", 0) > now]
             return staff, codes
         staff, codes = self.store.view(f)
@@ -286,12 +328,20 @@ def can_use(req, ctx) -> bool:
 
 
 def _who(req, ctx, args) -> dict | None:
+    """{"kind": "staff"|"lead"|"admin", "id", "name", "all": sees every record?}"""
     st = _staff_of(req, ctx)
     if st:
-        return {"kind": "staff", "id": st["id"], "name": st["name"]}
+        lead = st.get("lead") is True
+        return {"kind": "lead" if lead else "staff", "id": st["id"], "name": st["name"], "all": lead}
     if args.get("admin"):
-        return {"kind": "admin", "id": "admin", "name": "Admin"}
+        return {"kind": "admin", "id": "admin", "name": "Admin", "all": True}
     return None
+
+
+def _mine(e: dict, who: dict) -> bool:
+    """May `who` see/change this record? Admin and leads: all. A volunteer: only the ones they wrote
+    (by their device id; older records without one belong to no volunteer)."""
+    return bool(who.get("all")) or (isinstance(e, dict) and e.get("by_id") == who["id"])
 
 
 def _one(args, key, default=""):
@@ -327,7 +377,8 @@ def public_status(ctx) -> dict:
 def h_me(req, ctx, args):
     tok = (req.headers.get(TOKEN_HEADER) or "").strip()
     st = _staff_of(req, ctx)
-    return {"staff": {"name": st["name"]} if st else None, "admin": bool(args["admin"]),
+    return {"staff": ({"name": st["name"], "lead": True} if st.get("lead") else {"name": st["name"]}) if st else None,
+            "admin": bool(args["admin"]),
             "token_invalid": bool(tok) and not st, "status": public_status(ctx)}
 
 
@@ -418,7 +469,8 @@ def _public_entry(e: dict) -> dict:
 
 
 def h_entries(req, ctx, args):
-    if not _who(req, ctx, args):
+    who = _who(req, ctx, args)
+    if not who:
         return 401, {"error": "aid staff only"}
     purge(ctx)
     q = _one(args, "q")[:100]
@@ -431,7 +483,7 @@ def h_entries(req, ctx, args):
     def f(d):
         out = []
         for e in reversed(d["entries"]):
-            if not isinstance(e, dict):
+            if not isinstance(e, dict) or not _mine(e, who):
                 continue
             if since is not None and _at(e) < since:
                 continue
@@ -445,7 +497,8 @@ def h_entries(req, ctx, args):
             out.append(_public_entry(e))
         return out
     found = _s(ctx)["log"].view(f)
-    return {"entries": found[:limit], "total": len(found), "retention_days": retention_days(ctx)}
+    return {"entries": found[:limit], "total": len(found), "retention_days": retention_days(ctx),
+            "scope": "all" if who["all"] else "mine"}
 
 
 def h_save(req, ctx, args):
@@ -474,13 +527,13 @@ def h_save(req, ctx, args):
                                        "period or ask the admin to raise max_entries."}), False
             e = {"id": C.new_id(), "at": now, "count": 1, "help": [], "needs": "", "notes": "", "followup": False,
                  "followup_note": "", "followup_done": None, "handled_by": who["name"], "by": who["name"],
-                 "created": now, "updated": now}
+                 "by_id": who["id"], "created": now, "updated": now}
             e.update(fields)
             log["entries"].append(e)
             log["entries"].sort(key=lambda x: _at(x) if isinstance(x, dict) else 0.0)
             return (200, {"ok": True, "entry": _public_entry(e)}), True
         for e in log["entries"]:
-            if isinstance(e, dict) and e.get("id") == eid:
+            if isinstance(e, dict) and e.get("id") == eid and _mine(e, who):
                 e.update(fields)
                 e["updated"], e["edited_by"] = now, who["name"]
                 if "followup" in fields and not fields["followup"]:
@@ -505,7 +558,7 @@ def h_followup(req, ctx, args):
 
     def f(log):
         for e in log["entries"]:
-            if isinstance(e, dict) and e.get("id") == d["id"]:
+            if isinstance(e, dict) and e.get("id") == d["id"] and _mine(e, who):
                 if not e.get("followup"):
                     return (400, {"error": "that record has no follow-up"}), False
                 e["followup_done"] = {"at": _now(), "by": who["name"]} if d["done"] else None
@@ -524,7 +577,7 @@ def h_delete(req, ctx, args):
         return 400, {"error": "no such record"}
 
     def f(log):
-        keep = [e for e in log["entries"] if not (isinstance(e, dict) and e.get("id") == d["id"])]
+        keep = [e for e in log["entries"] if not (isinstance(e, dict) and e.get("id") == d["id"] and _mine(e, who))]
         if len(keep) == len(log["entries"]):
             return (404, {"error": "no such record"}), False
         log["entries"] = keep
@@ -536,10 +589,12 @@ def h_delete(req, ctx, args):
 
 
 def h_summary(req, ctx, args):
-    if not _who(req, ctx, args):
+    """Counts only (no names). A volunteer gets today's (since local midnight); admin and leads any period."""
+    who = _who(req, ctx, args)
+    if not who:
         return 401, {"error": "aid staff only"}
     purge(ctx)
-    since = _num(_one(args, "since"), None)
+    since = _num(_one(args, "since"), None) if who["all"] else None
     if since is None:
         lt = time.localtime(_now())
         since = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
@@ -562,7 +617,11 @@ def h_summary(req, ctx, args):
                     counts[h] += 1
         return {"since": since, "visits": visits, "people": people, "help": counts,
                 "followups_open": fu_open, "total_records": len(log["entries"])}
-    return {**_s(ctx)["log"].view(f), "retention_days": retention_days(ctx)}
+    out = {**_s(ctx)["log"].view(f), "retention_days": retention_days(ctx)}
+    if not who["all"]:
+        out.pop("total_records", None)
+        out["scope"] = "today"
+    return out
 
 
 def _audit(ctx, who: dict, what: str) -> None:
@@ -579,7 +638,8 @@ def h_export(req, ctx, args):
     purge(ctx)
     since = _num(_one(args, "since"), None)
     rows = _s(ctx)["log"].view(lambda log: [_public_entry(e) for e in log["entries"]
-                                            if isinstance(e, dict) and (since is None or _at(e) >= since)])
+                                            if isinstance(e, dict) and _mine(e, who)
+                                            and (since is None or _at(e) >= since)])
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["time", "person", "people", "help given", "needs", "notes", "follow-up needed",
@@ -594,7 +654,7 @@ def h_export(req, ctx, args):
             e.get("notes"), "yes" if e.get("followup") else "", e.get("followup_note"),
             (ts(done.get("at")) + " " + str(done.get("by", ""))).strip() if isinstance(done, dict) and done else "",
             e.get("handled_by"), e.get("by"))])
-    _audit(ctx, who, f"exported {len(rows)} record(s)")
+    _audit(ctx, who, f"exported {len(rows)} record(s)" + ("" if who["all"] else " (their own)"))
     name = time.strftime("aid-station-%Y%m%d-%H%M.csv", time.localtime(_now()))
     ctx.send_bytes(req, ("﻿" + buf.getvalue()).encode("utf-8"), "text/csv; charset=utf-8",
                    {"Content-Disposition": f'attachment; filename="{name}"'})
@@ -618,9 +678,20 @@ def h_admin_post(req, ctx, args):
     try:
         if op == "invite":
             ttl = C.cfg_int(ctx.cfg(), "code_hours", 24, 1, 168) * 3600
+            lead = d.get("lead") is True
             res = staff.create_code(d.get("name") if isinstance(d.get("name"), str) else "", ttl,
-                                    C.cfg_int(ctx.cfg(), "max_staff", 30, 1, 200))
+                                    C.cfg_int(ctx.cfg(), "max_staff", 30, 1, 200), lead=lead)
+            if lead:
+                _audit(ctx, admin, "made an aid-lead code (sees every record)")
             return {"ok": True, **res}
+        if op == "set_lead":
+            sid, lead = d.get("id"), d.get("lead")
+            if not isinstance(sid, str) or not isinstance(lead, bool):
+                return 400, {"error": "send id and lead (true/false)"}
+            if not staff.set_lead(sid, lead):
+                return 404, {"error": "no such volunteer"}
+            _audit(ctx, admin, "made a volunteer aid lead" if lead else "ended a volunteer's aid-lead role")
+            return {"ok": True}
         if op == "revoke":
             sid = d.get("id")
             if not isinstance(sid, str) or not staff.revoke(sid):

@@ -49,6 +49,7 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,23}$")             # sensor ids (conf
 NODE_RE = re.compile(r"^![0-9a-f]{8}$")                       # Meshtastic node ids
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,23}:[a-z0-9_]{1,24}$")
 BOARDS = ("community", "family", "none")
+MESH_PREFIX = "Sensors: "          # over the air: never names the device (docs/MESH.md → Privacy)
 LEVELS = ("warning", "danger")
 CTRL = re.compile(r"[\x00-\x1f\x7f  ‪-‮⁦-⁩]")
 
@@ -459,11 +460,13 @@ def validate_settings(d) -> dict:
 def effective_settings(cfg: dict, saved: dict | None) -> dict:
     """[sensors] config values, overridden by what the admin saved in the portal."""
     cfg = cfg or {}
-    mesh_board = cfg.get("mesh_board", "community")
+    # Over the radio, sensor alerts and summaries go on the FAMILY channel unless the owner chooses the
+    # public one: "water in the basement" on the public channel describes the house to anyone listening.
+    mesh_board = cfg.get("mesh_board", "family")
     eff = {"rules": None, "remote_nodes": [], "remote_untrusted": cfg.get("remote_untrusted", False) is True,
            "mesh_alerts": cfg.get("mesh_alerts", True) is not False,
-           "mesh_board": mesh_board if mesh_board in ("community", "family") else "community",
-           "summary_every_h": 0, "summary_board": "community", "names": {}}
+           "mesh_board": mesh_board if mesh_board in ("community", "family") else "family",
+           "summary_every_h": 0, "summary_board": "family", "names": {}}
     try:
         eff["summary_every_h"] = max(0, min(24, int(cfg.get("summary_every_h", 0))))
     except (TypeError, ValueError):

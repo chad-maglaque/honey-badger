@@ -201,11 +201,30 @@ conf_write() {  # new prepper.toml on stdin → atomic replace that keeps owner 
   "$PY" "$OPT/os/conf_write.py" "$CONF"
 }
 
+write_admin_pin() {  # write_admin_pin NEW_HASH EXPECTED_OLD ("" = any) — [portal] admin_pin via conf_write
+  # (the hashes go to Python on stdin, not in argv)
+  [[ "$1" =~ ^[A-Za-z0-9\$._/+=-]+$ ]] || die "unexpected PIN hash from the portal"
+  printf '%s\n%s\n' "$1" "$2" | "$PY" -c '
+import json, re, sys, tomllib
+p = sys.argv[1]
+h, want = sys.stdin.readline().strip(), sys.stdin.readline().strip()
+t = open(p).read()
+if want and tomllib.loads(t).get("portal", {}).get("admin_pin", "") != want:
+    sys.exit("prepperctl: the admin PIN changed meanwhile; nothing written")
+line = f"admin_pin = {json.dumps(h)}"
+t, n = re.subn(r"(?m)^admin_pin[ \t]*=.*$", lambda m: line, t, count=1)
+if not n:                                  # no admin_pin line yet: add one under [portal]
+    t, n = re.subn(r"(?m)^\[portal\][ \t]*(?:#[^\n]*)?\n", lambda m: m.group(0) + line + "\n", t, count=1)
+if not n:
+    t = t.rstrip("\n") + "\n\n[portal]\n" + line + "\n"
+sys.stdout.write(t)' "$CONF" | conf_write
+}
+
 usage() {
   sed -n '2,3p' "$0"
   echo "verbs: apply-config net-up rebuild-library service power-mode power-restore update-{check,apply,import,export}"
-  echo "       add-peer uplink-wifi uplink-forget usb-eject shutdown reboot wifi-{on,off,rotate,confirm,revert,status,apply,rearm} set-pin gen-tls gen-key"
-  echo "       trust trust-maintainer self-update-hook build-status first-pull finish-provisioning auto-apply-enabled"
+  echo "       add-peer uplink-wifi uplink-forget usb-eject shutdown reboot wifi-{on,off,rotate,confirm,revert,status,apply,rearm} set-pin upgrade-pin gen-tls gen-key"
+  echo "       trust [--code] trust-maintainer self-update-hook build-status first-pull finish-provisioning auto-apply-enabled"
 }
 cmd=${1:-help}; shift || true
 # Every argument reaches system tools: no control characters (newlines would
@@ -270,14 +289,30 @@ case "$cmd" in
     systemctl stop prepper-net-retry.timer >/dev/null 2>&1 || true
     rfkill unblock wlan || true
     ap_up() {  # address the AP interface, start hostapd, and check it really serves an AP
-      local _
+      local _ _p
       nmcli general reload conf 2>/dev/null || systemctl reload NetworkManager 2>/dev/null || true
       ip link set "$AP_IFACE" down || true
       ip addr flush dev "$AP_IFACE" || true
-      ip link set "$AP_IFACE" up && ip addr add "$AP_ADDRESS/24" dev "$AP_IFACE" \
-        && systemctl restart prepper-hostapd || return 1
+      if [ "${AP_BRIDGE:-0}" = 1 ]; then
+        # [network] security = "owe-transition" (experimental): hostapd puts the open BSS ($AP_IFACE) and the
+        # hidden OWE BSS ($AP_OWE_IFACE) into this bridge; the AP address, DHCP and the firewall live on it.
+        ip link show "$AP_LINK_IFACE" >/dev/null 2>&1 || ip link add name "$AP_LINK_IFACE" type bridge || return 1
+        ip link set "$AP_LINK_IFACE" type bridge stp_state 0 || true
+        ip addr flush dev "$AP_LINK_IFACE" || true
+        ip link set "$AP_LINK_IFACE" up && ip link set "$AP_IFACE" up \
+          && ip addr add "$AP_ADDRESS/24" dev "$AP_LINK_IFACE" && systemctl restart prepper-hostapd || return 1
+      else
+        # not bridged (any more): remove a bridge left from an earlier owe-transition run
+        ip link del br-prepper 2>/dev/null || true
+        ip link set "$AP_IFACE" up && ip addr add "$AP_ADDRESS/24" dev "$AP_IFACE" \
+          && systemctl restart prepper-hostapd || return 1
+      fi
       for _ in 1 2 3 4 5 6 7 8 9 10; do   # "started" is not "serving": wait for the radio to be in AP mode
         if systemctl is-active -q prepper-hostapd && iw dev "$AP_IFACE" info 2>/dev/null | grep -q "type AP"; then
+          if [ "${AP_BRIDGE:-0}" = 1 ]; then
+            # clients of the two BSSes must not reach each other through the bridge either
+            for _p in "$AP_IFACE" "$AP_OWE_IFACE"; do bridge link set dev "$_p" isolated on 2>/dev/null || true; done
+          fi
           return 0
         fi
         sleep 1
@@ -314,14 +349,16 @@ case "$cmd" in
     nat=""
     if [ "$(toml network.share_uplink)" = "True" ]; then
       sysctl -qw net.ipv4.ip_forward=1
-      nat="chain post { type nat hook postrouting priority 100; ip saddr $AP_SUBNET oifname != \"$AP_IFACE\" masquerade; }"
+      nat="chain post { type nat hook postrouting priority 100; ip saddr $AP_SUBNET oifname != \"${AP_LINK_IFACE:-$AP_IFACE}\" masquerade; }"
     fi
+    ap_if="\"$AP_IFACE\""
+    [ "${AP_LINK_IFACE:-$AP_IFACE}" = "$AP_IFACE" ] || ap_if="{ \"$AP_IFACE\", \"$AP_LINK_IFACE\" }"
     nft delete table ip prepper 2>/dev/null || true      # (older releases used an ip-family table)
     nft -f - <<EOF
 add table inet prepper
 delete table inet prepper
 table inet prepper {
-  chain input { type filter hook input priority 0; policy accept; iifname "$AP_IFACE" tcp dport 22 drop; }
+  chain input { type filter hook input priority 0; policy accept; iifname $ap_if tcp dport 22 drop; }
   $nat
 }
 EOF
@@ -499,30 +536,36 @@ EOF
   wifi-on)  "$0" net-up; echo "Wi-Fi on" ;;
 
   set-pin)
-    # Prefer stdin (`prepperctl set-pin < file`, or typed at the prompt): an
-    # argument is visible to every user in `ps` while this runs.
-    pin=${1:-}
-    if [ -z "$pin" ]; then
-      read -r -s -p "New admin PIN (6+ letters/digits): " pin || true   # no trailing newline is fine
-      [ -t 0 ] && echo
+    # The admin secret: a passphrase (10+ characters) or a PIN of 6+ digits (accepted with a warning).
+    # Only on stdin (`prepperctl set-pin < file`, or typed at the prompt), and passed on to the hasher on
+    # stdin too: an argument would be visible to every local user in `ps` while this runs.
+    [ $# -eq 0 ] || die "type the PIN at the prompt or give it on stdin, never as an argument (it would show in ps)"
+    if [ -t 0 ]; then
+      read -r -s -p "New admin passphrase (10+ characters, or a PIN of 6+ digits): " pin || true
+      echo
+      read -r -s -p "Same again: " pin2 || true
+      echo
+      [ "$pin" = "$pin2" ] || die "the two entries differ; nothing was changed"
+    else
+      IFS= read -r pin || true                 # no trailing newline is fine
     fi
-    [[ "$pin" =~ ^[0-9A-Za-z]{6,32}$ ]] || die "PIN must be 6–32 letters/digits"
-    hash=$("$PY" "$OPT/software/portal/server.py" hash-pin "$pin")
-    [[ "$hash" =~ ^[A-Za-z0-9\$._/+=-]+$ ]] || die "unexpected PIN hash from the portal"
-    "$PY" - "$CONF" "$hash" <<'EOF' | conf_write
-import json, re, sys
-p, h = sys.argv[1], sys.argv[2]
-t = open(p).read()
-line = f"admin_pin = {json.dumps(h)}"
-t, n = re.subn(r'(?m)^admin_pin[ \t]*=.*$', lambda m: line, t, count=1)
-if not n:                                  # no admin_pin line yet: add one under [portal]
-    t, n = re.subn(r'(?m)^\[portal\][ \t]*(?:#[^\n]*)?\n', lambda m: m.group(0) + line + "\n", t, count=1)
-if not n:
-    t = t.rstrip("\n") + "\n\n[portal]\n" + line + "\n"
-sys.stdout.write(t)
-EOF
+    hash=$(printf '%s\n' "$pin" | "$PY" "$OPT/software/portal/server.py" hash-pin) \
+      || die "PIN not accepted (see above); nothing was changed"
+    write_admin_pin "$hash" ""
     systemctl restart prepper-portal 2>/dev/null || true
     echo "admin PIN updated"
+    ;;
+
+  upgrade-pin)
+    # The portal, after a good login against an older PBKDF2 hash: the SAME secret on stdin, stored again
+    # as scrypt. Only when it matches the current hash, so this verb can never set a different PIN (and
+    # only if the hash didn't change meanwhile). The portal starts using the new hash itself: no restart.
+    IFS= read -r pin || true
+    cur=$(toml portal.admin_pin)
+    hash=$(printf '%s\n%s\n' "$cur" "$pin" | "$PY" "$OPT/software/portal/server.py" rehash-pin) \
+      || die "the admin PIN hash was not upgraded"
+    write_admin_pin "$hash" "$cur"
+    echo "admin PIN hash upgraded"
     ;;
 
   wifi-rotate)
@@ -647,28 +690,58 @@ EOF
     ;;
 
   gen-tls)
-    # Local CA (20 years) + server cert (825 days — the iOS maximum) for the Badger.
+    # A local CA + the Badger's server certificate (825 days — the iOS maximum). Families install the CA
+    # on their phones, so it must never be able to vouch for anything else:
+    #   * nameConstraints: only names under .lan / .local and the hotspot's own addresses — not a bank,
+    #     not mail, not meshtastic.org, even for someone who copies the disk;
+    #   * it expires with the server certificate (830 days), not in 20 years;
+    #   * its private key is destroyed as soon as the server certificate is signed, so not even a new
+    #     Badger certificate can be made from a disk image.
+    # Running gen-tls again therefore makes a NEW CA: phones that installed the old one install the new
+    # one (the launcher's Phones page links /ca.crt). docs/SECURITY.md → "The local certificate".
     d=$R/etc/prepper/tls; mkdir -p "$d"; cd "$d"
     host=$(toml network.hostname); addr=$(toml network.address)
-    if [ ! -f ca.key ]; then
-      openssl req -x509 -newkey rsa:3072 -nodes -days 7300 -keyout ca.key -out ca.crt \
-        -subj "/CN=Honey Badger local CA ($host)" -addext "basicConstraints=critical,CA:TRUE" \
-        -addext "keyUsage=critical,keyCertSign,cRLSign"
-    fi
+    net="${addr%.*}.0/255.255.255.0"
+    rm -f ca.key ca.srl
+    openssl req -x509 -newkey rsa:3072 -nodes -days 830 -keyout ca.key -out ca.crt \
+      -subj "/CN=Honey Badger local CA ($host, $(date +%Y-%m-%d))" \
+      -addext "basicConstraints=critical,CA:TRUE,pathlen:0" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+      -addext "nameConstraints=critical,permitted;DNS:lan,permitted;DNS:.lan,permitted;DNS:local,permitted;DNS:.local,permitted;IP:$net"
+    chmod 600 ca.key
     openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj "/CN=$host.lan"
     printf 'subjectAltName=DNS:%s.lan,DNS:%s.local,DNS:box.lan,IP:%s\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\n' \
       "$host" "$host" "$addr" > ext.cnf
     openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 825 -sha256 -extfile ext.cnf -out server.crt
-    chmod 600 ca.key server.key; rm -f server.csr ext.cnf
+    shred -u ca.key 2>/dev/null || rm -f ca.key          # the CA can never sign again
+    chmod 600 server.key; chmod 644 ca.crt server.crt; rm -f ca.srl server.csr ext.cnf
     # nginx serves HTTPS only once a certificate exists: re-render and reload.
     render >/dev/null && { systemctl reload nginx 2>/dev/null || true; }
     echo "TLS ready: install $d/ca.crt on iPads/phones (served at /ca.crt)"
     ;;
 
   gen-key)
-    # This Badger's signing identity for bundles and peer manifests.
-    k=$R/etc/prepper/keys/disk_ed25519; mkdir -p "$(dirname "$k")"
-    [ -f "$k" ] || ssh-keygen -q -t ed25519 -N "" -C "$(toml device.disk_id)" -f "$k"
+    # This Badger's signing identity for bundles and peer manifests. The key is encrypted with a random
+    # passphrase kept in a separate root-only file (handed to ssh-keygen through SSH_ASKPASS, never in
+    # argv): the key file alone — in a backup, a bundle, a copied folder — signs nothing. Someone with
+    # the WHOLE disk has both, so what really limits this key is its scope: it is listed as
+    # "prepper-update" (content: ZIMs, maps, documents), never "prepper-code" (apps, APKs, models), so
+    # a stolen disk can't push code to this Badger or to the Badgers that trust it (upd.py, docs/SECURITY.md).
+    k=$R/etc/prepper/keys/disk_ed25519; mkdir -p "$(dirname "$k")"; chmod 700 "$(dirname "$k")"
+    pass=$k.pass
+    if [ ! -s "$pass" ]; then
+      (umask 077; head -c 32 /dev/urandom | base64 | tr -d '/+=\n' > "$pass.tmp" && mv "$pass.tmp" "$pass")
+      new_pass=1
+    fi
+    ask=$(mktemp); printf '#!/bin/sh\ncat "%s"\n' "$pass" > "$ask"; chmod 700 "$ask"
+    if [ ! -f "$k" ]; then
+      SSH_ASKPASS=$ask SSH_ASKPASS_REQUIRE=force DISPLAY=none \
+        ssh-keygen -q -t ed25519 -C "$(toml device.disk_id)" -f "$k" </dev/null
+    elif [ -n "${new_pass:-}" ]; then
+      # a key from an older release, not encrypted yet: encrypt it in place (its old passphrase is empty)
+      SSH_ASKPASS=$ask SSH_ASKPASS_REQUIRE=force DISPLAY=none ssh-keygen -q -p -P '' -f "$k" </dev/null >/dev/null
+    fi
+    rm -f "$ask"
+    chmod 600 "$k" "$pass"
     touch "$SIGNERS"
     grep -qF "$(cut -d' ' -f2 "$k.pub")" "$SIGNERS" || \
       echo "prepper-update namespaces=\"prepper-update\" $(cut -d' ' -f1,2 "$k.pub")" >> "$SIGNERS"
@@ -678,13 +751,27 @@ EOF
     echo "public key (give to other Badgers to trust this one):"; cat "$k.pub"
     ;;
   trust)
-    # prepperctl trust "ssh-ed25519 AAAA… other-disk"
+    # prepperctl trust [--code] "ssh-ed25519 AAAA… other-disk"
+    # Default: the key may sign CONTENT only (ZIMs, maps, documents). With --code
+    # the Badger is fully trusted and may also bring CODE (web apps, APKs, models):
+    # the allowed_signers principal "prepper-code" (docs/SECURITY.md).
+    principal=prepper-update
+    if [ "${1:-}" = "--code" ]; then principal=prepper-code; shift; fi
     key=${1:?public key line}
     ssh_ed25519_line "$key" || die "expected an ssh-ed25519 public key"
     k12=$(echo "$key" | cut -d' ' -f1,2)
     touch "$SIGNERS"
-    grep -qF "$k12" "$SIGNERS" || echo "prepper-update namespaces=\"prepper-update\" $k12" >> "$SIGNERS"
-    echo "trusted"
+    if [ "$principal" = prepper-code ]; then
+      # replace any content-only line for this key, so the key is listed once
+      tmp=$(mktemp "$SIGNERS.XXXXXX")
+      grep -vF "$k12" "$SIGNERS" > "$tmp" || true
+      echo "prepper-code namespaces=\"prepper-update\" $k12" >> "$tmp"
+      cat "$tmp" > "$SIGNERS"; rm -f "$tmp"
+      echo "trusted for content AND code"
+    else
+      grep -qF "$k12" "$SIGNERS" || echo "prepper-update namespaces=\"prepper-update\" $k12" >> "$SIGNERS"
+      echo "trusted (content only)"
+    fi
     ;;
   trust-maintainer)
     # prepperctl trust-maintainer "ssh-ed25519 AAAA… maintainer"

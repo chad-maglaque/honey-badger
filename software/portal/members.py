@@ -4,12 +4,19 @@ Family members for the Honey Badger: one-time invite codes, a key per device, re
   * The admin makes an invite (a 10-character code, valid 24 h, usable once). Whoever
     redeems it becomes a member, or adds a device to an existing member. The front panel
     can make invites too, from its own small pool (so it can never use up the admin's).
+    Codes are stored as a salted scrypt hash (a stolen file can't be brute-forced while
+    they are still valid).
+  * A device added to an EXISTING member through the admin ("confirm" invites) starts out
+    pending: it can do nothing until one of that member's own devices — or the front
+    panel — approves it (approve_device). The admin PIN alone can't make someone "Mom".
   * Each device gets its own random key (shown once, kept in that browser). Only a
     SHA-256 of it is stored, so a copy of this file can't be used to log in.
   * Removing a member kills all their devices at once and frees their mesh radios.
   * Members can register Meshtastic radios. A radio ID alone proves nothing on the mesh
     (anyone can transmit with any ID), so the bridge uses it only to put a name on posts
-    that arrive on the family's private channel.
+    that arrive on the family's private channel. A radio is bound only after it proved
+    itself: start_radio_pairing gives a short code, the radio sends "!pair CODE" on the
+    family channel, the mesh bridge notes that (mesh-pair.json) and confirm_radios binds it.
   * Names are cleaned (no control, invisible or direction-changing characters) and must
     not look like another member's name.
 
@@ -38,6 +45,12 @@ INVITE_TTL = 24 * 3600
 MAX_MEMBERS, MAX_DEVICES, MAX_INVITES, MAX_RADIOS = 50, 10, 20, 5
 PANEL_MAX_INVITES = 5                    # open invites made at the front panel (a pool of its own)
 PANEL_RATE = (5, 600.0)                  # …and at most 5 of them per 10 minutes
+PENDING_TTL = 24 * 3600                  # a device waiting for approval is dropped after a day
+RADIO_PAIR_TTL = 3600                    # a radio pairing code works for an hour
+MAX_PENDING_RADIOS = 3
+PAIR_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
+# Invite codes: scrypt with a per-file salt (one hash per join attempt, never one per open invite).
+CODE_KDF = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32, "maxmem": 64 * 1024 * 1024}
 NODE_RE = re.compile(r"^![0-9a-f]{8}$")
 JOIN_FAILS, JOIN_WINDOW, JOIN_LOCK = 5, 600.0, 600.0
 FAILS_KEEP = 1000                        # remembered guessing addresses (locked ones are never dropped first)
@@ -50,6 +63,17 @@ class StoreError(RuntimeError):
 def _h(s: str) -> str:
     # surrogatepass: a JSON "\ud800" escape must hash (and simply not match), not crash
     return hashlib.sha256(str(s).encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _code_hash(code: str, salt: str) -> str:
+    """The stored form of an invite code: "s1$" + scrypt(code, file salt). Slow on purpose: ~40 ms
+    here, and far too slow on a GPU to try 30^10 codes in the 24 h a code lives."""
+    k = hashlib.scrypt(code.encode("utf-8", "surrogatepass"), salt=salt.encode(), **CODE_KDF)
+    return "s1$" + k.hex()
+
+
+def norm_pair_code(code) -> str:
+    return re.sub(r"[\s\-_.]", "", str(code if isinstance(code, str) else "")).upper()[:16]
 
 
 def norm_code(code) -> str:
@@ -211,6 +235,28 @@ class Members:
         for k in [k for k, v in d["invites"].items()
                   if not isinstance(v, dict) or (_num(v.get("expires")) or 0) <= now]:
             del d["invites"][k]
+        for m in d["members"].values():
+            devs = _devices(m)
+            keep = [x for x in devs if not (x.get("pending") and (_num(x.get("expires")) or 0) <= now)]
+            if len(keep) != len(devs):
+                m["devices"] = keep
+            pr = m.get("pending_radios")
+            if isinstance(pr, list):
+                m["pending_radios"] = [x for x in pr if isinstance(x, dict) and (_num(x.get("expires")) or 0) > now]
+
+    @staticmethod
+    def _salt(d: dict) -> str:
+        s = d.get("code_salt")
+        if not (isinstance(s, str) and re.fullmatch(r"[0-9a-f]{32}", s)):
+            s = d["code_salt"] = secrets.token_hex(16)
+        return s
+
+    def _code_salt(self) -> str | None:
+        """The file's invite-code salt (None: there is none yet, so no code can match)."""
+        with self.lock:
+            d = self._load()
+        s = d.get("code_salt")
+        return s if isinstance(s, str) and re.fullmatch(r"[0-9a-f]{32}", s) else None
 
     @staticmethod
     def _active(d: dict) -> list[dict]:
@@ -230,10 +276,13 @@ class Members:
 
     # ── invites ──
     def create_invite(self, name: str = "", member_id: str | None = None, ttl: float = INVITE_TTL,
-                      source: str = "admin") -> dict:
+                      source: str = "admin", confirm: bool = False) -> dict:
         """Returns {"code": "K7QX-M2PD-9Z", "expires": ts, "id": …}. member_id: an extra device for that
-        member. source "panel": the front panel's own small pool, rate-limited."""
+        member; with confirm=True (what the admin's page always asks for) that device stays pending
+        until one of the member's own devices or the front panel approves it. source "panel": the
+        front panel's own small pool, rate-limited."""
         nm = clean_name(name)
+        raw = "".join(secrets.choice(ALPHABET) for _ in range(10))
         with self.lock:
             d = self._load()
             self._prune(d)
@@ -256,10 +305,12 @@ class Members:
                     raise ValueError("too many invites in a short time: wait 10 minutes")
             elif len(pool) >= MAX_INVITES:
                 raise ValueError("too many open invites: cancel some (Family members → Open invites)")
-            raw = "".join(secrets.choice(ALPHABET) for _ in range(10))
             iid = "i_" + secrets.token_hex(4)
-            d["invites"][_h(norm_code(raw))] = {"id": iid, "expires": now + ttl, "created": now,
-                                                "member": member_id, "name": nm, "source": source}
+            rec = {"id": iid, "expires": now + ttl, "created": now, "member": member_id, "name": nm,
+                   "source": source}
+            if member_id is not None and confirm:
+                rec["confirm"] = True
+            d["invites"][_code_hash(norm_code(raw), self._salt(d))] = rec
             self._save(d)
             if source == "panel":
                 self._panel_made.append(now)
@@ -302,14 +353,23 @@ class Members:
                     self._fails.pop(k, None)
 
     def join(self, code, name, device, ip: str = "?") -> tuple[str, dict, str]:
-        """("ok", member, device_key) | ("locked"|"bad"|"name"|"full"|"taken", {}, message)."""
+        """("ok", member, device_key) | ("locked"|"bad"|"name"|"full"|"taken", {}, message).
+        member["pending"] is True when the new device still needs approval (see approve_device)."""
+        if self.join_wait(ip) > 0:
+            return "locked", {}, "Too many wrong codes. Wait 10 minutes."
+        code = norm_code(code)
+        salt = self._code_salt()
+        # the slow hash runs outside the lock: a burst of guesses must not stall every member request
+        hashed = _code_hash(code, salt) if salt else None
         with self.lock:
             if self.join_wait(ip) > 0:
                 return "locked", {}, "Too many wrong codes. Wait 10 minutes."
             d = self._load()
             self._prune(d)
-            key = _h(norm_code(code))
-            inv = d["invites"].get(key)
+            key = hashed if hashed and hashed in d["invites"] and d.get("code_salt") == salt else None
+            if key is None and _h(code) in d["invites"]:
+                key = _h(code)                            # an invite made before codes were salted (lives ≤ 24 h)
+            inv = d["invites"].get(key) if key else None
             if not inv:
                 self._join_failed(ip)
                 return "bad", {}, "That code isn't valid or has expired. Ask for a new one."
@@ -336,17 +396,21 @@ class Members:
                 m = {"name": nm, "created": now, "devices": [], "radios": []}
                 d["members"][mid] = m
             dev_key = secrets.token_urlsafe(32)
-            m["devices"] = _devices(m) + [{"id": "d_" + secrets.token_hex(3), "label": clean_name(device, 40) or "device",
-                                           "key": _h(dev_key), "created": now, "last_seen": now}]
+            dev = {"id": "d_" + secrets.token_hex(3), "label": clean_name(device, 40) or "device",
+                   "key": _h(dev_key), "created": now, "last_seen": now}
+            if inv.get("member") and inv.get("confirm"):
+                dev.update(pending=True, expires=now + PENDING_TTL)
+            m["devices"] = _devices(m) + [dev]
             del d["invites"][key]                         # one use only
             self._save(d)
             self._fails.pop(ip, None)
-            return "ok", self._public(mid, m), dev_key
+            return "ok", {**self._public(mid, m), "device": dev["id"], "pending": bool(dev.get("pending"))}, dev_key
 
     # ── authentication ──
     def auth_status(self, device_key) -> tuple[str, dict | None]:
         """("ok", member) | ("unknown", None): no such (or a revoked) key | ("unavailable", None):
-        the list can't be read right now — the device must NOT forget its key over that."""
+        the list can't be read right now — the device must NOT forget its key over that |
+        ("pending", None): a device still waiting for approval (use pending_info for who/what)."""
         if not isinstance(device_key, str) or not device_key or len(device_key) > 128:
             return "unknown", None
         want = _h(device_key)
@@ -361,6 +425,10 @@ class Members:
                 for dev in _devices(m):
                     if isinstance(dev.get("key"), str) and hmac.compare_digest(dev["key"], want):
                         now = self.clock()
+                        if dev.get("pending"):
+                            if (_num(dev.get("expires")) or 0) <= now:
+                                return "unknown", None
+                            return "pending", None
                         did = str(dev.get("id", ""))
                         if now - self._seen_write.get(did, 0) > 300:     # don't rewrite the file on every request
                             dev["last_seen"] = now; self._seen_write[did] = now
@@ -376,6 +444,70 @@ class Members:
     def auth(self, device_key) -> dict | None:
         return self.auth_status(device_key)[1]
 
+    def pending_info(self, device_key) -> dict | None:
+        """For a device waiting for approval: {"name": member name, "device": its label, "expires"}."""
+        if not isinstance(device_key, str) or not device_key or len(device_key) > 128:
+            return None
+        want = _h(device_key)
+        with self.lock:
+            try:
+                d = self._load()
+            except StoreError:
+                return None
+        now = self.clock()
+        for m in d["members"].values():
+            if m.get("removed"):
+                continue
+            for dev in _devices(m):
+                if dev.get("pending") and (_num(dev.get("expires")) or 0) > now \
+                        and hmac.compare_digest(str(dev.get("key", "")), want):
+                    return {"name": clean_name(m.get("name", "")), "device": clean_name(dev.get("label", ""), 40),
+                            "expires": _num(dev.get("expires"))}
+        return None
+
+    # ── devices waiting for approval ──
+    def pending_devices(self, mid: str | None = None) -> list[dict]:
+        """Devices waiting for approval (all, or one member's): what a member's own devices and the
+        front panel are asked about."""
+        with self.lock:
+            d = self._load()
+        now, out = self.clock(), []
+        for k, m in d["members"].items():
+            if m.get("removed") or (mid is not None and k != mid):
+                continue
+            for dev in _devices(m):
+                if dev.get("pending") and (_num(dev.get("expires")) or 0) > now:
+                    out.append({"member": k, "name": clean_name(m.get("name", "")), "device": str(dev.get("id", "")),
+                                "label": clean_name(dev.get("label", ""), 40), "created": _num(dev.get("created")),
+                                "expires": _num(dev.get("expires"))})
+        out.sort(key=lambda r: r["created"] or 0)
+        return out
+
+    def approve_device(self, mid: str, dev_id: str, approve: bool, by: str = "") -> dict:
+        """Approve (it starts working) or refuse (it is deleted) one pending device of member `mid`.
+        Returns {"member": public, "device": {"id","label"}, "approved": bool}. ValueError if there is
+        no such pending device. `by` is noted ("device d_1a2b3c" / "front panel")."""
+        out: dict = {}
+
+        def f(m, d):
+            if m.get("removed"):
+                raise ValueError("member was removed")
+            now = self.clock()
+            devs = _devices(m)
+            hit = [x for x in devs if x.get("id") == dev_id and x.get("pending")
+                   and (_num(x.get("expires")) or 0) > now]
+            if not hit:
+                raise ValueError("no such device waiting for approval (it may have expired)")
+            dev = hit[0]
+            out["device"] = {"id": str(dev.get("id", "")), "label": clean_name(dev.get("label", ""), 40)}
+            if approve:
+                for k in ("pending", "expires"):
+                    dev.pop(k, None)
+                dev["approved"] = {"at": now, "by": clean_text(by, 40)}
+            else:
+                m["devices"] = [x for x in devs if x is not dev]
+        pub = self._edit(mid, f)
+        return {"member": pub, "approved": bool(approve), **out}
     def leave(self, device_key) -> bool:
         if not isinstance(device_key, str) or not device_key:
             return False
@@ -402,10 +534,15 @@ class Members:
             members = [{**self._public(mid, m), "created": _num(m.get("created")),
                         "removed_at": _num(m.get("removed")) if m.get("removed") else None,
                         "devices": [{"id": str(x.get("id", "")), "label": clean_name(x.get("label", ""), 40),
-                                     "last_seen": _num(x.get("last_seen"))} for x in _devices(m)]}
+                                     "last_seen": _num(x.get("last_seen")), "pending": bool(x.get("pending"))}
+                                    for x in _devices(m)],
+                        "pending_radios": [{"radio": str(x.get("radio", "")), "expires": _num(x.get("expires"))}
+                                           for x in (m.get("pending_radios") if isinstance(m.get("pending_radios"), list)
+                                                     else []) if isinstance(x, dict)]}
                        for mid, m in d["members"].items()]
             invites = [{"id": v.get("id"), "expires": _num(v.get("expires")), "name": clean_name(v.get("name", "")),
-                        "member": v.get("member"), "source": v.get("source") or "admin"}
+                        "member": v.get("member"), "source": v.get("source") or "admin",
+                        "confirm": bool(v.get("confirm"))}
                        for v in d["invites"].values()]
         members.sort(key=lambda r: (r["removed"], r["name"].lower()))
         invites.sort(key=lambda r: r["expires"] or 0)
@@ -427,6 +564,7 @@ class Members:
             m["removed"] = self.clock(); m["devices"] = []
             m["removed_radios"] = sorted(set(_strs(m.get("removed_radios"))) | set(_strs(m.get("radios"))))
             m["radios"] = []
+            m.pop("pending_radios", None)
             for k in [k for k, v in d["invites"].items() if isinstance(v, dict) and v.get("member") == mid]:
                 del d["invites"][k]
         return self._edit(mid, f)
@@ -445,24 +583,125 @@ class Members:
     def revoke_device(self, mid: str, dev_id: str) -> dict:
         return self._edit(mid, lambda m, d: m.__setitem__("devices", [x for x in _devices(m) if x.get("id") != dev_id]))
 
-    def add_radio(self, mid: str, node) -> dict:
+    @staticmethod
+    def _node(node) -> str:
         node = str(node).strip().lower() if isinstance(node, str) else ""
         if not NODE_RE.match(node):
             raise ValueError("radio IDs look like !a1b2c3d4 (shown in the Meshtastic app)")
+        return node
+
+    @staticmethod
+    def _bind_radio(m: dict, d: dict, node: str) -> None:
+        if m.get("removed"):
+            raise ValueError("member was removed")
+        for other in d["members"].values():
+            if other is not m and node in _strs(other.get("radios")):
+                raise ValueError("that radio belongs to another member")
+        radios = _strs(m.get("radios"))
+        if node not in radios:
+            if len(radios) >= MAX_RADIOS:
+                raise ValueError(f"at most {MAX_RADIOS} radios per member")
+            radios.append(node)
+        m["radios"] = radios
+
+    def add_radio(self, mid: str, node) -> dict:
+        """Bind a radio at once. Internal/tests only: the portal's pages use start_radio_pairing, so a
+        radio is never bound without a message from that radio on the family channel."""
+        node = self._node(node)
+        return self._edit(mid, lambda m, d: self._bind_radio(m, d, node))
+
+    def start_radio_pairing(self, mid: str, node) -> dict:
+        """A pending radio for member `mid`: {"radio", "code", "expires"}. The radio binds once it
+        sends "!pair CODE" on the family channel (the mesh bridge notes it; see confirm_radios)."""
+        node = self._node(node)
+        code = "".join(secrets.choice(PAIR_ALPHABET) for _ in range(6))
+        now = self.clock()
 
         def f(m, d):
             if m.get("removed"):
                 raise ValueError("member was removed")
+            if node in _strs(m.get("radios")):
+                raise ValueError("that radio is already linked to this member")
             for other in d["members"].values():
                 if other is not m and node in _strs(other.get("radios")):
                     raise ValueError("that radio belongs to another member")
-            radios = _strs(m.get("radios"))
-            if node not in radios:
-                if len(radios) >= MAX_RADIOS:
-                    raise ValueError(f"at most {MAX_RADIOS} radios per member")
-                radios.append(node)
-            m["radios"] = radios
-        return self._edit(mid, f)
+            if len(_strs(m.get("radios"))) >= MAX_RADIOS:
+                raise ValueError(f"at most {MAX_RADIOS} radios per member")
+            pend = [x for x in (m.get("pending_radios") if isinstance(m.get("pending_radios"), list) else [])
+                    if isinstance(x, dict) and x.get("radio") != node and (_num(x.get("expires")) or 0) > now]
+            if len(pend) >= MAX_PENDING_RADIOS:
+                raise ValueError("too many radios waiting to be paired: finish or wait an hour")
+            pend.append({"radio": node, "code": _h(f"{node}:{code}"), "created": now, "expires": now + RADIO_PAIR_TTL})
+            m["pending_radios"] = pend
+        self._edit(mid, f)
+        return {"radio": node, "code": code, "expires": now + RADIO_PAIR_TTL}
+
+    def confirm_radios(self, confirms) -> list[dict]:
+        """Bind the pending radios whose "!pair CODE" the mesh bridge heard: `confirms` is the
+        bridge's list of {"radio", "code", "at"}. A confirmation counts only from THAT radio, with
+        THAT code, heard after the code was made and before it expired. Returns
+        [{"member", "name", "radio"}] for the radios bound now (each only once)."""
+        if not isinstance(confirms, list) or not confirms:
+            return []
+        heard = []
+        for c in confirms[-50:]:
+            if not isinstance(c, dict):
+                continue
+            radio, code, at = c.get("radio"), norm_pair_code(c.get("code")), _num(c.get("at"))
+            if isinstance(radio, str) and NODE_RE.match(radio.lower()) and code and at is not None:
+                heard.append((radio.lower(), _h(f"{radio.lower()}:{code}"), at))
+        if not heard:
+            return []
+        done: list[dict] = []
+        with self.lock:
+            d = self._load()
+            now = self.clock()
+            changed = False
+            for mid, m in d["members"].items():
+                pend = m.get("pending_radios")
+                if m.get("removed") or not isinstance(pend, list) or not pend:
+                    continue
+                keep = []
+                for p in pend:
+                    if not isinstance(p, dict):
+                        continue
+                    created, exp = _num(p.get("created")) or 0, _num(p.get("expires")) or 0
+                    ok = exp > now and any(r == p.get("radio") and hmac.compare_digest(h, str(p.get("code", "")))
+                                           and created - 5 <= at <= exp for r, h, at in heard)
+                    if ok:
+                        try:
+                            self._bind_radio(m, d, str(p["radio"]))
+                            done.append({"member": mid, "name": clean_name(m.get("name", "")), "radio": str(p["radio"])})
+                        except ValueError:
+                            pass                          # taken meanwhile / full: the pairing just ends
+                        changed = True
+                    elif exp > now:
+                        keep.append(p)
+                    else:
+                        changed = True
+                if len(keep) != len(pend):
+                    m["pending_radios"] = keep
+                    changed = True
+            if changed:
+                self._save(d)
+        return done
+
+    def pending_radios(self, mid: str) -> list[dict]:
+        with self.lock:
+            d = self._load()
+        m = d["members"].get(mid) if isinstance(mid, str) else None
+        now = self.clock()
+        if not m:
+            return []
+        return [{"radio": str(x.get("radio", "")), "expires": _num(x.get("expires"))}
+                for x in (m.get("pending_radios") if isinstance(m.get("pending_radios"), list) else [])
+                if isinstance(x, dict) and (_num(x.get("expires")) or 0) > now]
+
+    def cancel_radio_pairing(self, mid: str, node) -> dict:
+        node = str(node).strip().lower() if isinstance(node, str) else ""
+        return self._edit(mid, lambda m, d: m.__setitem__("pending_radios", [
+            x for x in (m.get("pending_radios") if isinstance(m.get("pending_radios"), list) else [])
+            if isinstance(x, dict) and x.get("radio") != node]))
 
     def remove_radio(self, mid: str, node) -> dict:
         node = str(node).strip().lower()

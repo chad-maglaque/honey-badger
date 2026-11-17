@@ -419,6 +419,9 @@ class Bridge(unittest.TestCase):
         (self.tmp / "members.json").write_text(json.dumps({"v": 1, "invites": {}, "members": {
             "m_ana": {"name": "Ana", "devices": [], "radios": ["!a1b2c3d4"]},
             "m_cal": {"name": "Cal", "devices": [], "radios": [], "removed": 1, "removed_radios": ["!cccccccc"]}}}))
+        # the family channel was re-keyed after Cal was removed (otherwise family-channel posts are only
+        # "unconfirmed" and family commands are off: red team finding 11, tests/test_redteam_rf.py)
+        (self.tmp / "mesh-rotate-result.json").write_text(json.dumps({"id": "r1", "ok": True, "at": 2}))
 
     def tearDown(self):
         for k, v in self.saved_globals.items():
@@ -548,18 +551,34 @@ mesh_bt_pin_file = "{t}/mesh-bt-pin.json"
         self.assertEqual(self.board("family-board.jsonl"), [])
         self.iface.sent.clear()
         self.rx("!status", "!5eeeeee5", 0)
-        self.assertIn("family radios", " ".join(t for t, _, _ in self.iface.sent))
+        # CHANGED (red team finding 6): not answered — and no "for family radios" refusal either
+        self.assertEqual(self.iface.sent, [])
 
     # — on_text —
     def test_replies_go_to_the_sender_on_the_request_channel(self):
+        # CHANGED (red team finding 6): a family radio (family channel) gets a DM on that channel; a stranger's
+        # "!q" on the public channel is answered there in the open (as a reply to the question, so other Badgers
+        # hear it); "!help" from strangers and anything on other channels gets nothing at all.
         self.run_main({"mesh_family_channel": 1, "mesh_public_channel": 0})
-        for ch in (0, 1, 3, 7):
+        self.rx("!help", "!00000001", 1)
+        self.assertEqual(len(self.iface.sent), 1)
+        text, dest, chan = self.iface.sent[0]
+        self.assertEqual((dest, chan), ("!00000001", 1))
+        self.assertLessEqual(len(text.encode()), 200)
+        self.assertNotIn("Badger", text)
+        for ch in (0, 3, 7):
             self.iface.sent.clear()
             self.rx("!help", f"!0000000{ch}", ch)
-            self.assertEqual(len(self.iface.sent), 1)
-            text, dest, chan = self.iface.sent[0]
-            self.assertEqual((dest, chan), (f"!0000000{ch}", ch))
-            self.assertLessEqual(len(text.encode()), 200)
+            self.rx("!status", f"!0000001{ch}", ch)
+            self.assertEqual(self.iface.sent, [], ch)
+        self.rx("!q water", "!00000020", 0)                              # (library offline in the test)
+        deadline = time.time() + 5                                       # answered on main()'s worker thread
+        while not self.iface.sent and time.time() < deadline:
+            time.sleep(0.02)
+        self.assertEqual([(d, c) for _, d, c in self.iface.sent], [(None, 0)])
+        self.iface.sent.clear()
+        self.rx("!q water", "!00000021", 3)
+        self.assertEqual(self.iface.sent, [])
 
     def test_spoofed_member_radio_on_public_channel_is_not_a_verified_family_post(self):
         # BUG: a packet on the PUBLIC channel with fromId = Ana's registered radio (trivial to forge: `from`
@@ -574,7 +593,8 @@ mesh_bt_pin_file = "{t}/mesh-bt-pin.json"
         self.assertNotIn("member", rec)
         self.iface.sent.clear()
         self.rx("!status", "!a1b2c3d4", 0)
-        self.assertIn("family radios", " ".join(t for t, _, _ in self.iface.sent))
+        # CHANGED (red team finding 6): not trusted, and strangers get no refusal at all (it identified a family)
+        self.assertEqual(self.iface.sent, [])
 
     def test_direct_messages_are_commands_only(self):
         # BUG: route_text documents "another channel (or a DM): commands only", but on_text never looks at

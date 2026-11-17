@@ -34,7 +34,7 @@ Prices are rough US street prices in Nov 2026. RAM and SSD prices are moving fas
 | NVMe SSD 2280, low-power DRAM-less | WD SN5000 / SN770 class | volatile | 512 GB Field · 1 TB Base · 2–4 TB Ultimate. Prefer APST idle in the mW range |
 | RTC battery (rechargeable ML-2020) | Raspberry Pi SC1163 | 5 | set `[power] rtc_battery = "ml2020"` to enable charging — **never** with a CR coin cell |
 | microSD 32 GB | any A1 | 8 | rescue image (same OS, no content) taped inside the lid |
-| USB Wi-Fi 6 adapter, MT7921AU, AP mode | ALFA AWUS036AXML / EDUP EP-AX1672 | 50 | 85 × 63 × 20 mm, two RP-SMA jacks. In-kernel driver (5.19+); 5 GHz AP for 20–60 phones, WPA2/WPA3. Onboard Wi-Fi stays free as an uplink for updates. Without the adapter the onboard radio runs the hotspot, WPA2 only |
+| USB Wi-Fi 6 adapter, MT7921AU, AP mode | ALFA AWUS036AXML / EDUP EP-AX1672 | 50 | 85 × 63 × 20 mm, two RP-SMA jacks. In-kernel driver (5.19+); 5 GHz AP for 20–60 phones, WPA2/WPA3, or Enhanced Open (OWE: no password, still encrypted). Onboard Wi-Fi stays free as an uplink for updates. Without the adapter the onboard radio runs the hotspot, WPA2 only (no OWE) |
 | 2× dual-band (2.4/5 GHz) adhesive FPC antennas, ≤ 48 × 12 mm, **pre-wired to RP-SMA male**, ~20 cm | — | 16 | **built in** under the lid; replace the adapter's stick antennas. FPC antennas usually come with U.FL: if so, add a U.FL→RP-SMA-male pigtail for each |
 | M.2 NVMe USB enclosure | RTL9210 / JMS583 class | 20 | for loading the SSD from a laptop, and rescue access to the content |
 
@@ -450,7 +450,10 @@ The case is plain by default (`markings = "none"`): no engraving. Add printed la
 
 - a vinyl or laminated sticker on the lid with the badger mark and "Join Wi-Fi · open badger.lan"
 - small labels for the panel connectors
-- the Wi-Fi QR sticker, in its shallow 30 × 30 mm recess on the lid
+- the Wi-Fi QR sticker, in its shallow 30 × 30 mm recess on the lid. The hotspot has a random password
+  by default (shown on the front panel, *Join Wi-Fi*): a sticker with it lets anyone who sees the lid join.
+  Keep it inside the lid, or skip it and use the panel's QR. Don't put "Honey Badger" in the Wi-Fi name
+  (the builder refuses it): it tells passers-by what is inside.
 
 Two other options in the SCAD's `markings` parameter:
 

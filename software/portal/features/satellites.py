@@ -13,6 +13,13 @@ making (SatDump) are done by software/sdr/sdrd.py, which writes the plan to
 
 Optional: [satellites] board_post = true posts "New weather satellite image" on the community
 board when a picture arrives (default off; never sent over the mesh).
+
+Pass predictions depend on where the receiver is: times to the second and angles to a tenth of a
+degree, collected over a few days, pin the Badger down to a few hundred metres (and rounding them
+does not help: many rounded samples of a precise quantity average back to it). So visitors get
+passes predicted here from the snapped visitor-grid point only (software/common/visitor.py), to the
+minute and the whole degree, with just the Badger's decision (record / skip) borrowed from its own
+plan; family members and the admin get the Badger's exact plan.
 """
 from __future__ import annotations
 
@@ -25,8 +32,11 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sdr"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
 import sdrcommon as C  # noqa: E402
+import satplan  # noqa: E402
 import tlefile  # noqa: E402
+import visitor  # noqa: E402
 
 FEATURE = {"title": "Weather satellites", "icon": "🛰️", "group": "radio", "route": "/satellites",
            "script": "/features/satellites.js", "access": "public",
@@ -37,6 +47,9 @@ CTYPES = {"png": "image/png", "jpg": "image/jpeg"}
 _lock = threading.Lock()
 _hits: dict[str, list[float]] = {}
 _refresh = {"running": False, "result": None}
+_vis_cache: dict = {}
+VISITOR_REASON = {"record": "The Badger plans to record this pass.", "skip": "The Badger won't record this pass.",
+                  "done": "Already handled.", "off": "Recording is off."}
 
 
 def _rate_ok(ip: str, per_min: int = 60) -> bool:
@@ -74,16 +87,59 @@ def gallery() -> list[dict]:
     return out[:500]
 
 
-def _pass(p: dict) -> dict | None:
+def _pass(p: dict, precise: bool = True) -> dict | None:
     if not isinstance(p, dict):
         return None
     keys = ("aos", "los", "tca", "max_elev", "aos_az", "los_az", "start", "end")
     out = {k: _num(p.get(k)) for k in keys}
     if out["aos"] is None or out["los"] is None:
         return None
+    if not precise:
+        for k in ("aos", "los", "tca", "start", "end"):
+            out[k] = visitor.round_time(out[k], 60)
+        for k in ("max_elev", "aos_az", "los_az"):
+            out[k] = visitor.round_angle(out[k])
     out.update(name=str(p.get("name") or "")[:40], decision=str(p.get("decision") or "")[:12],
                reason=str(p.get("reason") or "")[:300], approximate=bool(p.get("approximate")),
                freq_mhz=_num(p.get("freq_mhz")))
+    return out
+
+
+def visitor_passes(s_all: dict, plan: list[dict]) -> list[dict]:
+    """Passes for visitors: predicted from the snapped grid point (never from the real position),
+    times to the minute, angles to the degree; decision from the Badger's plan, matched by satellite
+    and time (±10 min), with a fixed sentence instead of its reason (which quotes exact figures)."""
+    real = C.position(s_all["home"])
+    snap = visitor.coarse_position(real)
+    if not snap:
+        return []
+    now = time.time()
+    key = (snap["lat"], snap["lon"], int(now // 600))
+    with _lock:
+        if _vis_cache.get("key") == key:
+            base = _vis_cache["passes"]
+        else:
+            base = None
+    if base is None:
+        sats_cfg = s_all["satellites"]["list"]
+        try:
+            base = satplan.predict(tlefile.load(sats_cfg), sats_cfg, {"lat": snap["lat"], "lon": snap["lon"], "alt_m": 0.0},
+                                   key[2] * 600 - 1200, 24.0)
+        except Exception:  # noqa: BLE001 — bad orbit data: no visitor pass list, the page still works
+            base = []
+        with _lock:
+            _vis_cache.update(key=key, passes=base)
+    out = []
+    for p in base[:60]:
+        if not isinstance(p, dict) or _num(p.get("los")) is None or p["los"] < now - 1200:
+            continue
+        match = next((q for q in plan if isinstance(q, dict) and q.get("norad") == p.get("norad")
+                      and isinstance(q.get("tca"), (int, float)) and abs(q["tca"] - (p.get("tca") or 0)) < 600), None)
+        decision = str((match or {}).get("decision") or "skip")[:12]
+        row = _pass(dict(p, decision=decision, reason=VISITOR_REASON.get(decision, "")), precise=False)
+        if row:
+            row["start"] = row["end"] = None
+            out.append(row)
     return out
 
 
@@ -97,7 +153,10 @@ def get_overview(req, ctx, args):
     sat = st.get("satellites") if isinstance(st.get("satellites"), dict) else {}
     paused = st.get("weather_radio") == "paused"
     raw_passes = sched.get("passes") if isinstance(sched.get("passes"), list) else []
-    passes = [x for x in (_pass(p) for p in raw_passes[:60]) if x]
+    if args.get("member") or args.get("admin"):
+        passes = [x for x in (_pass(p) for p in raw_passes[:60]) if x]
+    else:
+        passes = visitor_passes(C.settings(ctx.raw_config()), raw_passes)
     tle_rows = tlefile.info(s["list"], s["tle_stale_days"], s["tle_max_days"])
     mode = sched.get("mode") if isinstance(sched.get("mode"), dict) else {}
     hist = [h for h in (st.get("history") if isinstance(st.get("history"), list) else []) if isinstance(h, dict) and h.get("kind") == "satellite"][-5:]
@@ -112,9 +171,7 @@ def get_overview(req, ctx, args):
         "used_today_min": sat.get("used_today_min"), "daily_max_min": s["daily_max_min"],
         "generated": _num(sched.get("generated")),
         "clock_suspect": bool(sched.get("clock_suspect")),
-        "position": ({"lat": _num(sched["position"].get("lat")), "lon": _num(sched["position"].get("lon")),
-                      "source": str(sched["position"].get("source") or "")[:20]}
-                     if isinstance(sched.get("position"), dict) else None),
+        "position": visitor.coarse_position(sched.get("position")),      # sdrd writes it rounded already
         "passes": passes, "tle": tle_rows, "images": gallery()[:s["keep_images"]],
         "history": [{"at": _num(h.get("at")), "result": str(h.get("result", ""))[:20], "name": str(h.get("name") or "")[:40],
                      "detail": str(h.get("detail") or "")[:200]} for h in hist],

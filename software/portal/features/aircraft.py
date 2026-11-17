@@ -14,7 +14,12 @@ is live; a few a day) — the fallback.
   POST /api/aircraft/antenna  admin    which antenna is on SDR 2: adsb | satellite | both
 
 ADS-B is unencrypted public broadcast; nothing here is secret, but the list is rebuilt from
-validated fields only, and the Badger's position is rounded.
+validated fields only. Where the Badger is IS secret: exact plane positions together with each
+plane's distance and bearing from the Badger give its position to ~100 m (three planes are enough).
+So for visitors the origin is snapped to the visitor grid like everywhere else
+(software/common/visitor.py, cells >= 10 km) and every distance and bearing is measured from that
+snapped point: trilaterating the list finds the cell centre, never the house. Family members and
+the admin get distances and bearings from the real position. Who started a scan is shown to family members and the admin only.
 """
 from __future__ import annotations
 
@@ -28,7 +33,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sdr"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
 import sdrcommon as C  # noqa: E402
+import visitor  # noqa: E402
 
 FEATURE = {"title": "Aircraft", "icon": "✈️", "group": "radio", "route": "/aircraft",
            "script": "/features/aircraft.js", "access": "public",
@@ -102,14 +109,27 @@ def clean(a: dict, origin: dict | None, max_km: float) -> dict | None:
     return out
 
 
-def snapshot(ctx) -> dict:
-    """aircraft.json → the cleaned list, shared by every caller for 2 seconds."""
+def _origin_view(origin: dict | None, precise: bool) -> dict | None:
+    if not origin:
+        return None
+    if precise:
+        return {"lat": origin["lat"], "lon": origin["lon"], "source": origin["source"]}
+    c = visitor.coarse(origin["lat"], origin["lon"])
+    return {"lat": c[0], "lon": c[1], "source": origin["source"], "coarse": True} if c else None
+
+
+def snapshot(ctx, precise: bool = False) -> dict:
+    """aircraft.json → the cleaned list, shared by every caller for 2 seconds. precise=False (visitors):
+    origin, distances and bearings from the snapped grid point; True (family, admin): from the real one."""
     now = time.monotonic()
+    key = "precise" if precise else "visitor"
     with _lock:
-        if _cache.get("at") and now - _cache["at"] < 2.0:
-            return _cache["data"]
+        hit = _cache.get(key)
+        if hit and now - hit[0] < 2.0:
+            return hit[1]
     s = C.settings(ctx.raw_config())
-    origin = C.position(s["home"])
+    real = C.position(s["home"])
+    shown = _origin_view(real, precise)
     raw = C.read_json(C.run_dir() / "readsb" / "aircraft.json", None, limit=3_000_000)
     planes, updated, stale = [], None, True
     if isinstance(raw, dict):
@@ -117,28 +137,29 @@ def snapshot(ctx) -> dict:
         stale = not updated or time.time() - updated > 30
         if not stale:
             for a in (raw.get("aircraft") if isinstance(raw.get("aircraft"), list) else [])[:5000]:
-                c = clean(a, origin, s["aircraft"]["max_range_km"])
+                # Visitors: distance, bearing — and even the range check that drops far-away planes — come
+                # from the snapped point only (a plane kept or dropped at exactly 450 km from the real spot
+                # would be a measurement of it, repeated with every plane).
+                c = clean(a, real if precise else shown, s["aircraft"]["max_range_km"])
                 if c and (c["seen_s"] is None or c["seen_s"] <= 60):
                     planes.append(c)
                 if len(planes) >= MAX_AIRCRAFT:
                     break
     planes.sort(key=lambda p: (p["dist_km"] is None, p["dist_km"] or 0, p["flight"] or p["hex"]))
-    data = {"aircraft": planes, "count": len(planes), "updated": updated, "stale": stale,
-            "origin": ({"lat": round(origin["lat"], 2), "lon": round(origin["lon"], 2), "source": origin["source"]}
-                       if origin else None)}
+    data = {"aircraft": planes, "count": len(planes), "updated": updated, "stale": stale, "origin": shown}
     with _lock:
-        _cache.update(at=now, data=data)
+        _cache[key] = (now, data)
     return data
 
 
-def radio(ctx) -> dict:
+def radio(ctx, family: bool = False) -> dict:
     st = C.read_status()
     air = st.get("aircraft") if isinstance(st.get("aircraft"), dict) else {}
     paused = st.get("weather_radio") == "paused"
     return {"running": bool(st.get("running")), "weather_radio": st.get("weather_radio"),
             "paused_by": st.get("by") if paused else None, "paused_until": st.get("until") if paused else None,
             "state": air.get("state", "off"), "device": air.get("device"), "until": air.get("until"),
-            "by": air.get("by"), "message": str(air.get("message") or "")[:300], "request": air.get("request"),
+            "by": air.get("by") if family else None, "message": str(air.get("message") or "")[:300], "request": air.get("request"),
             "installed": air.get("installed"), "always_on": bool(air.get("always_on")),
             "scans_left": air.get("scans_left"), "scan_minutes": air.get("scan_minutes", 15),
             "dedicated": bool(air.get("dedicated")), **C.sdr2_info(st)}
@@ -148,7 +169,8 @@ def get_aircraft(req, ctx, args):
     s = C.settings(ctx.raw_config())
     if not _rate_ok(args["ip"], s["aircraft"]["requests_per_min"]):
         return 429, {"error": "too many requests — the list refreshes by itself every few seconds"}, {"Retry-After": "10"}
-    return dict(snapshot(ctx), radio=radio(ctx))
+    family = bool(args.get("member") or args.get("admin"))
+    return dict(snapshot(ctx, precise=family), radio=radio(ctx, family))
 
 
 def _command(ctx, args, action: str):

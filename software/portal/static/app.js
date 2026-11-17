@@ -84,8 +84,32 @@
     return api("/api/members/me").then(function (r) {
       if (r.member) lsSet("isMember", "1"); else if (r.key === "unknown" || r._status === 401) lsDel("isMember");
       if (r.admin === true || r.admin === false) { state.admin = r.admin; sessionSet("isAdmin", r.admin ? "1" : null); }
+      approvalPrompt(r.approvals || []);
       return r;
     }).catch(function () { return {}; });
+  }
+  // A device someone (the admin) added to THIS member waits until one of the member's own devices says yes.
+  function approvalPrompt(list) {
+    var box = document.getElementById("approvals");
+    if (!list.length) { if (box) box.parentNode.removeChild(box); return; }
+    if (!box) {
+      box = document.createElement("div"); box.id = "approvals";
+      view.parentNode.insertBefore(box, view);
+    }
+    box.innerHTML = list.map(function (a) {
+      return '<div class="card warnbox" style="margin:10px"><p><b>A new device wants to join as you:</b> “' + esc(a.label) + "”" +
+        (a.created ? " (" + esc(tfmt(a.created * 1000, { date: true, short: true })) + ")" : "") + ".</p>" +
+        '<p class="small">Someone with the admin PIN added it to your name. Only say yes if it is yours (or you asked for it). If not, say no and tell your family.</p>' +
+        '<div class="btns"><button class="btn" data-appr="' + esc(a.device) + '" data-yes="1">Yes, it’s mine</button>' +
+        '<button class="btn danger" data-appr="' + esc(a.device) + '" data-yes="">No, remove it</button></div></div>';
+    }).join("");
+    box.querySelectorAll("[data-appr]").forEach(function (b) { b.onclick = function () {
+      var yes = !!b.getAttribute("data-yes");
+      api("/api/members/approve", { body: { device: b.getAttribute("data-appr"), approve: yes } }).then(function (r) {
+        if (!r.ok) alert(r.error || "That didn’t work.");
+        refreshWho();
+      });
+    }; });
   }
 
   // ── theme & text size ──
@@ -187,7 +211,7 @@
         }).join(""));
       }).catch(function () {});
     }).catch(function () {
-      document.getElementById("statusbar").innerHTML = "<b>Badger not reachable</b> — are you on the HoneyBadger Wi-Fi?";
+      document.getElementById("statusbar").innerHTML = "<b>Badger not reachable</b> — are you on the Badger’s Wi-Fi?";
     });
   }
 
@@ -418,20 +442,22 @@
         e.preventDefault();
         api("/api/members/join", { body: { code: document.getElementById("jc").value, name: document.getElementById("jn").value,
           device: document.getElementById("jd").value } }).then(function (r) {
+          if (r.ok && r.pending) { lsSet("boardName", r.member.name); wrap.innerHTML = '<div class="card"><p>' + esc(r.message || "This device is waiting for approval.") + "</p></div>"; return; }
           if (r.ok) { lsSet("isMember", "1"); lsSet("boardName", r.member.name); location.hash = "#/board/family"; route(); }
           else document.getElementById("js").textContent = r.error || "That didn’t work.";
         });
       };
     }
 
-    function postForm(me, mesh) {
+    function postForm(me, mesh, needsOk) {
       var nameField = which === "family" && me
         ? '<p class="small">Posting as <b>' + esc(me.name) + "</b></p>"
         : '<label for="bn">Your name</label><input type="text" id="bn" maxlength="32" value="' + esc(me ? me.name : lsGet("boardName", "")) + '">';
       wrap.innerHTML = '<form id="bf" class="card">' + nameField +
         '<label for="bt">Message</label><textarea id="bt" maxlength="2000" placeholder="' + (which === "family" ? "e.g. Ana: at the school gym with the kids, all OK." : "e.g. Water available at the church on Main St until 6 pm.") + '"></textarea>' +
         '<div class="btns" style="margin-top:8px"><button class="btn">Post</button>' +
-        (mesh ? '<label style="margin:0;font-weight:400"><input type="checkbox" id="bm"> Send over mesh</label>' : "") +
+        (mesh ? '<label style="margin:0;font-weight:400"><input type="checkbox" id="bm"> ' + (needsOk ? "Ask to send over mesh" : "Send over mesh") + "</label>" : "") +
+        (mesh && needsOk ? '<span class="small muted">(a family member decides — the Badger’s radio is the household’s)</span>' : "") +
         (mesh && me ? '<a class="small" href="/maps/?mesh=1">Radios on the map</a>' : "") +
         '<span id="bs" class="small muted"></span></div></form>';
       document.getElementById("bf").onsubmit = function (e) {
@@ -448,18 +474,43 @@
     function load() {
       api("/api/board?board=" + which).then(function (d) {
         if (d._status === 503) { wrap.innerHTML = '<p class="card">' + esc(d.error || "The family list can’t be read right now. Try again later.") + "</p>"; return; }
-        if (d._status === 401) { if (d.key === "unknown") { lsDel("isMember"); return joinForm("This device is no longer a family member. Ask for a new invite."); } return joinForm(); }
-        if (!document.getElementById("bf")) postForm(d.member, d.mesh);
+        if (d._status === 401) { if (d.key === "unknown") { lsDel("isMember"); return joinForm("This device is no longer a family member. Ask for a new invite."); }
+          if (d.key === "pending") { wrap.innerHTML = '<div class="card"><p>' + esc(d.error) + "</p></div>"; document.getElementById("msgs").innerHTML = ""; return; }
+          return joinForm(); }
+        if (!document.getElementById("bf")) postForm(d.member, d.mesh && d.mesh_visitors !== false, d.mesh_needs_ok);
+        pendingBox(d.mesh_pending);
         document.getElementById("msgs").innerHTML = d.messages.slice().reverse().map(function (m) {
           // ✓ only for posts a family member made here; the Badger's own notes get a neutral mark;
           // radio posts are never "verified" (a radio's ID can be faked on the air).
           var badge = m.system ? ' <span class="pill" title="An automatic note from the Badger">Badger</span>' :
             m.removed_member ? ' <span class="pill">removed member</span>' : (m.verified ? ' <span class="pill ok" title="Family member">✓</span>' : "");
           var via = m.via === "mesh-in" ? (which === "family" ? " · via the family radio channel 📡" : " · via mesh 📡 (anyone with a radio; name not checked)") :
-            m.via === "mesh-out" ? " · sent to mesh" : "";
+            m.via === "mesh-out" ? " · sent to mesh" : m.mesh === "pending" ? " · waiting for a family member to send it over the radio" :
+            m.mesh === "declined" ? " · not sent over the radio" : "";
           return '<div class="msg"><span class="who">' + esc(m.name) + badge + '</span><span class="when">' + esc(tfmt(m.at, { date: true, short: true })) +
             esc(via) + "</span><div>" + esc(m.text) + "</div></div>";
         }).join("") || '<p class="muted">No messages yet.</p>';
+      });
+    }
+    // Visitors' "send over mesh" requests, for family members and the admin: send or keep on the board.
+    function pendingBox(list) {
+      var box = document.getElementById("mpend");
+      if (!box) { wrap.insertAdjacentHTML("afterend", '<div id="mpend"></div>'); box = document.getElementById("mpend"); }
+      if (!list || !list.length) { box.innerHTML = ""; return; }
+      box.innerHTML = '<div class="card warnbox"><h2>Waiting to go out over the radio</h2><p class="small">Visitors asked for these to be sent from the Badger’s radio. ' +
+        "Whatever you send goes out from this household’s transmitter: only send what you’d put your own name to.</p>" +
+        list.map(function (p) {
+          return '<div class="msg"><span class="who">' + esc(p.name) + '</span><span class="when">' + esc(tfmt(Number(p.at) * 1000, { date: true, short: true })) +
+            "</span><div>" + esc(p.text) + '</div><div class="btns"><button class="btn ghost" data-mp="' + esc(p.id) + '" data-send="1">Send over radio</button>' +
+            '<button class="btn ghost" data-mp="' + esc(p.id) + '" data-send="0">Don’t send</button></div></div>';
+        }).join("") + '<p class="small" id="mpmsg" role="status"></p></div>';
+      box.querySelectorAll("[data-mp]").forEach(function (b) {
+        b.onclick = function () {
+          api("/api/board/mesh", { body: { id: b.getAttribute("data-mp"), send: b.getAttribute("data-send") === "1" } }).then(function (r) {
+            var m = document.getElementById("mpmsg"); if (m) m.textContent = r.message || r.error || "";
+            load();
+          });
+        };
       });
     }
     load();
@@ -473,20 +524,38 @@
     }).catch(libFailed);
   }
 
-  function filesView() {
+  // USB sticks are the family's own files: members and the admin only (a visitor sees an explanation).
+  function filesView(drive, path) {
+    var fam = lsGet("isMember", "") === "1" || state.admin;
+    if (drive) return usbBrowse(drive, path || "");
     api("/api/usb").then(function (list) {
-      h('<h1>💾 USB & files</h1><p class="muted">Plug a USB stick into the front of the Badger. Its files appear here for everyone on the Wi-Fi.</p>' +
+      list = list && list.length ? list : [];
+      h('<h1>💾 USB & files</h1><p class="muted">Plug a USB stick into the front of the Badger. Family members (and the admin) can open its files here.</p>' +
         (list.length ? '<div class="list">' + list.map(function (u) {
           return '<div class="card"><div class="row"><div><h3>' + esc(u.name) + '</h3><div class="meta">' + esc(human(num(u.free))) + " free of " + esc(human(num(u.total))) +
-            (u.bundle ? ' · <span class="pill ok">contains an update bundle</span>' : "") + '</div></div><div class="btns"><a class="btn" href="' + href(u.url) + '/">Browse</a></div></div></div>';
-        }).join("") + "</div>" : '<p class="card">No USB drive detected.</p>'));
+            (u.bundle ? ' · <span class="pill ok">contains an update bundle</span>' : "") + '</div></div><div class="btns"><a class="btn" href="#/files?d=' + encodeURIComponent(u.drive || u.name) + '">Browse</a></div></div></div>';
+        }).join("") + "</div>" : fam ? '<p class="card">No USB drive detected.</p>' :
+          '<p class="card">USB drives are for the family whose Badger this is. Family members: join under <a href="#/board/family">Check-in board → Family</a>.</p>'));
+    });
+  }
+  function usbBrowse(drive, path) {
+    api("/api/usb/ls?drive=" + encodeURIComponent(drive) + "&path=" + encodeURIComponent(path)).then(function (d) {
+      if (d._status !== 200) return h('<p class="muted">' + esc(d.error || "Not found.") + ' <a href="#/files">Back</a></p>');
+      var parts = (d.path || "").split("/").filter(Boolean), acc = "", base = "#/files?d=" + encodeURIComponent(drive);
+      var crumbs = '<a href="#/files">USB & files</a> › <a href="' + base + '">' + esc(drive) + "</a>" +
+        parts.map(function (p) { acc += (acc ? "/" : "") + p; return ' › <a href="' + base + "&p=" + encodeURIComponent(acc) + '">' + esc(p) + "</a>"; }).join("");
+      var rows = d.entries.map(function (e) {
+        if (e.dir) return '<tr><td>📁 <a href="' + base + "&p=" + encodeURIComponent(e.path) + '">' + esc(e.name) + "</a></td><td></td><td></td></tr>";
+        return "<tr><td>" + esc(e.name) + '</td><td class="sz">' + esc(human(num(e.size))) + '</td><td style="text-align:right"><a class="btn ghost" href="' + href(e.url) + '">Open</a></td></tr>';
+      }).join("");
+      h('<div class="crumbs">' + crumbs + '</div><h1>💾 ' + esc(drive) + '</h1><table class="files">' + (rows || '<tr><td class="muted">Empty</td></tr>') + "</table>");
     });
   }
 
   function devicesView() {
     var host = location.host;
     h('<h1>📱 Phones, iPads & laptops</h1>' +
-      '<p>Everything runs on the Badger. Your device only needs a web browser and the <b>' + esc((state.status && state.status.ssid) || "HoneyBadger") + '</b> Wi-Fi. Nothing is stored on it unless you choose to.</p>' +
+      '<p>Everything runs on the Badger. Your device only needs a web browser and the <b>' + esc((state.status && state.status.ssid) || "Badger’s") + '</b> Wi-Fi. Nothing is stored on it unless you choose to.</p>' +
       '<div class="card"><h2>iPad & iPhone</h2><ol><li>Open <b>http://' + esc(host) + '</b> in Safari.</li><li>Tap Share → <b>Add to Home Screen</b>.</li><li>The launcher now opens like an app, full screen.</li></ol>' +
       '<p class="small">Want the tools (Morse, phrasebook, water, radio, converter) to work even out of range? Install the <a href="/ca.crt">Badger certificate</a> (Settings → General → VPN & Device Management, then About → Certificate Trust Settings), and use <b>https://' + esc(location.hostname) + '</b> instead. The app then caches them.</p>' +
       '<p class="small muted">Leaving the Badger’s range? Download a few ZIMs from any collection’s “Open with → Download” into the free <b>Kiwix</b> app, and a map region into <b>Organic Maps</b>.</p></div>' +
@@ -553,12 +622,39 @@
       var box = document.getElementById("meBox");
       if (!box) return;
       if (r._status === 503) { box.textContent = r.error || "The family list can’t be read right now."; return; }
+      if (r.key === "pending" && r.pending) { box.innerHTML = "This device is waiting for <b>" + esc(r.pending.name) + "</b> to approve it on one of their other devices (or at the Badger’s own screen: knob → Approve device)."; return; }
       if (!r.member) { box.innerHTML = 'This device isn’t a family member. <a href="#/board/family">Join with an invite code</a>.'; return; }
-      box.innerHTML = "This device belongs to <b>" + esc(r.member.name) + '</b>. <button class="btn ghost" id="leave">Forget this device</button>';
+      var pr = r.member.pending_radios || [];
+      box.innerHTML = "This device belongs to <b>" + esc(r.member.name) + '</b>. <button class="btn ghost" id="leave">Forget this device</button>' +
+        '<h4 class="section">Family radio link</h4><p class="small">The link (with the channel key) for your Meshtastic radio. Shown only on family members’ own devices, over https, and on the Badger’s screen.</p>' +
+        '<div class="btns"><button class="btn ghost" id="myLink">Show family radio link</button></div><div id="myLinkOut"></div>' +
+        '<h4 class="section">My radios</h4><p class="small">Your radio’s posts on the family channel carry your name. To link one, enter its ID; then send the code it gives you from that radio on the family channel.</p>' +
+        '<p class="small">' + ((r.member.radios || []).map(function (x) { return '<span class="mono">' + esc(x) + '</span> <button class="btn ghost" data-myunradio="' + esc(x) + '">×</button>'; }).join(" ") || "No radio linked yet.") +
+        (pr.length ? "<br>Waiting for a message from: " + pr.map(function (x) { return '<span class="mono">' + esc(x.radio) + "</span>"; }).join(", ") : "") + "</p>" +
+        '<div class="btns"><input type="text" id="myRadio" placeholder="!a1b2c3d4" maxlength="9" style="width:9em"><button class="btn ghost" id="myPair">Link my radio</button></div><div id="myRadioOut" class="small"></div>';
       document.getElementById("leave").onclick = function () {
         if (!confirm("Remove family access from this device? You’ll need a new invite to get it back.")) return;
         api("/api/members/leave", { body: {} }).then(function () { lsDel("isMember"); settingsView(); });
       };
+      document.getElementById("myLink").onclick = function () {
+        api("/api/members/radio-link").then(function (x) {
+          var o = document.getElementById("myLinkOut");
+          if (!x.url) { o.innerHTML = '<p class="small">' + esc(x.message || x.error || "Not available.") + "</p>"; return; }
+          o.innerHTML = '<p><a class="btn" href="' + href(x.url) + '">Open in Meshtastic</a></p><p class="small mono" style="word-break:break-all">' + esc(x.url) + "</p>" +
+            (x.bt_pin ? '<p class="small">The Badger radio’s Bluetooth PIN: <b class="mono">' + esc(x.bt_pin) + "</b></p>" : "") +
+            '<p class="small">Keep it in the family: whoever has this link can read and send on the family channel.</p>';
+        });
+      };
+      document.getElementById("myPair").onclick = function () {
+        api("/api/members/radio", { body: { op: "pair", radio: document.getElementById("myRadio").value } }).then(function (x) {
+          document.getElementById("myRadioOut").innerHTML = x.ok
+            ? "From that radio, on the family channel, send: <b class=\"mono\">!pair " + esc(x.code) + "</b> (within an hour). It’s linked when the Badger hears it — reopen this page to check."
+            : esc(x.error || "That didn’t work.");
+        });
+      };
+      box.querySelectorAll("[data-myunradio]").forEach(function (b) { b.onclick = function () {
+        api("/api/members/radio", { body: { op: "remove", radio: b.getAttribute("data-myunradio") } }).then(function () { settingsView(); });
+      }; });
     });
     api("/api/settings").then(function (d) {
       var kinds = d.renderers;
@@ -578,11 +674,11 @@
   function adminPanel(kinds, settings) {
     var el = document.getElementById("adm");
     if (!state.admin) {
-      el.innerHTML = '<form id="lf"><label for="pin">Admin PIN</label><input type="password" id="pin" inputmode="numeric" autocomplete="current-password"> <button class="btn">Unlock</button> <span id="lm" class="small muted"></span></form>';
+      el.innerHTML = '<form id="lf"><label for="pin">Admin PIN or passphrase</label><input type="password" id="pin" autocomplete="current-password"> <button class="btn">Unlock</button> <span id="lm" class="small muted"></span></form>';
       document.getElementById("lf").onsubmit = function (e) {
         e.preventDefault();
         api("/api/admin/login", { body: { pin: document.getElementById("pin").value } }).then(function (r) {
-          if (r.token) { state.admin = true; sessionSet("isAdmin", "1"); adminPanel(kinds, settings); personalCard(true); }
+          if (r.token) { state.admin = true; sessionSet("isAdmin", "1"); state.weakPin = !!r.weak_pin; adminPanel(kinds, settings); personalCard(true); }
           else document.getElementById("lm").textContent = r.error || "Failed";
         });
       };
@@ -602,19 +698,23 @@
         return "<label>" + esc(kinds[k].label) + '</label><select class="dsel" data-k="' + esc(k) + '">' + kinds[k].options.map(function (o) {
           return '<option value="' + esc(o.id) + '"' + ((rd[k] || kinds[k].default) === o.id ? " selected" : "") + ">" + esc(o.name) + "</option>"; }).join("") + "</select>"; }).join("") +
       '<div class="btns" style="margin-top:10px"><button class="btn ghost" id="saveDefaults">Save defaults</button></div>' +
-      '<h3 class="section">Family members</h3><p class="small muted">Members can read and post on the family board and see family radios on the map. Radios on the family’s private channel can use !ai and !status. Removing someone cuts off all their devices at once; adding their radio’s ID only puts their name on what it sends on the family channel.</p>' +
+      (state.weakPin ? '<p class="small warnbox">Your admin PIN is short or only digits. Anyone who copies the Badger’s disk could guess it. At the Badger, set a passphrase of 10+ characters (a few words): <span class="mono">sudo prepperctl set-pin</span></p>' : "") +
+      '<div id="panelLockBox"></div>' +
+      '<h3 class="section">Family members</h3><p class="small muted">Members can read and post on the family board and see family radios on the map. Radios on the family’s private channel can use !ai and !status. Removing someone cuts off all their devices at once. A device you add to an existing member only starts working when that member approves it on one of their own devices (or someone approves it at the Badger’s screen), and the family board says so. A radio is linked only after it sends a code on the family channel.</p>' +
       '<div class="btns"><input type="text" id="invName" maxlength="32" placeholder="Name (optional)"><button class="btn" id="invite">Invite a member</button></div><div id="invOut"></div><div id="storeBox"></div><div id="memList" class="list section"></div><div id="invList"></div>' +
       '<h3 class="section">Shared secrets</h3><p class="small muted">If someone you removed knew the Wi-Fi password, the family radio key or the admin PIN, change them. ' +
       'A new Wi-Fi password switches back by itself unless someone rejoins with it and confirms within 10 minutes (even across a restart), and the Badger’s own screen always shows the current password (knob → Join Wi-Fi) and the family radio link (knob → Family radio).</p>' +
       (location.protocol === "http:" ? '<p class="small warnbox">This page is not encrypted (http://). New passwords and radio keys are shown on the Badger’s own screen instead of here — or open <b>https://' + esc(location.hostname) + '</b> (see Phones, iPads &amp; laptops) to see them on this device.</p>' : "") +
-      '<div id="wifiPending"></div><div class="btns"><button class="btn ghost" id="rotWifi">New Wi-Fi password</button><button class="btn ghost" id="rotMesh">New family radio key</button><button class="btn ghost" id="meshLink">Show family radio link</button></div><div id="secOut"></div>' +
+      '<p class="small muted">The family radio link holds the channel key, so it is shown only to family members on their own devices (Settings → Family) and on the Badger’s screen — not on this admin page.</p>' +
+      '<div id="wifiPending"></div><div class="btns"><button class="btn ghost" id="rotWifi">New Wi-Fi password</button><button class="btn ghost" id="rotMesh">New family radio key</button><button class="btn ghost" id="meshLink">Where is the family radio link?</button></div><div id="secOut"></div>' +
       '<p class="small muted">Changed the admin PIN (at the Badger: <span class="mono">sudo prepperctl set-pin</span>)? End every admin session, this one too:</p><div class="btns"><button class="btn ghost" id="logoutAll">Log out all admin sessions</button></div>' +
       '<h3 class="section">Radio commands</h3><p class="small muted">Who may use each command from a Meshtastic radio. Community: anyone in radio range. Family: only messages sent on the family’s private channel (a radio’s ID alone proves nothing). Changes apply to the next message.</p>' +
       [["q", "!q", "library search"], ["ai", "!ai", "AI solver answers"], ["status", "!status", "battery, power, alerts"], ["help", "!help", "list of commands"]].map(function (c) {
-        var cur = ((settings.mesh_commands || {})[c[0]]) || { q: "community", ai: "family", status: "family", help: "community" }[c[0]];
+        var cur = ((settings.mesh_commands || {})[c[0]]) || { q: "community", ai: "family", status: "family", help: "family" }[c[0]];
+        if (c[0] === "help" && cur === "off") cur = "family";     // !help is never opened to strangers
         return '<label for="mc_' + c[0] + '"><span class="mono">' + c[1] + "</span> — " + c[2] + '</label><select id="mc_' + c[0] + '" class="mcsel" data-k="' + c[0] + '">' +
-          ["community", "family", "off"].filter(function (l) { return !(c[0] === "help" && l === "off"); }).map(function (l) {
-            return '<option value="' + l + '"' + (l === cur ? " selected" : "") + ">" + { community: "Community (anyone)", family: "Family only", off: "Off" }[l] + "</option>"; }).join("") + "</select>";
+          ["community", "family", "off", "ignore"].filter(function (l) { return !(c[0] === "help" && l === "off"); }).map(function (l) {
+            return '<option value="' + l + '"' + (l === cur ? " selected" : "") + ">" + { community: "Community (anyone)", family: "Family only", off: "Off (family told it is off)", ignore: "Ignore (no reply)" }[l] + "</option>"; }).join("") + "</select>";
       }).join("") + '<div class="btns" style="margin-top:10px"><button class="btn ghost" id="saveMc">Save radio commands</button></div>' +
       '<h3 class="section">Services</h3><div id="svc" class="btns"></div>' +
       '<h3 class="section">System</h3><div class="btns"><button class="btn ghost" data-sys="reboot">Restart</button><button class="btn danger" data-sys="shutdown">Shut down</button><button class="btn ghost" id="logout">Lock</button></div>' +
@@ -651,8 +751,24 @@
       var link = location.origin + "/#/join/" + encodeURIComponent(r.code);
       document.getElementById("invOut").innerHTML = r.ok
         ? '<div class="card"><p>Invite' + (who ? " for " + esc(who) : "") + ': <b class="mono" style="font-size:1.4em;letter-spacing:.06em">' + esc(r.code) + '</b></p>' +
-          '<p class="small">On their phone, join the Badger’s Wi-Fi and open <span class="mono">' + esc(link) + '</span>, or go to Check-in board → Family and type the code. Works once, until ' + esc(fmtTs(r.expires)) + ".</p></div>"
+          '<p class="small">On their phone, join the Badger’s Wi-Fi and open <span class="mono">' + esc(link) + '</span>, or go to Check-in board → Family and type the code. Works once, until ' + esc(fmtTs(r.expires)) + ".</p>" +
+          (r.needs_approval ? '<p class="small warnbox">' + esc(r.message) + "</p>" : "") + "</div>"
         : '<p class="small">' + esc(r.error || "Failed") + "</p>";
+    }
+    function panelLockBox(on) {
+      var box = document.getElementById("panelLockBox"); if (!box) return;
+      box.innerHTML = on
+        ? '<h3 class="section">Front panel lock</h3><p class="small muted">On: the knob needs the panel code for invites, the family radio key, services, Wi-Fi off, USB import and shutting down. Forgot it? Use the recovery code (knob → code screen → Forgot?), or at the console: <span class="mono">sudo python3 /opt/prepper/software/panel/panel.py --reset-lock</span></p>'
+        : '<div class="card warnbox"><h3>Front panel lock is off</h3><p class="small">Anyone who can turn the Badger’s knob can make a family invite, show the family radio key, switch off weather alerts or shut it down. Strongly suggested: set a panel code (digits, entered with the knob). You’ll get a recovery code to write down.</p>' +
+          '<div class="btns"><button class="btn" id="armLock">Set up panel code</button></div><div id="armOut" class="small"></div></div>';
+      var b = document.getElementById("armLock");
+      if (b) b.onclick = function () {
+        api("/api/admin/members", { body: { op: "arm_panel_lock" } }).then(function (x) {
+          document.getElementById("armOut").textContent = x.ok
+            ? "Within 10 minutes, at the Badger: press the knob → System → Panel lock → Set a code. Turn the knob to pick each digit, press to add it, then choose OK. Write down the recovery code it shows."
+            : (x.error || "Failed");
+        });
+      };
     }
     function storeBox(st) {
       var box = document.getElementById("storeBox"); if (!box) return;
@@ -666,7 +782,7 @@
       var box = document.getElementById("invList"); if (!box) return;
       if (!list || !list.length) { box.innerHTML = ""; return; }
       box.innerHTML = '<h4 class="section">Open invites</h4><div class="list">' + list.map(function (v) {
-        return '<div class="row small">' + (v.member ? "Extra device" : esc(v.name || "No name yet")) + " · " + (v.source === "panel" ? "from the Badger’s screen" : "from here") +
+        return '<div class="row small">' + (v.member ? "Extra device" + (v.confirm ? " (needs the member’s approval)" : "") : esc(v.name || "No name yet")) + " · " + (v.source === "panel" ? "from the Badger’s screen" : "from here") +
           " · until " + esc(fmtTs(v.expires)) + ' <button class="btn ghost" data-cancel-inv="' + esc(v.id) + '">Cancel</button></div>';
       }).join("") + '</div><div class="btns"><button class="btn ghost" id="cancelAllInv">Cancel all open invites</button></div>';
       box.querySelectorAll("[data-cancel-inv]").forEach(function (b) { b.onclick = function () {
@@ -680,25 +796,40 @@
       api("/api/admin/members", { body: { op: "list" } }).then(function (r) {
         if (r._status === 401) return done(r);
         storeBox(r.store);
+        panelLockBox(r.panel_lock);
         invites(r.invites);
         var list = document.getElementById("memList");
         list.innerHTML = (r.members || []).map(function (m) {
           return '<div class="card"><div class="row"><div><h3>' + esc(m.name) + (m.removed ? ' <span class="pill">removed</span>' : "") + '</h3><div class="meta">' +
-            (m.removed ? "Removed " + esc(fmtTs(m.removed_at)) : m.devices.map(function (d) { return esc(d.label) + " (seen " + esc(fmtTs(d.last_seen)) + ') <button class="btn ghost" data-rev="' + esc(m.id) + '" data-dev="' + esc(d.id) + '">forget</button>'; }).join(" · ") || "no devices yet") +
+            (m.removed ? "Removed " + esc(fmtTs(m.removed_at)) : m.devices.map(function (d) { return esc(d.label) + (d.pending ? " (waiting for their approval)" : " (seen " + esc(fmtTs(d.last_seen)) + ")") + ' <button class="btn ghost" data-rev="' + esc(m.id) + '" data-dev="' + esc(d.id) + '">forget</button>'; }).join(" · ") || "no devices yet") +
             (m.radios.length ? "<br>Radios: " + m.radios.map(function (x) { return '<span class="mono">' + esc(x) + '</span> <button class="btn ghost" data-unradio="' + esc(m.id) + '" data-radio="' + esc(x) + '">×</button>'; }).join(" ") : "") +
+            ((m.pending_radios || []).length ? "<br>Waiting for !pair from: " + m.pending_radios.map(function (x) { return '<span class="mono">' + esc(x.radio) + '</span> <button class="btn ghost" data-unpair="' + esc(m.id) + '" data-radio="' + esc(x.radio) + '">cancel</button>'; }).join(" ") : "") +
             "</div></div>" + (m.removed ? "" : '<div class="btns"><button class="btn ghost" data-dev-invite="' + esc(m.id) + '" data-name="' + esc(m.name) + '">Add a device</button>' +
             '<input type="text" class="radioIn" data-for="' + esc(m.id) + '" placeholder="!a1b2c3d4" maxlength="9" style="width:9em"><button class="btn ghost" data-addradio="' + esc(m.id) + '">Add radio</button>' +
             '<button class="btn danger" data-remove="' + esc(m.id) + '" data-name="' + esc(m.name) + '">Remove</button></div>') + "</div></div>";
         }).join("") || '<p class="small muted">No members yet. Invite yourself first.</p>';
         function act(body) { api("/api/admin/members", { body: body }).then(function (x) { if (!x.ok) out.textContent = x.error || "Failed"; members(); }); }
         list.querySelectorAll("[data-remove]").forEach(function (b) { b.onclick = function () {
-          if (!confirm("Remove " + b.getAttribute("data-name") + "? All their devices and radios lose family access now. If they know the Wi-Fi password or the family mesh key, change those too.")) return;
-          act({ op: "remove", id: b.getAttribute("data-remove") }); }; });
+          if (!confirm("Remove " + b.getAttribute("data-name") + "? All their devices and radios lose family access now. If they know the Wi-Fi password, change that too.")) return;
+          // Their radio still holds the family channel key: a new key is part of removing someone (recommended).
+          var rot = confirm("Also give the family radio channel a NEW KEY? (Recommended — their radio still has the old one.)\n\nOK = new key: every family radio then needs the new link (family members find it in Settings → Family on their phones, or on the Badger’s screen: knob → Family radio).\nCancel = keep the old key.");
+          api("/api/admin/members", { body: { op: "remove", id: b.getAttribute("data-remove"), rotate_key: rot } }).then(function (x) {
+            if (!x.ok) out.textContent = x.error || "Failed";
+            members();
+            if (x.rotate) {
+              if (!x.rotate.ok) { secOut.innerHTML = '<p class="small warnbox">The member was removed, but the radio key wasn’t changed: ' + esc(x.rotate.error || "") + " Use “New family radio key” below.</p>"; return; }
+              pollRotation(x.rotate.id);
+            }
+          }); }; });
+        list.querySelectorAll("[data-unpair]").forEach(function (b) { b.onclick = function () { act({ op: "cancel_radio", id: b.getAttribute("data-unpair"), radio: b.getAttribute("data-radio") }); }; });
         list.querySelectorAll("[data-rev]").forEach(function (b) { b.onclick = function () { act({ op: "revoke_device", id: b.getAttribute("data-rev"), device: b.getAttribute("data-dev") }); }; });
         list.querySelectorAll("[data-unradio]").forEach(function (b) { b.onclick = function () { act({ op: "remove_radio", id: b.getAttribute("data-unradio"), radio: b.getAttribute("data-radio") }); }; });
         list.querySelectorAll("[data-addradio]").forEach(function (b) { b.onclick = function () {
           var inp = list.querySelector('.radioIn[data-for="' + b.getAttribute("data-addradio") + '"]');
-          act({ op: "add_radio", id: b.getAttribute("data-addradio"), radio: inp ? inp.value : "" }); }; });
+          api("/api/admin/members", { body: { op: "add_radio", id: b.getAttribute("data-addradio"), radio: inp ? inp.value : "" } }).then(function (x) {
+            out.textContent = x.ok ? (x.message || "Waiting for the radio.") : (x.error || "Failed");
+            members();
+          }); }; });
         list.querySelectorAll("[data-dev-invite]").forEach(function (b) { b.onclick = function () {
           api("/api/admin/members", { body: { op: "invite", id: b.getAttribute("data-dev-invite") } }).then(function (x) { showInvite(x, b.getAttribute("data-name")); }); }; });
       });
@@ -747,24 +878,28 @@
         (x.bt_pin ? '<p class="small">The radio’s Bluetooth PIN: <b class="mono">' + esc(x.bt_pin) + "</b></p>" : "") +
         '<p class="small">Open it on your own phone to update your radio (the Meshtastic app asks to accept the channels). Then, in the Meshtastic app, share the channel QR code with the other family radios. Radios that don’t get it can no longer read family messages.</p></div>';
     }
+    function pollRotation(rid) {
+      secOut.innerHTML = '<p class="small">Asking the radio for a new family key…</p>';
+      var tries = 0;
+      (function poll() {
+        api("/api/admin/members", { body: { op: "rotate_mesh_status", rid: rid } }).then(function (x) {
+          if (x.pending && ++tries < 45) return setTimeout(poll, 2000);
+          if (x.pending || x.cancelled) {
+            // take the request back, so a bridge that starts later never acts on it
+            if (x.pending) api("/api/admin/members", { body: { op: "rotate_mesh_cancel", rid: rid } });
+            secOut.innerHTML = '<p class="small">The radio bridge didn’t answer. Is the mesh radio plugged in and the Mesh service on? Nothing was changed.</p>'; return;
+          }
+          if (!x.ok) { secOut.innerHTML = '<p class="small">The key wasn’t changed: ' + esc(x.error || "unknown error") + "</p>"; return; }
+          showLink(x.url, true, x);
+        });
+      })();
+    }
     document.getElementById("rotMesh").onclick = function () {
-      if (!confirm("Give the family radio channel a new key? Family radios stop hearing the family channel until they get the new link (shown here next, and any time with “Show family radio link”).")) return;
+      if (!confirm("Give the family radio channel a new key? Family radios stop hearing the family channel until they get the new link (family members see it in Settings → Family on their phones; the Badger’s screen shows it: knob → Family radio).")) return;
       secOut.innerHTML = '<p class="small">Asking the radio…</p>';
       api("/api/admin/members", { body: { op: "rotate_mesh" } }).then(function (r) {
         if (!r.ok) { secOut.innerHTML = '<p class="small">' + esc(r.error || "Failed") + "</p>"; return; }
-        var tries = 0;
-        (function poll() {
-          api("/api/admin/members", { body: { op: "rotate_mesh_status", rid: r.id } }).then(function (x) {
-            if (x.pending && ++tries < 45) return setTimeout(poll, 2000);
-            if (x.pending || x.cancelled) {
-              // take the request back, so a bridge that starts later never acts on it
-              if (x.pending) api("/api/admin/members", { body: { op: "rotate_mesh_cancel", rid: r.id } });
-              secOut.innerHTML = '<p class="small">The radio bridge didn’t answer. Is the mesh radio plugged in and the Mesh service on? Nothing was changed.</p>'; return;
-            }
-            if (!x.ok) { secOut.innerHTML = '<p class="small">The key wasn’t changed: ' + esc(x.error || "unknown error") + "</p>"; return; }
-            showLink(x.url, true, x);
-          });
-        })();
+        pollRotation(r.id);
       });
     };
     document.getElementById("meshLink").onclick = function () {
@@ -865,7 +1000,7 @@
     if (path === "/board/family") return boardView("family");
     if ((m = path.match(/^\/join\/([A-Za-z0-9\-]{4,20})$/))) return boardView("family", m[1]);
     if (path === "/tools") return toolsView();
-    if (path === "/files") return filesView();
+    if (path === "/files") return filesView(qs.d, qs.p);
     if (path === "/devices") return devicesView();
     if (path === "/status") return statusView();
     if (path === "/settings") return settingsView();

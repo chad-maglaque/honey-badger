@@ -70,7 +70,7 @@ items["hesperian_books"] = {"version": "manual", "filename": "hesperian_books", 
 (root / "prepper.toml").write_text(f"""
 [network]
 hostname = "badger"
-ssid = "HoneyBadger"
+ssid = "Home-7Q4K"
 
 [upd]
 data_root = "{data}"

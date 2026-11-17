@@ -3,15 +3,16 @@ Sensors — the portal side of the sensor station (software/sensors/sensord.py d
 
   GET  /api/sensors           current readings, remote mesh readings, active alerts   (readers)
   GET  /api/sensors/history   ?key=<sensor>:<metric>&range=24h|7d|30d|1y               (readers)
-  GET  /api/sensors/alerts    just the active alerts, for a launcher banner           (readers)
+  GET  /api/sensors/alerts    just the active alerts, for a launcher banner           (everyone)
   GET  /api/sensors/admin     settings, rules, device diagnostics, mesh nodes heard   (admin)
   POST /api/sensors/admin     save settings (thresholds, remote nodes, mesh options)  (admin)
   POST /api/sensors/test      post a test message to a board (and the mesh)           (admin)
 
-"Readers" is everyone on the Badger's Wi-Fi unless [sensors] public = false (then family members
-and the admin): flood, freeze and radiation readings are safety information for the whole
-neighbourhood and go out over the mesh anyway. Error details, device paths and the list of
-radios heard are admin-only.
+"Readers" are family members and the admin unless [sensors] public = true (then everyone on the
+Wi-Fi): readings and a year of history (a tank level, a freezer probe, a well) say a lot about a
+household. Active alerts (flood, freeze, radiation) are safety information for the whole
+neighbourhood and go out over the mesh anyway, so /api/sensors/alerts stays open to everyone.
+Error details, device paths and the list of radios heard are admin-only.
 
 setup() starts a small thread that posts sensord's alert events (events.jsonl) to the community
 or family board through ctx.board_post, catching up on anything written while the portal was
@@ -49,7 +50,7 @@ _last_test = [0.0]
 
 
 def _readers(req, ctx) -> bool:
-    if (ctx.cfg() or {}).get("public", True) is not False:
+    if (ctx.cfg() or {}).get("public", False) is True:
         return True
     return bool(req.member() or req.is_admin())
 
@@ -209,7 +210,7 @@ def send_test(req, ctx, args):
         _last_test[0] = time.time()
     text = "Test from the Badger's sensor station — no action needed."
     ok, msg = ctx.board_post("sensors", SYSTEM_NAME, text, False, board, SYSTEM_MEMBER if board == "family" else None)
-    mesh = bool(data.get("mesh") is True and ctx.mesh_send(f"{SYSTEM_NAME}: {text}", board))
+    mesh = bool(data.get("mesh") is True and ctx.mesh_send(sl.MESH_PREFIX + text, board))
     return (200 if ok else 503), {"ok": ok, "message": msg, "mesh": mesh}
 
 
@@ -278,7 +279,7 @@ def setup(ctx):
 
 ROUTES = [
     {"method": "GET", "path": "/api/sensors", "handler": get_current, "access": _readers},
-    {"method": "GET", "path": "/api/sensors/alerts", "handler": get_alerts, "access": _readers},
+    {"method": "GET", "path": "/api/sensors/alerts", "handler": get_alerts, "access": "public"},
     {"method": "GET", "path": "/api/sensors/history", "handler": get_history, "access": _readers},
     {"method": "GET", "path": "/api/sensors/admin", "handler": get_admin, "access": "admin"},
     {"method": "POST", "path": "/api/sensors/admin", "handler": save_admin, "access": "admin"},

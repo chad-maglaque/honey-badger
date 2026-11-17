@@ -13,8 +13,19 @@ provisioning = "owner"           # owner: built by the people who will use it �
 
 [network]
 hostname = "badger"             # → http://badger.lan and http://badger.local
-ssid = "HoneyBadger"
-passphrase = ""                  # empty = open network (easiest in a crisis); 8–63 chars = WPA2 (+WPA3 on the USB adapter)
+ssid = "Home-Hotspot"            # pick a neutral name: one that says "Badger"/"prepper" tells every passer-by
+                                 # what is in the house (the builder refuses those)
+passphrase = ""                  # the Wi-Fi password, 8–63 chars → WPA2 (+WPA3 on the USB adapter). The builder and
+                                 # the installer make a random one; the front panel shows it (Join Wi-Fi QR)
+security = "auto"                # auto: WPA2 with the passphrase above, "owe" without one ·
+                                 # "owe" (Enhanced Open): no password, but each phone's traffic is encrypted —
+                                 #   phones from ~2019 on (iOS 13+, Android 10+); older ones can't join; the onboard
+                                 #   radio can't do it (runs open instead) · "open": no password, NO encryption —
+                                 #   anyone in range reads everything; the vault and other family secrets then
+                                 #   only work over https://badger.lan
+                                 # "owe-transition": EXPERIMENTAL (USB adapter only, untested on hardware): owe plus an
+                                 #   open twin network so phones older than ~2019 can join too (those are not
+                                 #   encrypted). "owe" alone is OWE-only. See docs/OPERATIONS.md, Wi-Fi security.
 address = "10.10.10.10"
 dhcp_range = ["10.10.10.50", "10.10.10.250"]
 ap_iface = "auto"                # auto: USB Wi-Fi 6 adapter if present, else onboard wlan0
@@ -46,6 +57,7 @@ require_signed_peers = true
 allowed_signers = "/etc/prepper/allowed_signers"
 signing_key = "/etc/prepper/keys/disk_ed25519"
 disk_id = "prepper-disk-01"
+# personal_file = "/var/lib/prepper/portal/personal-content.json"  # owner's acceptance of personal-use content on a unit built for sale (default shown)
 
 [upd.hooks]
 zim = "/opt/prepper/bin/prepperctl rebuild-library"
@@ -65,11 +77,19 @@ mesh_telemetry = "/var/lib/prepper/portal/mesh-telemetry.jsonl"   # telemetry ra
 mesh_bt_pin_file = "/var/lib/prepper/portal/mesh-bt-pin.json"     # the radio's Bluetooth PIN, if the bridge changed it (0600)
 panel_key_hash = "/etc/prepper/panel.key.sha256"                # how the portal recognises the front panel (made by the panel)
 admin_pin = ""                   # set with: sudo prepperctl set-pin
+visitor_mesh = "approve"         # a visitor's "Send over mesh" on the community board waits until a family member
+                                 # or the admin sends it (Check-in board); "off": visitors' posts stay on the board.
+                                 # Family members' and the admin's posts go out straight away.
 kiwix = "http://127.0.0.1:8081/kiwix"
 llama = "http://127.0.0.1:8090/ai"     # llama-server runs with --api-prefix /ai
 search_langs = ["eng"]
 ask_books = []                   # empty = all; or list ZIM book names to ground answers in
 standalone = false
+# mesh_pair_file = "/var/lib/prepper/portal/mesh-pair.json"        # "!pair CODE" messages the mesh bridge heard (default shown)
+# panel_lock_file = "/etc/prepper/panel-lock.json"                 # the front panel's lock file, read by the launcher (default shown)
+# panel_lock_arm = "/var/lib/prepper/portal/panel-lock-arm.json"   # "arm the panel lock" request from the launcher (default shown)
+# mesh_peers = "/var/lib/prepper/portal/mesh-peers.json"           # Badgers nearby, written by the mesh bridge (default shown)
+# mesh_silent_file = "/var/lib/prepper/portal/mesh-silent"         # radio-silence flag: the file existing means silence (default shown)
 
 [ai]
 enabled = true
@@ -118,6 +138,10 @@ encoder_b = 27
 encoder_button = 22
 led_pin = 23                     # status LED: solid ready · slow blink building · medium low battery · fast alert
 sleep_after_s = 45
+# lock_protect = ["invite", "radio", "services", "wifi_off", "usb_import", "shutdown"]   # default: what the panel code guards
+#                                # (all keys: invite radio services wifi_off usb_import shutdown wifi_join app power
+#                                #  updates usb_export eject time status). Needs a code set at the panel.
+# lock_file = "/etc/prepper/panel-lock.json"      # where the panel keeps its code's salted hash (and the recovery code's)
 
 [radio]
 mesh = "auto"                    # auto: start bridge if a Meshtastic node is on USB serial
@@ -128,17 +152,25 @@ mesh_alerts_public = true        # also broadcast NOAA alerts on the public chan
 mesh_alerts = true               # broadcast each new NOAA alert to the mesh once
 mesh_ai = true                   # answer "!ai <question>" with a short AI answer (false: library match instead)
 mesh_ai_cooldown_s = 120         # one !ai question per radio per this many seconds
-# who may use each radio command: "community" (anyone), "family" (sent on the family channel), "off".
+# who may use each radio command: "community" (anyone), "family" (sent on the family channel; others get no reply),
+# "off" (family radios are told it's off; others get no reply) or "ignore" (no reply to anyone).
+# A radio outside the family never gets a refusal — only real answers to "community" commands, within the budgets below.
 # The launcher's Settings → Radio commands overrides this.
-mesh_commands = { help = "community", q = "community", ai = "family", status = "family" }
+mesh_commands = { help = "family", q = "community", ai = "family", status = "family" }
+mesh_stranger_replies_per_hour = 6        # answers to radios outside the family, all together (0–60; 0 = none)
+mesh_stranger_replies_per_radio_hour = 2  # …and to any one of them (0–10). Forged sender IDs can't get past the total
 mesh_map = true                  # show radios that share their position on the offline map
 mesh_bt_pin = "secure"           # secure: a radio still on the default Bluetooth PIN (123456 / none) gets a random one,
                                  # shown on the front panel (Family radio → Bluetooth PIN); "leave": don't touch it
 # Many Badgers on one mesh ("mesh courtesy", docs/MESH.md): Badgers back off and send each shared message
 # (NOAA alert relay, reply to a command on a shared channel, the forecast) once for the whole mesh.
 mesh_courtesy = true             # false: act alone, as before (every Badger relays and answers everything)
-mesh_peer_beacon_min = 45        # a tiny "Badger here" beacon every ~45 min (10–720), on the FAMILY channel only…
-mesh_beacon_public = false       # …true: also on the public channel (lets more Badgers coordinate; tells listeners a Badger is here)
+# Control packets (beacons, claims, "done") go ONLY on the family channel and the circle channel below, sealed with a
+# key from that channel's own secret and padded to random lengths — never on the public channel.
+mesh_beacons = true              # false: no beacons at all (Badgers then learn of each other only from claims/relays)
+mesh_peer_beacon_min = 45        # average minutes between beacons (10–720), at Poisson-random times (no rhythm)
+mesh_circle_channel = -1         # optional private channel (1–7, its own key) shared with neighbouring Badgers' owners,
+                                 # used only for courtesy control packets; -1 = none
 mesh_max_util = 25               # radio reports the channel busier than this %: automatic notes wait, community posts slow down
 mesh_max_util_busy = 40          # busier than this %: only alerts, sensor danger, family posts and replies go out
 mesh_max_air_tx = 8              # our own share of airtime (%) above which automatic notes wait
@@ -150,8 +182,11 @@ mesh_hop_limit_local = 2         # hop limit for replies and automatic notes (al
 mesh_silent = false              # radio silence: receive only — no relays, replies, beacons, forecasts, posts.
                                  # Also on while /var/lib/prepper/portal/mesh-silent exists (portal setting mesh_silent_file)
 mesh_silent_allow_family = true  # during radio silence, still send family-board posts a member typed and chose to send
-mesh_public_position = "off"     # the radio's own position on the public channel: "off", "coarse" (~12 km) or "precise".
-                                 # The family channel keeps what you set in the Meshtastic app. Changed in the app later? Left alone.
+mesh_public_position = "off"     # the radio's own position on the public channel: "off", "coarse" (within ~6 km, a box
+                                 # ~12 km across: 12 bits), "precise", or a number of bits (0–13; finer is clamped to 13 =
+                                 # within ~3 km — only "precise" shares the exact spot). The family channel keeps what you
+                                 # set in the Meshtastic app. Changed in the app later? Left alone if coarser; set back if
+                                 # finer than ~3 km.
 sdr_weather = "auto"             # auto: decode NOAA Weather Radio SAME alerts if an RTL-SDR is present
 weather_freq_mhz = 162.550       # your nearest NOAA transmitter (see Tools → Radio)
 same_fips = []                   # e.g. ["008031"] to only show alerts for your county; empty = all
@@ -357,7 +392,9 @@ board_copy = true          # also put each announcement on the community check-i
 # Wiring guide: docs/features/sensors.md.
 [sensors]
 enabled = true                   # false: sensord stays off (also [features] sensors = false)
-public = true                    # readings + alerts visible to everyone on the Wi-Fi; false: family + admin only
+public = false                   # false (default): readings and history for family + admin only (a tank level or a
+                                 # freezer probe says a lot about a household); true: everyone on the Wi-Fi.
+                                 # Active alerts (flood, freeze, radiation) are always shown to everyone.
 units = "metric"                 # default display: "metric" (°C, cm, hPa) or "us" (°F, in, inHg); each phone can switch
 poll_s = 30                      # seconds between readings (float switches: 5 s unless their own poll_s says otherwise)
 auto_detect = true               # look for I²C sensors and 1-Wire probes every 10 minutes
@@ -372,12 +409,13 @@ post_interval_s = 6              # how often the portal checks for new alerts to
 
 # Alerts → mesh radio (meshbridge sends the outbox). Rules choose which alerts go to the mesh.
 mesh_alerts = true               # false: never send sensor alerts over LoRa
-mesh_board = "community"         # channel: "community" (public) or "family"; family-board rules always use family
+mesh_board = "family"            # channel: "family" (default; private) or "community" (public: tells every listener
+                                 # about the house). Family-board rules always use family. Texts start "Sensors:"
 mesh_min_interval_s = 600        # at least this long between sensor messages…
 mesh_min_interval_danger_s = 120 # …or this for danger alerts (flood, radiation)
 mesh_max_per_hour = 4            # hard cap on sensor messages per hour (shared airtime!)
 summary_every_h = 0              # 0 = off; else a short readings summary every N hours (1–24)
-summary_board = "community"      # channel for the summary
+summary_board = "family"         # channel for the summary ("family" or "community")
 
 # Remote readings: Meshtastic environment telemetry meshbridge writes to mesh-telemetry.jsonl.
 remote_nodes = []                # node ids to show, e.g. ["!a1b2c3d4"] (or tick them on the Sensors page)

@@ -16,31 +16,52 @@ its own even when the Pi is off; this bridge, when up:
   * on request from the admin page, gives the family channel a fresh random key and
     reports the new channel link (to update the other family radios)
   * answers commands (rate-limited). Who may use each one is set per command in
-    [radio] mesh_commands: "community" (anyone), "family" (sent on the family channel)
-    or "off". Defaults: !help and !q community, !ai and !status family.
-      !help           what this node can do
+    [radio] mesh_commands: "community" (anyone), "family" (sent on the family channel),
+    "off" (family radios are told it is off) or "ignore" (no answer to anyone).
+    Defaults: !q community; !help, !ai and !status family.
+      !help           what this radio may ask
       !q <words>      top library match: title + first ~150 characters
       !ai <question>  a short answer from the built-in AI solver, grounded in the library
       !status         battery, power source, mode, alerts, people on the Wi-Fi
+
+Strangers (prime directive: the Badger must never become a beacon for people hunting it):
+a radio outside the family never gets a refusal, a "usage" line or a "busy" line — only a real
+answer to a command opened to the community, and only within small budgets (by default 6
+answers an hour to all strangers together, 2 to any one radio, so forged sender IDs can't make
+it transmit on demand). Their answers go through the mesh courtesy and are broadcast on the
+public channel as a reply to the question (other Badgers hear it and stay quiet); a stranger's
+direct message is answered (if at all) after a short wait, never at once. Only family radios
+(the family channel's key) get immediate answers. No over-the-air text names the Badger.
 
 Trust: Meshtastic's sender ID ("fromId") is NOT authenticated on channel traffic —
 anyone can transmit with any ID. Only the family channel's private key proves
 anything, so "family" means "arrived on the family channel", never "came from a
 registered radio ID". Mesh posts are never marked verified; member names are put
-only on posts that arrived on the family channel. Direct messages to the Badger are
-commands only, never board posts.
+only on posts that arrived on the family channel — and not even there while a removed
+member may still hold the family key (removed after the last key change): the post is then
+labelled "(unconfirmed)" and the family channel isn't trusted for commands until re-keyed.
+Direct messages to the Badger are commands only, never board posts.
+Radio pairing: "!pair <code>" heard on the family channel (not as a DM) is written to mesh-pair.json
+([portal] mesh_pair_file) for the portal, which binds a radio to a member only after such a message
+from that radio; it is never answered on air or posted. "!pair" anywhere else — or while a removed
+member may still hold the family key (removed after the last re-key) — is dropped silently.
 Replies are short on purpose: LoRa carries ~200 bytes per message.
 
 Many Badgers, one mesh ("Badger-mesh courtesy", docs/MESH.md; [radio] mesh_courtesy = true):
-  * Badgers find each other with a tiny beacon on Meshtastic's PRIVATE_APP port (256, invisible
-    to chat apps) every ~45 min, and keep a peer table (mesh-peers.json, also the status file).
+  * Control packets (beacon, claim, done) go ONLY on the family channel or a configured private
+    circle channel ([radio] mesh_circle_channel), never on the public one. They are sealed with a
+    key derived from that channel's own secret (random-looking bytes, no fixed magic) and padded
+    to random lengths typical of short text messages; beacons are sent at Poisson-random times.
   * Anything several Badgers would all send (a NOAA alert relay, the reply to "!q" on a shared
-    channel, the forecast, a missing-person note) waits a random back-off that grows with the
-    number of Badgers heard, says "claim" (I'm about to send it), then sends — unless meanwhile
-    another Badger's copy was heard (recognised by a short "#a1b2" tag of the same key) or, for
-    low-stakes kinds only, another Badger's claim/"done". Simultaneous claims: lower node wins.
-  * Safety rule: a NOAA alert is only ever cancelled by HEARING the relayed alert text itself on
-    that channel. A claim can delay it (at most SAFETY_HOLD_MAX s), never cancel it.
+    channel, the forecast, a missing-person note) waits a back-off, then sends — unless meanwhile
+    another Badger's copy was heard. On a private channel Badgers also "claim" first (lower node
+    wins a tie) and, for low-stakes kinds only, a claim/"done" stands them down. On the public
+    channel coordination is by hearing the text itself: Badgers take turns in an order derived
+    from the message key and the Badgers they know, one turn every few seconds.
+  * Safety rule: a NOAA alert (or sensor danger) is only ever cancelled by HEARING exactly the text
+    this Badger would send (normalised full-text match: event, areas, expiry and tag). Anything else
+    — "CANCELLED, all clear #tag" with the right tag — is relayed past. A claim can delay it (at
+    most SAFETY_HOLD_MAX s), never cancel it.
   * Every transmission goes through one priority queue (alert > sensor danger > family > reply >
     community > automatic notes) with hourly budgets that shrink as more Badgers are heard, and
     backs off when the radio reports a busy channel. Stale items expire instead of going out late.
@@ -88,6 +109,7 @@ ROTATE_RES = Path("/var/lib/prepper/portal/mesh-rotate-result.json")
 CHANNEL_LINK = Path("/var/lib/prepper/portal/mesh-channel.json")   # holds the key: 0600
 BT_PIN = Path("/var/lib/prepper/portal/mesh-bt-pin.json")          # the radio's Bluetooth PIN: 0600
 PEERS = Path("/var/lib/prepper/portal/mesh-peers.json")            # Badgers heard + courtesy status: 0640
+PAIR_FILE = Path("/var/lib/prepper/portal/mesh-pair.json")         # radio pairing confirmations for the portal: 0600
 API = os.environ.get("PREPPER_API", "http://127.0.0.1:8000")
 MAX_BYTES = 200                                   # what one LoRa text message carries
 ROTATE_TTL = 120                                  # a key-change request older than this is ignored
@@ -96,10 +118,17 @@ TELEMETRY_MAX_BYTES = 1_000_000
 TELEMETRY_EVERY = 30.0                            # at most one telemetry line per radio per 30 s
 NODE_RE = re.compile(r"^![0-9a-f]{8}$")
 
-COMMANDS = {"!help": "what this Badger can do", "!q": "<words> searches the library",
+COMMANDS = {"!help": "what you can ask", "!q": "<words> searches the library",
             "!ai": "<question> asks the AI solver", "!status": "battery and alerts"}
-DEFAULT_ACCESS = {"!help": "community", "!q": "community", "!ai": "family", "!status": "family"}
-LEVELS = ("community", "family", "off")
+# "community": anyone (strangers within the stranger budgets, through the courtesy); "family": family
+# radios only, everyone else silently ignored; "off": family radios are told it is off, everyone else
+# ignored; "ignore": nobody gets any reply at all. A stranger never gets a refusal of any kind.
+COMMAND_WORDS = tuple(COMMANDS)
+DEFAULT_ACCESS = {"!help": "family", "!q": "community", "!ai": "family", "!status": "family"}
+LEVELS = ("community", "family", "off", "ignore")
+STRANGER_BUDGET = (6, 3600.0)            # answers to radios outside the family, all together, per window
+STRANGER_PER_RADIO = (2, 3600.0)         # … and to any one of them (forged IDs: the global cap holds)
+STRANGER_DM_DELAY = (3.0, 12.0)          # a stranger's direct message is never answered at once
 
 
 def command_access(cfg: dict | None, override: dict | None = None) -> dict[str, str]:
@@ -118,18 +147,18 @@ def command_access(cfg: dict | None, override: dict | None = None) -> dict[str, 
             access[word] = v
         else:
             print(f"meshbridge: ignoring mesh_commands.{k} = {v!r} (commands: help, q, ai, status; "
-                  f"levels: community, family, off)", file=sys.stderr)
-    access["!help"] = access["!help"] if access["!help"] != "off" else "community"   # always say what's available
+                  f"levels: {', '.join(LEVELS)})", file=sys.stderr)
+    if access["!help"] == "off":
+        access["!help"] = "family"                   # family radios can always ask what's available
     return access
 
 
 def help_text(access: dict[str, str], trusted: bool) -> str:
-    """Only the commands this radio may use."""
+    """Only the commands this radio may use. Says nothing about what this node is."""
     usable = [w for w in ("!q", "!ai", "!status") if access.get(w) == "community" or (trusted and access.get(w) == "family")]
     if not usable:
-        return "Honey Badger: no radio commands are available to you. Board posts and NOAA alerts are relayed here."
-    return fit("Honey Badger: " + " · ".join(f"{w} {COMMANDS[w]}" for w in usable) +
-               ". Board posts and NOAA alerts are relayed here.")
+        return "Sorry, no radio commands are available to you."
+    return fit("Commands: " + " · ".join(f"{w} {COMMANDS[w]}" for w in usable) + ".")
 
 
 # ─────────────────────────────── small helpers ───────────────────────────────
@@ -373,7 +402,7 @@ def format_status(s: dict) -> str:
         parts.append(f"{alerts[0].get('event', 'Alert')} until {alerts[0].get('expires', '?')}")
     if _num(s.get("clients")) is not None:
         parts.append(f"{s['clients']} on Wi-Fi")
-    return fit("Badger: " + " · ".join(parts))
+    return fit("Status: " + " · ".join(parts))
 
 
 def status_answer() -> str:
@@ -381,19 +410,22 @@ def status_answer() -> str:
         s = api_get("/api/status")
         return format_status(s if isinstance(s, dict) else {})
     except (OSError, ValueError):
-        return "Badger status unavailable."
+        return "Status unavailable."
 
 
 class Commands:
-    """Routes !commands with per-sender rate limits and an overall budget for replies to radios
-    outside the family (so a stream of forged sender IDs can't turn the Badger into an airtime
-    amplifier). !ai runs one at a time in a worker thread; `io` runs the other slow answers
-    (library, status) — by default inline; meshbridge's main() hands them to a worker so the
-    radio's receive thread is never blocked."""
+    """Routes !commands with per-sender rate limits. Family radios (trusted: the family channel) get
+    answers and, where a command is off, a short "turned off". Radios outside the family get a real
+    answer to a "community" command or nothing at all — never a refusal, usage or busy line — and
+    at most `public_budget` answers per window all together, `per_radio_budget` each (so a stream
+    of forged sender IDs can't turn the Badger into a beacon or an airtime amplifier). !ai runs one
+    at a time in a worker thread; `io` runs the other slow answers (library, status) — by default
+    inline; meshbridge's main() hands them to a worker so the radio's receive thread is never blocked."""
 
     def __init__(self, send, ai_enabled: bool = True, cooldown: float = 30, ai_cooldown: float = 120,
                  clock=time.time, library=library_answer, ai=ai_answer, status=status_answer, spawn=None,
-                 access=None, io=None, public_budget: tuple[int, float] = (20, 600.0)):
+                 access=None, io=None, public_budget: tuple[int, float] = STRANGER_BUDGET,
+                 per_radio_budget: tuple[int, float] = STRANGER_PER_RADIO):
         self.send, self.ai_enabled = send, ai_enabled
         # a dict, or a function returning one (re-read on every command, so admin changes apply at once)
         self._access = access if callable(access) else (lambda a=dict(access or DEFAULT_ACCESS): a)
@@ -402,6 +434,8 @@ class Commands:
         self.spawn = spawn or (lambda fn: threading.Thread(target=fn, daemon=True).start())
         self.io = io or (lambda fn: fn())
         self.budget, self.budget_used = public_budget, collections.deque()
+        self.per_radio = per_radio_budget
+        self.stranger_used: dict[str, collections.deque] = {}
         self.last: dict[str, float] = {}
         self.last_ai: dict[str, float] = {}
         self.ai_busy = threading.Lock()
@@ -418,6 +452,42 @@ class Commands:
                 for k in [k for k, t in d.items() if now - t > keep]:
                     del d[k]
 
+    def _stranger_room(self, key: str, now: float, charge: bool) -> bool:
+        """Is there room in the stranger budgets for one more answer to `key`? (lock held)"""
+        n, window = self.budget
+        while self.budget_used and now - self.budget_used[0] > window:
+            self.budget_used.popleft()
+        if len(self.budget_used) >= n:
+            return False
+        pn, pwin = self.per_radio
+        used = self.stranger_used.get(key)
+        if used is not None:
+            while used and now - used[0] > pwin:
+                used.popleft()
+            if len(used) >= pn:
+                return False
+        if charge:
+            self.budget_used.append(now)
+            self.stranger_used.setdefault(key, collections.deque()).append(now)
+            if len(self.stranger_used) > 2000:
+                for k in [k for k, d in self.stranger_used.items() if not d or now - d[-1] > pwin]:
+                    del self.stranger_used[k]
+        return True
+
+    def level(self, word: str) -> tuple[str, dict]:
+        """(level, access map) for one command word; unknown or garbled levels fail closed ("off")."""
+        try:
+            access = self._access()
+        except Exception:  # noqa: BLE001 — a broken settings reader: nothing is answered
+            access = {}
+        access = access if isinstance(access, dict) else {}
+        lv = access.get(word)
+        if not isinstance(lv, str) or lv not in LEVELS:
+            lv = "off"
+        if word == "!help" and lv == "off":
+            lv = "family"
+        return lv, access
+
     def note_answered(self, sender) -> None:
         """Another Badger answered this radio: count it as if we had, so a radio that floods questions
         gets one answer per cooldown from the whole mesh, not one from each Badger."""
@@ -425,21 +495,29 @@ class Commands:
             self.last[self._key(sender)] = self.clock()
             self._prune(self.clock())
 
-    def would_answer(self, text, trusted: bool) -> bool:
-        """Would this Badger really answer (not just say "turned off" / "for family radios")? Badgers
-        that would only refuse wait longer before claiming a shared request, so one that can answer does."""
-        word = str(text).strip().partition(" ")[0].lower()
-        try:
-            access = self._access()
-        except Exception:  # noqa: BLE001 — a broken settings reader: assume "can't answer", wait longer
+    def would_answer(self, text, trusted: bool, sender=None) -> bool:
+        """Would this Badger really answer (not refuse, not stay silent)? For a stranger: only a
+        "community" command with something to answer, while the stranger budgets have room — anything
+        else is silently ignored (the bridge then doesn't even take part in the courtesy). For family:
+        False when it would only say "turned off" (so a Badger that can answer goes first)."""
+        word, _, arg = str(text).strip().partition(" ")
+        word = word.lower()
+        if word not in COMMAND_WORDS:
             return False
-        level = access.get(word) if isinstance(access, dict) else None
-        return word == "!help" or level == "community" or (level == "family" and trusted)
+        lv, _ = self.level(word)
+        if not (lv == "community" or (lv == "family" and trusted)):
+            return False
+        if trusted:
+            return True
+        if word in ("!q", "!ai") and not arg.strip():
+            return False
+        with self._lock:
+            return self._stranger_room(self._key(sender), self.clock(), charge=False)
 
     def handle(self, text, sender, trusted: bool = True, reply=None, ignored=None) -> bool:
-        """Returns True when the text was a command this bridge answered (or refused, or ignored as a flood).
-        trusted: it arrived on the family channel. ignored(): called when it is quietly ignored (a flood),
-        so the mesh courtesy can tell other Badgers the request is dealt with."""
+        """Returns True when the text was a command this bridge dealt with (answered, refused to a family
+        radio, or ignored). trusted: it arrived on the family channel. ignored(): called when a flood is
+        quietly ignored, so the mesh courtesy can tell other Badgers (on a private channel) it is dealt with."""
         if not isinstance(text, str):
             return False
         say = reply or (lambda t: self.send(t, sender))
@@ -449,33 +527,26 @@ class Commands:
             return False
         word, _, arg = text.partition(" ")
         word, arg = word.lower(), arg.strip()
-        if word not in ("!help", "!q", "!ai", "!status"):
+        if word not in COMMAND_WORDS:
             return False
+        lv, access = self.level(word)
+        answers = lv == "community" or (lv == "family" and trusted)
+        if lv == "ignore" or (not trusted and (not answers or (word in ("!q", "!ai") and not arg))):
+            return True                                   # strangers: no refusal, no usage line — nothing
         key = self._key(sender)
         with self._lock:
             now = self.clock()
             flood = now - self.last.get(key, -1e9) < self.cooldown       # quietly ignore floods
             if not flood and not trusted:
-                n, window = self.budget
-                while self.budget_used and now - self.budget_used[0] > window:
-                    self.budget_used.popleft()
-                flood = len(self.budget_used) >= n        # too many answers to strangers lately: stay quiet
-                if not flood:
-                    self.budget_used.append(now)
+                flood = not self._stranger_room(key, now, charge=True)   # budgets spent: stay quiet
             if not flood:
                 self.last[key] = now
                 self._prune(now)
         if flood:
             quiet()
             return True
-        access = self._access()
-        level = access.get(word) if isinstance(access, dict) else None
-        if not isinstance(level, str) or level not in ("community", "family"):
-            level = "off"                                 # unknown or garbled levels fail closed
-        if level == "off":
-            say(f"{word} is turned off on this Badger. Send !help for what's available.")
-        elif level == "family" and not trusted:
-            say(f"{word} is for family radios. Send !help for what you can use.")
+        if lv == "off":                                   # (only family radios get this far)
+            say(f"{word} is turned off. Send !help for what's available.")
         elif word == "!help":
             say(help_text(access, trusted))
         elif word == "!status":
@@ -491,14 +562,17 @@ class Commands:
             elif not self.ai_enabled:
                 self.io(lambda: say(self.library(arg)))
             elif now - self.last_ai.get(key, -1e9) < self.ai_cooldown:
-                say(fit(f"One AI question every {int(self.ai_cooldown)} s, please. !q is instant."))
+                if trusted:
+                    say(fit(f"One AI question every {int(self.ai_cooldown)} s, please. !q is instant."))
             elif not self.ai_busy.acquire(blocking=False):
-                say("AI solver is busy with another question. Try again in a minute.")
+                if trusted:
+                    say("AI solver is busy with another question. Try again in a minute.")
             else:
                 started = False
                 try:
                     self.last_ai[key] = now
-                    say("Thinking… the answer follows in a minute or so.")
+                    if trusted:
+                        say("Thinking… the answer follows in a minute or so.")
 
                     def work():
                         try:
@@ -535,24 +609,27 @@ def alert_key(aid: str) -> str:
     return f"alert:{aid}"
 
 
-def alert_matcher(a: dict):
-    """text → True when it is a relay of THIS alert: our tagged format (tag + event name), or the older
-    untagged format ("NOAA ⚠ <event> · <areas> · until <expires>") that Badgers before the courtesy
-    update send. A bare "#a1b2" without the warning itself never matches (the safety rule)."""
-    tag = tag_of(alert_key(str(a.get("id"))))
-    event = " ".join(str(a.get("event", "Weather alert")).split())[:40]
-    areas = " ".join(str(a.get("areas", "")).split())[:30]
-    until = "until " + " ".join(str(a.get("expires", "?")).split())[:20]
+def canon(text) -> str:
+    """Text as compared for the safety rule: Unicode NFKC, whitespace collapsed, case folded."""
+    return " ".join(unicodedata.normalize("NFKC", str(text if text is not None else "")).split()).casefold()
 
-    def match(text) -> bool:
-        t = " ".join(str(text).split())
-        if not t.startswith(ALERT_PREFIX) or not event or event not in t:
-            return False
-        m = TAG_RE.search(t)
-        if m:
-            return m.group(1) == tag
-        return t.startswith(f"{ALERT_PREFIX} {event}") and until in t and (not areas or areas in t)
+
+def exact_matcher(text):
+    """text → True only for a normalised full-text copy of `text` (the safety rule for alert/danger)."""
+    want = canon(text)
+
+    def match(heard) -> bool:
+        return bool(want) and canon(heard) == want
     return match
+
+
+def alert_matcher(a: dict):
+    """text → True only when it is EXACTLY the relay this Badger would send for this alert (event, areas,
+    expiry and tag), after normalisation (canon). Alert ids and the tag are computable by anyone who
+    decodes the same NOAA broadcast, so a tag or an event name proves nothing: "NOAA ⚠ Tornado Warning ·
+    CANCELLED, all clear #a1b2" never matches, and neither does the older untagged format of Badgers
+    before the courtesy update (they may relay a second copy — duplicates are safe, silence is not)."""
+    return exact_matcher(format_alert(a))
 
 
 def alerts_to_send(alerts: list, sent: dict, now: float) -> list[dict]:
@@ -847,15 +924,20 @@ def secure_bt_pin(iface, path: Path, rng=None) -> str | None:
 # ─────────────────────────────── Badger-mesh courtesy ────────────────────────
 # How MANY Badgers share one mesh without flooding it (docs/MESH.md). Everything here is pure logic
 # with an injected clock / random source / radio, so tests can run 20 Badgers on a fake channel.
-# Nothing on the air is authenticated: a hostile radio can forge beacons, claims and "done"s. It can
-# make Badgers quieter for low-stakes traffic (replies, forecasts) but never cancel a NOAA alert: only
-# hearing the relayed alert text itself does that, and a claim delays an alert by SAFETY_HOLD_MAX at most.
+# Nothing on the air is authenticated by the mesh itself: a hostile radio can transmit any text with any
+# sender ID. Control packets (beacon/claim/done) exist only on private channels (family / circle) and are
+# sealed with a key from that channel's secret; on the public channel Badgers coordinate only by hearing
+# the actual text. A forger can make Badgers quieter for low-stakes traffic (replies, forecasts) but never
+# cancel a NOAA alert: only hearing exactly the text this Badger would send does that (alert_matcher), and
+# a claim (private channels only) delays an alert by SAFETY_HOLD_MAX at most.
 
 PRIVATE_APP = 256                       # Meshtastic PortNum.PRIVATE_APP: not shown by chat apps
-COURTESY_PROTO = (1, 0)                 # version of this courtesy protocol (in every beacon)
-CTRL_MAGIC, CTRL_VERSION = b"HB", 1
+COURTESY_PROTO = (2, 0)                 # version of this courtesy protocol (in every beacon)
+CTRL_VERSION = 2                        # v1 ("HB" magic, fixed sizes) is gone: it named the device
 CTRL_BEACON, CTRL_CLAIM, CTRL_DONE = 1, 2, 3
-CTRL_MAX = 60                           # bytes; anything longer is not ours
+CTRL_NONCE, CTRL_MAC = 4, 6             # bytes
+CTRL_MIN, CTRL_MAX = 20, 96             # sealed packets are padded to a random length in this range
+CTRL_LEN_MEDIAN, CTRL_LEN_SPREAD = 30.0, 0.45   # log-normal, like the lengths of short chat messages
 KINDS = ("alert", "danger", "family", "reply", "community", "auto")      # priority order, highest first
 SAFETY = frozenset({"alert", "danger"})  # only the real message (heard) cancels these, never a claim/done
 TAG_RE = re.compile(r"(?:^|\s)#([0-9a-f]{4})$")
@@ -866,6 +948,9 @@ PEER_COUNT_CAP = 50                     # forged beacons can't make a Badger wai
 # back-off before claiming, seconds: (lowest, extra per active peer, highest)
 BACKOFF = {"alert": (5.0, 2.0, 45.0), "danger": (5.0, 2.0, 45.0), "reply": (1.0, 0.5, 10.0),
            "family": (5.0, 3.0, 60.0), "community": (10.0, 5.0, 120.0), "auto": (30.0, 30.0, 900.0)}
+# channels without control packets (the public one): Badgers take turns, one every TURN seconds, in an
+# order every Badger derives the same way from the message key and the Badgers it knows (capped by BACKOFF)
+TURN = {"alert": 4.0, "danger": 4.0, "reply": 3.0, "family": 4.0, "community": 6.0, "auto": 20.0}
 CLAIM_TTL = {"alert": 30, "danger": 30, "reply": 30, "family": 60, "community": 60, "auto": 120}
 SETTLE = 6.0                            # after our claim: time for a simultaneous claim to reach us (multi-hop)
 SAFETY_HOLD_MAX = 60.0                  # claims can hold an alert back this long in total, then it goes
@@ -877,6 +962,11 @@ CTRL_PER_SENDER = (30, 600.0)           # control packets we listen to per radio
 
 def norm(text) -> str:
     return " ".join(str(text if text is not None else "").split())
+
+
+def _th(text) -> str:
+    """A short hash of a text's canonical form (canon)."""
+    return hashlib.sha256(canon(text).encode("utf-8", "replace")).hexdigest()[:16]
 
 
 KEY_SALT = b"honey-badger mesh courtesy v1"     # fixed: every Badger must compute the same opaque hash
@@ -922,26 +1012,71 @@ def hops_away(packet) -> int | None:
     return hs - hl
 
 
-# Wire format (docs/MESH.md), all fields fixed-size, nothing identifying (no names, positions, kinds,
-# capabilities, counts or readable keys):
-#   beacon  "HB" ver=1 type=1 proto_major proto_minor                 6 bytes
-#   claim   "HB" ver=1 type=2 keyhash(6) ttl_seconds(1)               11 bytes
-#   done    "HB" ver=1 type=3 keyhash(6)                              10 bytes
-def encode_beacon() -> bytes:
-    return CTRL_MAGIC + bytes([CTRL_VERSION, CTRL_BEACON, COURTESY_PROTO[0], COURTESY_PROTO[1]])
+# Wire format v2 (docs/MESH.md). Only ever sent on a private channel (family / circle), where Meshtastic
+# already encrypts it with the channel key. On top of that each packet is sealed with a key derived from
+# that channel's own secret, so it carries no constant marker anyone could recognise, and padded with
+# random bytes to a random length typical of a short chat message:
+#   nonce(4, random) · mac(6) = HMAC(key, "m"·nonce·body) · body XOR HMAC(key, "s"·nonce) · random padding
+#   body: beacon  ver=2 type=1 proto_major proto_minor        4 bytes
+#         claim   ver=2 type=2 keyhash(6) ttl_seconds(1)        9 bytes
+#         done    ver=2 type=3 keyhash(6)                       8 bytes
+# Without the channel secret the bytes are indistinguishable from random; the length says nothing.
+_BODY_LEN = {CTRL_BEACON: 4, CTRL_CLAIM: 2 + KH_LEN + 1, CTRL_DONE: 2 + KH_LEN}
+_SYSRNG = random.SystemRandom()
+_FALLBACK_SECRET = b"mesh courtesy v2 / no channel secret"   # only when the radio's key can't be read
 
 
-def encode_claim(kh: bytes, ttl: int) -> bytes:
-    return CTRL_MAGIC + bytes([CTRL_VERSION, CTRL_CLAIM]) + kh[:KH_LEN] + bytes([max(1, min(255, int(ttl)))])
+def ctrl_key(secret: bytes | None = None) -> bytes:
+    """The sealing key for one channel, from that channel's own secret (its PSK). Without one (the radio
+    didn't say), a fixed key: still no plain marker, but recognisable to someone who knows this code."""
+    raw = bytes(secret) if isinstance(secret, (bytes, bytearray)) and len(secret) >= 16 else _FALLBACK_SECRET
+    return hmac.new(raw, b"mesh courtesy control v2", hashlib.sha256).digest()
 
 
-def encode_done(kh: bytes) -> bytes:
-    return CTRL_MAGIC + bytes([CTRL_VERSION, CTRL_DONE]) + kh[:KH_LEN]
+DEFAULT_CTRL_KEY = ctrl_key(None)
 
 
-def decode_control(payload) -> dict | None:
-    """A control packet from another Badger, or None for anything else (garbled, foreign, oversized).
-    Newer versions may append fields: extra bytes are ignored, so old Badgers keep understanding them."""
+def _ks(key: bytes, nonce: bytes) -> bytes:
+    return hmac.new(key, b"s" + nonce, hashlib.sha256).digest()
+
+
+def _mac(key: bytes, nonce: bytes, body: bytes) -> bytes:
+    return hmac.new(key, b"m" + nonce + body, hashlib.sha256).digest()[:CTRL_MAC]
+
+
+def ctrl_length(rng, need: int) -> int:
+    """A random packet length like a short chat text (median ~30 bytes), never below what the body needs."""
+    n = int(round(rng.lognormvariate(math.log(CTRL_LEN_MEDIAN), CTRL_LEN_SPREAD)))
+    return max(need, CTRL_MIN, min(CTRL_MAX, n))
+
+
+def seal(body: bytes, key: bytes | None = None, rng=None) -> bytes:
+    rng = rng or _SYSRNG
+    k = key or DEFAULT_CTRL_KEY
+    while True:
+        nonce = rng.randbytes(CTRL_NONCE)
+        if nonce[:2] != b"HB":                       # never the old v1 magic: old Badgers mustn't misread it
+            break
+    head = nonce + _mac(k, nonce, body) + bytes(a ^ b for a, b in zip(body, _ks(k, nonce), strict=False))
+    return head + rng.randbytes(ctrl_length(rng, len(head)) - len(head))
+
+
+def encode_beacon(key: bytes | None = None, rng=None) -> bytes:
+    return seal(bytes([CTRL_VERSION, CTRL_BEACON, COURTESY_PROTO[0], COURTESY_PROTO[1]]), key, rng)
+
+
+def encode_claim(kh: bytes, ttl: int, key: bytes | None = None, rng=None) -> bytes:
+    body = bytes([CTRL_VERSION, CTRL_CLAIM]) + bytes(kh[:KH_LEN]).ljust(KH_LEN, b"\0") + bytes([max(1, min(255, int(ttl)))])
+    return seal(body, key, rng)
+
+
+def encode_done(kh: bytes, key: bytes | None = None, rng=None) -> bytes:
+    return seal(bytes([CTRL_VERSION, CTRL_DONE]) + bytes(kh[:KH_LEN]).ljust(KH_LEN, b"\0"), key, rng)
+
+
+def decode_control(payload, key: bytes | None = None) -> dict | None:
+    """A control packet from another Badger holding the same channel secret, or None for anything else
+    (garbled, foreign, forged without the key, oversized, v1). Padding is ignored."""
     if isinstance(payload, str):
         if len(payload) > 2 * CTRL_MAX:
             return None
@@ -952,16 +1087,24 @@ def decode_control(payload) -> dict | None:
     if not isinstance(payload, (bytes, bytearray, memoryview)):
         return None
     b = bytes(payload)
-    if not 4 <= len(b) <= CTRL_MAX or b[:2] != CTRL_MAGIC or b[2] < 1:
+    head = CTRL_NONCE + CTRL_MAC
+    if not head + 2 <= len(b) <= CTRL_MAX:
         return None
-    t = b[3]
-    if t == CTRL_BEACON and len(b) >= 6:
-        return {"type": "beacon", "proto": f"{b[4]}.{b[5]}"}
-    if t == CTRL_CLAIM and len(b) >= 4 + KH_LEN + 1:
-        return {"type": "claim", "kh": b[4:4 + KH_LEN], "ttl": b[4 + KH_LEN]}
-    if t == CTRL_DONE and len(b) >= 4 + KH_LEN:
-        return {"type": "done", "kh": b[4:4 + KH_LEN]}
-    return None
+    k = key or DEFAULT_CTRL_KEY
+    nonce, mac = b[:CTRL_NONCE], b[CTRL_NONCE:head]
+    ks = _ks(k, nonce)
+    ver, t = b[head] ^ ks[0], b[head + 1] ^ ks[1]
+    n = _BODY_LEN.get(t)
+    if ver != CTRL_VERSION or n is None or len(b) < head + n:
+        return None
+    body = bytes(x ^ y for x, y in zip(b[head:head + n], ks, strict=False))
+    if not hmac.compare_digest(mac, _mac(k, nonce, body)):
+        return None
+    if t == CTRL_BEACON:
+        return {"type": "beacon", "proto": f"{body[2]}.{body[3]}"}
+    if t == CTRL_CLAIM:
+        return {"type": "claim", "kh": body[2:2 + KH_LEN], "ttl": body[2 + KH_LEN]}
+    return {"type": "done", "kh": body[2:2 + KH_LEN]}
 
 
 def _cnum(v, default, lo, hi, key=""):
@@ -988,8 +1131,12 @@ def courtesy_config(cfg: dict | None) -> dict:
         n = _cnum(quiet, 120, 0, 3600, "mesh_boot_quiet_s")
         quiet = (n / 4, n)
     max_util = _cnum(cfg.get("mesh_max_util"), 25, 1, 100, "mesh_max_util")
+    if cfg.get("mesh_beacon_public") is True:
+        print("meshbridge: [radio] mesh_beacon_public is no longer supported — control packets never go on the "
+              "public channel (docs/MESH.md)", file=sys.stderr)
     return {
         "enabled": cfg.get("mesh_courtesy", True) is not False,
+        "beacons": cfg.get("mesh_beacons", True) is not False,
         "beacon_min": _cnum(cfg.get("mesh_peer_beacon_min"), 45, 10, 720, "mesh_peer_beacon_min"),
         "max_util": max_util,
         "busy_util": _cnum(cfg.get("mesh_max_util_busy"), 40, max_util, 100, "mesh_max_util_busy"),
@@ -1085,12 +1232,13 @@ class Peers:
         self.presumed.discard(nid)
         return new
 
-    def active(self, now: float | None = None) -> int:
+    def active_ids(self, now: float | None = None) -> list[str]:
         now = self.clock() if now is None else now
         presume = now - self.boot < PRESUME_FOR
-        n = sum(1 for k, r in self.table.items()
-                if now - r["last"] <= PEER_WINDOW or (presume and k in self.presumed))
-        return min(n, PEER_COUNT_CAP)
+        return [k for k, r in self.table.items() if now - r["last"] <= PEER_WINDOW or (presume and k in self.presumed)]
+
+    def active(self, now: float | None = None) -> int:
+        return min(len(self.active_ids(now)), PEER_COUNT_CAP)
 
     def snapshot(self) -> list[dict]:
         return sorted((dict(r) for r in self.table.values()), key=lambda r: -r["last"])
@@ -1098,7 +1246,7 @@ class Peers:
 
 class _Pending:
     __slots__ = ("key", "kh", "tag", "ch", "kind", "created", "t_go", "t_send", "state", "cap_until", "on_go",
-                 "match", "label", "req_id", "at_boot", "on_final", "held_by", "late_yield")
+                 "match", "label", "req_id", "at_boot", "on_final", "held_by", "late_yield", "text")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -1107,23 +1255,30 @@ class _Pending:
 
 class Courtesy:
     """Duplicate suppression between Badgers, keyed by a dedupe key per channel (docs/MESH.md):
-      submit()        something several Badgers might send: wait a back-off, claim, send — or don't,
-                      if another Badger's copy (or, low-stakes only, claim/done) was heard meanwhile
-      heard_text()    a text heard on a channel: recognises other Badgers' copies by tag / format
-      heard_control() a PRIVATE_APP packet: beacon, claim or done
-      done()          tells the others a reply went out (replies are DMs: other Badgers can't hear them)
+      submit()        something several Badgers might send: wait a back-off (claim first on a private
+                      channel), send — or don't, if another Badger's copy (or, low-stakes only and on a
+                      private channel, a claim/done) was heard meanwhile
+      heard_text()    a text heard on a channel: recognises other Badgers' copies (alerts: exact text only)
+      heard_control() a PRIVATE_APP packet on a private channel: beacon, claim or done
+      done()          tells the others (private channels only) that a reply went out
       tick()          timers (claims, sends, beacons); call every second or so
+    ctrl_chs: the private channels (family / circle) where control packets may be sent and are listened
+    to; ctrl_keys: channel → sealing key (ctrl_key(channel secret)). Nowhere else — the public channel
+    never carries a control packet; there Badgers take turns and listen for the text itself.
     Thread-safe; callbacks (sending) always run outside the lock."""
 
     def __init__(self, send_ctrl, clock, rng=None, *, my_id=None, my_num=None, cfg=None,
-                 beacon_chs=(), load=None, silence=None):
+                 beacon_chs=(), load=None, silence=None, ctrl_chs=None, ctrl_keys=None):
         self.cfg = cfg or courtesy_config({})
         self.enabled = bool(self.cfg["enabled"])
         self.send_ctrl, self.clock = send_ctrl, clock
         self.rng = rng or random.SystemRandom()
         self.my_id = my_id.strip().lower() if isinstance(my_id, str) and my_id.strip() else None
         self.my_num = my_num if node_num(my_num) else node_num(self.my_id)
-        self.beacon_chs = [c for c in beacon_chs if isinstance(c, int) and 0 <= c <= 7]
+        ok = lambda c: isinstance(c, int) and not isinstance(c, bool) and 0 <= c <= 7  # noqa: E731
+        self.ctrl_chs = {c for c in (beacon_chs if ctrl_chs is None else ctrl_chs) if ok(c)}
+        self.ctrl_keys = {c: k for c, k in (ctrl_keys or {}).items() if ok(c) and isinstance(k, bytes) and k}
+        self.beacon_chs = [c for c in beacon_chs if ok(c) and c in self.ctrl_chs]
         self.load = load or (lambda: (None, None))
         self.silence = silence or Silence(None)
         self.peers = Peers(clock)
@@ -1135,6 +1290,8 @@ class Courtesy:
         self.dones: collections.OrderedDict = collections.OrderedDict()      # (kh, ch) → (id, t)
         self.reply_ids: collections.OrderedDict = collections.OrderedDict()  # (packet id, ch) → (id, t)
         self.done_sent: collections.OrderedDict = collections.OrderedDict()
+        self.req_seen: collections.OrderedDict = collections.OrderedDict()   # (request id, ch) → t: we took part
+        self.sent_texts: collections.OrderedDict = collections.OrderedDict() # (canon hash, ch) → t, what WE sent
         self.relays: collections.deque = collections.deque(maxlen=300)        # (t, ch, text, sender)
         self.ctrl_seen: dict[str, collections.deque] = {}
         self.events: collections.deque = collections.deque(maxlen=40)
@@ -1143,6 +1300,54 @@ class Courtesy:
         self.lock = threading.RLock()
 
     # — helpers (lock held) —
+    def key_for(self, ch: int) -> bytes:
+        return self.ctrl_keys.get(ch, DEFAULT_CTRL_KEY)
+
+    def set_ctrl_key(self, ch: int, key: bytes | None) -> None:
+        """A private channel's sealing key changed (the family channel was re-keyed); None: no control
+        packets on it any more (its secret is weak or unknown)."""
+        with self.lock:
+            if isinstance(key, bytes) and key:
+                self.ctrl_keys[ch] = key
+                self.ctrl_chs.add(ch)
+            else:
+                self.ctrl_keys.pop(ch, None)
+                self.ctrl_chs.discard(ch)
+                self.beacon_chs = [c for c in self.beacon_chs if c != ch]
+
+    def _beacon_gap(self) -> float:
+        """Seconds to the next beacon: Poisson-random (exponential) around the configured mean, clamped to
+        a fifth .. three times of it — no rhythm a listener could lock on to."""
+        mean = self.cfg["beacon_min"] * 60.0
+        return max(mean * 0.2, min(mean * 3.0, self.rng.expovariate(1.0 / mean)))
+
+    def _turn_delay(self, key: str, kind: str, now: float) -> float:
+        """No control packets on this channel: every Badger orders itself among the Badgers it knows by a
+        hash of (key, radio id) — the same order everywhere — and waits its turn; the first one's text is
+        heard by the rest, who stand down. A different order for every message (no fixed transmitter)."""
+        lo, _, hi = BACKOFF.get(kind, BACKOFF["community"])
+        ids = set(self.peers.active_ids(now))
+        if self.my_id:
+            order = sorted(ids | {self.my_id}, key=lambda i: hmac.new(KEY_SALT, f"{key}|{i}".encode("utf-8", "replace"),
+                                                                      hashlib.sha256).digest())
+            slot = order.index(self.my_id)
+        else:
+            slot = self.rng.randrange(len(ids) + 1)
+        return lo + min(slot * TURN.get(kind, 4.0), hi - lo) + self.rng.uniform(0.0, 0.5)
+
+    def _shared_quiet(self, key: str, now: float, lo: float, hi: float) -> float:
+        """After a restart, on a channel without claims: the end of the quiet period falls on the same wall-clock
+        moment for every Badger that holds the same item (a key-derived phase), so their turns still line up."""
+        period = hi - lo
+        if period <= 0:
+            return lo
+        frac = int.from_bytes(hmac.new(KEY_SALT, b"quiet|" + key.encode("utf-8", "replace"), hashlib.sha256).digest()[:4],
+                              "big") / 2 ** 32
+        phase = frac * period
+        t0 = now + lo
+        anchor = phase + math.ceil((t0 - phase) / period) * period
+        return anchor - now
+
     def _event(self, what: str, p: _Pending | None = None, by: str | None = None, now: float | None = None) -> None:
         self.events.append({"at": round(self.clock() if now is None else now), "what": what,
                             "kind": p.kind if p else None, "label": (p.label if p else "")[:60],
@@ -1165,6 +1370,8 @@ class Courtesy:
                 return bool(p.match(text))
             except Exception:  # noqa: BLE001 — a matcher must never break the radio thread
                 return False
+        if p.kind in SAFETY:                         # safety rule: only an exact copy cancels it
+            return p.text is not None and canon(text) == canon(p.text)
         m = TAG_RE.search(text)
         return bool(m) and m.group(1) == p.tag
 
@@ -1188,6 +1395,8 @@ class Courtesy:
 
     def _go(self, p: _Pending, run: list, now: float) -> None:
         self._remember(self.sent_tags, (p.tag, p.ch), now, 500)
+        if p.text:
+            self._remember(self.sent_texts, (_th(p.text), p.ch), now, 500)
         on_go = p.on_go
         self._finish(p, "sent", self.my_id, run, now)
         run.insert(len(run) - (1 if p.on_final else 0), on_go)     # send first, then report it final
@@ -1224,20 +1433,25 @@ class Courtesy:
 
     # — API —
     def submit(self, key: str, kind: str, ch: int, on_go, *, match=None, label: str = "", hops: int = 0,
-               req_id=None, at_boot: bool = False, extra: float = 0.0, on_final=None) -> str:
-        """Returns "sent" (on_go already called), "pending", "suppressed" or "duplicate"."""
+               req_id=None, at_boot: bool = False, extra: float = 0.0, on_final=None, text: str | None = None) -> str:
+        """Returns "sent" (on_go already called), "pending", "suppressed" or "duplicate". `text`: what will
+        go out (alert/danger without a matcher are only ever cancelled by hearing exactly this). `extra`:
+        wait at least this long, even with no other Badger around."""
         kind = kind if kind in KINDS else "community"
         kh = key_hash(key)
         run: list = []
         with self.lock:
             now = self.clock()
             k = (kh, ch)
+            if req_id is not None:
+                self._remember(self.req_seen, (req_id, ch), now, 500)
             if k in self.pending or k in self.final:
                 return "duplicate"
             p = _Pending(key=key, kh=kh, tag=kh[:2].hex(), ch=ch, kind=kind, created=now, state="wait",
                          on_go=on_go, match=match, label=clean(label, 60), req_id=req_id, at_boot=at_boot,
-                         on_final=on_final)
+                         on_final=on_final, text=norm(text) if isinstance(text, str) and text.strip() else None)
             peers = self.peers.active(now)
+            text_only = ch not in self.ctrl_chs
             by = self._heard_already(p, now) if self.enabled else None
             if self.silence.active():
                 self._finish(p, "silenced", None, run, now)     # radio silence: nothing automatic goes out
@@ -1245,15 +1459,22 @@ class Courtesy:
             elif by is not None:
                 self._finish(p, "suppressed", by, run, now)
                 res = "suppressed"
-            elif not self.enabled or (peers == 0 and not at_boot and kind not in SAFETY):
+            elif extra <= 0 and (not self.enabled or (peers == 0 and not at_boot and kind not in SAFETY)):
                 self._go(p, run, now)
                 res = "sent"
             else:
                 lo, hi = self.cfg["boot_quiet"]
-                if at_boot and hi > 0:
-                    delay = self.rng.uniform(lo, hi)        # restart: everyone boots together; spread out
+                if not self.enabled:
+                    delay = 0.0
+                elif at_boot and hi > 0:
+                    if text_only and peers > 0:             # restart: the same quiet period, then turns
+                        delay = self._shared_quiet(key, now, lo, hi) + self._turn_delay(key, kind, now)
+                    else:
+                        delay = self.rng.uniform(lo, hi)    # everyone boots together; spread out
                 elif peers == 0:
-                    delay = self.rng.uniform(0, LONE_ALERT_JITTER)
+                    delay = self.rng.uniform(0, LONE_ALERT_JITTER) if kind in SAFETY else 0.0
+                elif text_only:
+                    delay = self._turn_delay(key, kind, now)
                 else:
                     delay = self._backoff(kind, peers, hops)
                 p.t_go = now + delay + max(0.0, extra)
@@ -1294,15 +1515,18 @@ class Courtesy:
                 if self.enabled:
                     for p in [p for p in self.pending.values() if p.ch == ch and self._matches(p, t)]:
                         self._finish(p, "suppressed", sid, run, now)
-                if m and (is_alert or sid in self.peers.table):
+                if is_alert:                         # by its exact text: a forged variant never hides the real one
+                    info.update(relay=True, board_key="text:" + _th(t))
+                    info["ours"] = (_th(t), ch) in self.sent_texts
+                elif m and sid in self.peers.table:
                     info.update(relay=True, board_key="tag:" + m.group(1))
                     info["ours"] = (m.group(1), ch) in self.sent_tags
-                elif is_alert:
-                    info.update(relay=True, board_key="text:" + hashlib.sha256(t.encode()).hexdigest()[:16])
             dec = packet.get("decoded") if isinstance(packet, dict) else None
             rid = dec.get("replyId") if isinstance(dec, dict) else None
             if isinstance(rid, int) and not isinstance(rid, bool) and rid:
                 self._remember(self.reply_ids, (rid, ch), (sid, now), 500)
+                if (rid, ch) in self.req_seen and NODE_RE.match(sid):
+                    self.peers.heard(sid, node_num(packet.get("from")) if isinstance(packet, dict) else None, "reply")
                 if self.enabled:
                     for p in [p for p in self.pending.values() if p.kind == "reply" and p.req_id == rid and p.ch == ch]:
                         self._finish(p, "suppressed", sid, run, now)
@@ -1316,7 +1540,17 @@ class Courtesy:
         dec = packet.get("decoded")
         if not isinstance(dec, dict) or dec.get("portnum") not in ("PRIVATE_APP", PRIVATE_APP):
             return False
-        msg = decode_control(dec.get("payload"))
+        ch = packet.get("channel", 0)
+        ch = 0 if ch is None else ch
+        if isinstance(ch, bool) or not isinstance(ch, int) or not 0 <= ch <= 7:
+            return False
+        with self.lock:
+            private = ch in self.ctrl_chs
+            key = self.key_for(ch)
+        if not private:
+            self.counts["ctrl_ignored"] += 1         # control packets on the public channel: never ours
+            return False
+        msg = decode_control(dec.get("payload"), key)
         if msg is None:
             self.counts["garbled"] += 1
             return False
@@ -1328,10 +1562,6 @@ class Courtesy:
                 return False
             sid = f"!{num:08x}"
         num = num if num is not None else node_num(sid)
-        ch = packet.get("channel", 0)
-        ch = 0 if ch is None else ch
-        if isinstance(ch, bool) or not isinstance(ch, int) or not 0 <= ch <= 7:
-            return False
         if (self.my_id and sid == self.my_id) or (self.my_num is not None and num == self.my_num):
             return False                             # our own packet coming back
         run: list = []
@@ -1370,10 +1600,11 @@ class Courtesy:
             return
         kh = key_hash(key)
         with self.lock:
-            if (kh, ch) in self.done_sent:
-                return
+            if ch not in self.ctrl_chs or (kh, ch) in self.done_sent:
+                return                               # never a control packet on the public channel
             self._remember(self.done_sent, (kh, ch), self.clock(), 500)
-        self.send_ctrl(encode_done(kh), ch)
+            payload = encode_done(kh, self.key_for(ch), self.rng)
+        self.send_ctrl(payload, ch)
 
     def tick(self) -> None:
         run: list = []
@@ -1386,29 +1617,30 @@ class Courtesy:
                     self._finish(p, "silenced", None, run, now)
                     continue
                 if p.state == "wait" and now >= p.t_go:
-                    if peers == 0 and not p.at_boot:
-                        self._go(p, run, now)        # nobody to coordinate with
+                    if (peers == 0 and not p.at_boot) or p.ch not in self.ctrl_chs or not self.enabled:
+                        self._go(p, run, now)        # nobody to coordinate with / no claims on this channel
                         continue
-                    payload = encode_claim(p.kh, CLAIM_TTL.get(p.kind, 60))
+                    payload = encode_claim(p.kh, CLAIM_TTL.get(p.kind, 60), self.key_for(p.ch), self.rng)
                     run.append(lambda b=payload, c=p.ch: self.send_ctrl(b, c))
                     p.state, p.t_send = "claimed", now + SETTLE
                     self.counts["claims"] += 1
                 elif p.state == "claimed" and now >= p.t_send:
                     self._go(p, run, now)
-            if self.enabled and self.beacon_chs and now >= self.next_beacon:
+            if self.enabled and self.cfg.get("beacons", True) and self.beacon_chs and now >= self.next_beacon:
                 util = self.load()[0]
                 if self.silence.active() or (util is not None and util >= self.cfg["busy_util"]):
-                    self.next_beacon = now + 600         # radio silence / a busy channel: the beacon can wait
+                    self.next_beacon = now + self.rng.uniform(300, 1200)   # silence / busy: the beacon can wait
                 else:
-                    beacon = encode_beacon()
-                    for c in self.beacon_chs:
-                        run.append(lambda b=beacon, c=c: self.send_ctrl(b, c))
+                    for c in self.beacon_chs:            # (sealed separately: no two packets alike)
+                        b = encode_beacon(self.key_for(c), self.rng)
+                        run.append(lambda b=b, c=c: self.send_ctrl(b, c))
                     self.counts["beacons"] += 1
-                    self.next_beacon = now + self.cfg["beacon_min"] * 60 * self.rng.uniform(0.8, 1.2)
+                    self.next_beacon = now + self._beacon_gap()
             # forget old state (each dict is roughly in time order: entries move to the end when updated)
             for d, age, when in ((self.claims, 0, lambda v: v[2]), (self.dones, 900, lambda v: v[1]),
                                  (self.reply_ids, 900, lambda v: v[1]), (self.final, 86400, lambda v: v[2]),
-                                 (self.sent_tags, 86400, lambda v: v), (self.done_sent, 3600, lambda v: v)):
+                                 (self.sent_tags, 86400, lambda v: v), (self.done_sent, 3600, lambda v: v),
+                                 (self.sent_texts, 86400, lambda v: v), (self.req_seen, 900, lambda v: v)):
                 while d and now - when(next(iter(d.values()))) > age:
                     d.popitem(last=False)
         self._run(run)
@@ -1419,6 +1651,7 @@ class Courtesy:
             pend = collections.Counter(p.kind for p in self.pending.values())
             return {"enabled": self.enabled, "proto": "%d.%d" % COURTESY_PROTO, "me": self.my_id,
                     "silent": self.silence.active(), "beacon_channels": list(self.beacon_chs),
+                    "control_channels": sorted(self.ctrl_chs), "beacons": bool(self.cfg.get("beacons", True)),
                     "peers_active": self.peers.active(now), "peers": self.peers.snapshot()[:200],
                     "pending": dict(pend), "counts": dict(self.counts),
                     "quiet_until": None if not self.cfg["boot_quiet"][1] else round(self.boot + self.cfg["boot_quiet"][1]),
@@ -1681,21 +1914,55 @@ class Heard:
 
 # ─────────────────────────────── position privacy ────────────────────────────
 
-POSITION_BITS = {"off": 0, "coarse": 12, "precise": 32}   # Meshtastic position_precision: 12 bits ≈ 11.7 km
+# Meshtastic channel module_settings.position_precision = how many leading bits of the 32-bit latitude_i /
+# longitude_i (units of 1e-7°) are kept; the firmware reports the centre of the remaining box (firmware
+# PositionModule / PositionPrecision: mask UINT32_MAX << (32 - bits), plus 1 << (31 - bits)). The box is
+# 2^(32-bits) · 1e-7° tall; the Meshtastic docs quote half of it (the furthest the true spot can be from the
+# reported one along an axis): 10 ≈ 23.3 km, 11 ≈ 11.7 km, 12 ≈ 5.8 km, 13 ≈ 2.9 km, 14 ≈ 1.5 km,
+# 16 ≈ 364 m, 19 ≈ 45 m; 0 = never sent, 32 = exact.
+POSITION_BITS = {"off": 0, "coarse": 12, "precise": 32}   # coarse: within ~6 km (a box ~12 km across)
+POSITION_FINEST = 13                    # never finer than ~3 km on the public channel unless "precise"
 
 
-def apply_position_privacy(iface, public_ch: int, mode: str, state_path: Path) -> dict:
+def position_distance_m(bits: int) -> float | None:
+    """How far off (metres, along a north–south axis) a position sent with `bits` may be — the figure the
+    Meshtastic docs list; None for 0 (not sent), 0.0 for 32 (exact)."""
+    if not isinstance(bits, int) or isinstance(bits, bool) or not 0 <= bits <= 32:
+        raise ValueError(bits)
+    if bits == 0:
+        return None
+    if bits == 32:
+        return 0.0
+    return (2 ** (32 - bits)) * 1e-7 / 2 * 111_195.0      # half the box; 1° of latitude ≈ 111.195 km
+
+
+def position_bits(mode) -> tuple[int | None, str]:
+    """[radio] mesh_public_position → (bits, note). "off" | "coarse" | "precise", or a number of bits
+    (0–32), which is clamped to POSITION_FINEST: only the word "precise" ever shares an exact position."""
+    if isinstance(mode, str) and mode in POSITION_BITS:
+        return POSITION_BITS[mode], ""
+    if isinstance(mode, int) and not isinstance(mode, bool) and 0 <= mode <= 32:
+        if mode > POSITION_FINEST:
+            return POSITION_FINEST, (f"mesh_public_position = {mode} is finer than ~3 km: using "
+                                     f"{POSITION_FINEST} bits (say \"precise\" to share the exact position)")
+        return mode, ""
+    return None, f"unknown mesh_public_position {mode!r}: left as it is"
+
+
+def apply_position_privacy(iface, public_ch: int, mode, state_path: Path) -> dict:
     """How precisely the radio's own position goes out on the PUBLIC channel ([radio]
-    mesh_public_position = "off" | "coarse" | "precise", default "off"): channel
+    mesh_public_position = "off" | "coarse" | "precise" | bits, default "off"): channel
     module_settings.position_precision (firmware 2.3+), written with writeChannel. Idempotent; never raises.
     The family channel is left exactly as set in the Meshtastic app (we never share MORE than you chose).
-    Doesn't fight the owner: if the value on the radio differs from what the bridge last applied (state
-    file), someone changed it in the app since — it is left alone and that is logged."""
+    Doesn't fight the owner in the safe direction: if the value on the radio differs from what the bridge
+    last applied (state file), someone changed it in the app since — it is left alone and that is logged —
+    unless it is now finer than ~3 km (POSITION_FINEST) without "precise": then it is set back (a radio on
+    the public channel must never say where the house is to within a few hundred metres by accident)."""
     res = {"mode": mode, "channel": None, "applied": False, "note": ""}
     try:
-        want = POSITION_BITS.get(mode)
+        want, why = position_bits(mode)
         if want is None:
-            res["note"] = f"unknown mesh_public_position {mode!r}: left as it is"
+            res["note"] = why
             return res
         ch = public_ch if isinstance(public_ch, int) and public_ch >= 0 else 0
         res["channel"] = ch
@@ -1712,9 +1979,10 @@ def apply_position_privacy(iface, public_ch: int, mode: str, state_path: Path) -
         state = read_json(state_path, {})
         state = state if isinstance(state, dict) else {}
         last = state.get(str(ch))
+        too_fine = want != 32 and cur > POSITION_FINEST
         if cur == want:
             res["note"] = "already set"
-        elif isinstance(last, int) and not isinstance(last, bool) and last != cur:
+        elif isinstance(last, int) and not isinstance(last, bool) and last != cur and not too_fine:
             res["note"] = (f"left at {cur} bits: it was changed on the radio after the Badger set {last} "
                            "(the owner's choice wins)")
             return res
@@ -1723,6 +1991,10 @@ def apply_position_privacy(iface, public_ch: int, mode: str, state_path: Path) -
             node.writeChannel(ch)
             res["applied"] = True
             res["note"] = f"public channel position precision {cur} → {want} bits"
+            if too_fine and isinstance(last, int) and last != cur:
+                res["note"] += " (it had been set finer than ~3 km on the radio; only \"precise\" allows that)"
+        if why:
+            res["note"] = why + "; " + res["note"]
         state[str(ch)] = want
         atomic_json(state_path, state, 0o640)
         return res
@@ -1861,7 +2133,8 @@ class Outbox:
         if key and self.courtesy is not None:
             item["text"] = with_tag(post["text"], tag_of(key))
             self.courtesy.submit(key, post["kind"], ch, lambda it=item: self.airtime.put(it, pump=False),
-                                 label=post["text"][:40],
+                                 label=post["text"][:40], text=item["text"],
+                                 match=exact_matcher(item["text"]) if post["kind"] in SAFETY else None,
                                  on_final=lambda state, by, r=release: None if state == "sent" else r())
         else:
             self.airtime.put(item, pump=False)
@@ -1920,7 +2193,68 @@ class RateLimit:
         return True
 
 
-COMMAND_WORDS = ("!help", "!q", "!ai", "!status")
+PAIR_RE = re.compile(r"^!pair\s+([A-Za-z0-9-]{4,16})\s*$", re.I)
+PAIR_CODE_RE = re.compile(r"^[A-Z0-9]{4,12}$")
+PAIR_PER_RADIO = (5, 600.0)             # "!pair" confirmations recorded per radio per 10 min
+PAIR_TOTAL = (30, 600.0)                # … and from all radios together
+
+
+def record_pair_confirm(path: Path, radio, code, now: float, keep: int = 20, max_age: float = 7200) -> bool:
+    """A family radio sent "!pair <code>" on the family channel: note it where the portal looks, so binding a
+    radio to a member needs a message from that very radio (it holds the family key and knows the code the
+    portal showed). Rewrites the file atomically, 0600: {"v": 1, "confirms": [{"radio", "code", "at"}, …]},
+    newest `keep`, none older than `max_age` s. Codes: letters/digits (dashes dropped), upper-cased, 4–12.
+    Returns True when recorded; never raises."""
+    try:
+        if path is None or not isinstance(radio, str) or not isinstance(code, str):
+            return False
+        radio = radio.strip().lower()
+        code = code.replace("-", "").upper()
+        if not NODE_RE.match(radio) or not PAIR_CODE_RE.match(code) or _num(now) is None:
+            return False
+        path = Path(path)
+        old = read_json(path, {}, limit=64_000)
+        recs = old.get("confirms") if isinstance(old, dict) else None
+        out = []
+        for r in recs if isinstance(recs, list) else []:
+            if not isinstance(r, dict):
+                continue
+            at, rr, cc = _num(r.get("at")), r.get("radio"), r.get("code")
+            if at is None or not 0 <= now - at <= max_age or not isinstance(rr, str) or not NODE_RE.match(rr) \
+                    or not isinstance(cc, str) or not PAIR_CODE_RE.match(cc):
+                continue
+            out.append({"radio": rr, "code": cc, "at": at})
+        out.append({"radio": radio, "code": code, "at": float(now)})
+        out = sorted(out, key=lambda r: r["at"])[-max(1, int(keep)):]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _private_file(path, json.dumps({"v": 1, "confirms": out}).encode(), 0o600)
+        return True
+    except Exception as e:  # noqa: BLE001 — a full disk or an odd file must not stop the bridge
+        print(f"meshbridge: radio pairing confirmation not recorded ({type(e).__name__})", file=sys.stderr)
+        return False
+
+
+def family_key_exposed(members: Path, rotation: Path | None) -> bool:
+    """True while a removed member may still hold the family channel key: someone was removed after the last
+    successful key change the bridge made (mesh-rotate-result.json), or removed at an unknown time with no key
+    change on record. Anyone with the key can transmit on the family channel with any radio ID, so until the
+    family is re-keyed a family-channel post can't be confirmed as a member's (finding: removed member posts as
+    Mom) and the channel isn't trusted for family-only commands."""
+    d = read_json(members, {})
+    mems = d.get("members") if isinstance(d, dict) else None
+    if not isinstance(mems, dict):
+        return False
+    res = read_json(rotation, None) if rotation is not None else None
+    rot = _num(res.get("at")) if isinstance(res, dict) and res.get("ok") is True else None
+    for m in mems.values():
+        if not isinstance(m, dict) or not m.get("removed"):
+            continue
+        when = _num(m["removed"])
+        if when is None and rot is None:
+            return True
+        if when is not None and (rot is None or when > rot):
+            return True
+    return False
 
 
 class Bridge:
@@ -1929,8 +2263,15 @@ class Bridge:
 
     def __init__(self, family_ch: int, public_ch: int, send, commands: Commands, members: Path,
                  telemetry: TelemetryLog | None, my_id: str | None, clock, *, courtesy: Courtesy | None = None,
-                 airtime: Airtime | None = None, board=None, load=None, silence: Silence | None = None):
+                 airtime: Airtime | None = None, board=None, load=None, silence: Silence | None = None,
+                 rotation: Path | None = None, pair_file: Path | None = None):
         self.family_ch, self.public_ch, self.send, self.commands = family_ch, public_ch, send, commands
+        self.pair_file = pair_file                     # None: radio pairing confirmations off
+        self.pair_seen: dict[str, collections.deque] = {}
+        self.pair_all: collections.deque = collections.deque()
+        self.rotation = rotation
+        self._exposed = (-1e18, False)
+        self._exposed_said = -1e18
         self.members, self.telemetry, self.my_id = members, telemetry, my_id
         self.clock = clock
         self.limits = {"family": RateLimit(clock), "community": RateLimit(clock)}   # one per board
@@ -1946,6 +2287,37 @@ class Bridge:
         self.alerts_dirty = False
         self.booted = False
         self.lock = threading.Lock()
+
+    def _pair_allowed(self, sender: str) -> bool:
+        now = self.clock()
+        with self.lock:
+            for d, (n, win) in ((self.pair_all, PAIR_TOTAL), (self.pair_seen.setdefault(sender, collections.deque()),
+                                                                PAIR_PER_RADIO)):
+                while d and now - d[0] > win:
+                    d.popleft()
+                if len(d) >= n:
+                    return False
+            self.pair_all.append(now)
+            self.pair_seen[sender].append(now)
+            if len(self.pair_seen) > 500:
+                for k in [k for k, d in self.pair_seen.items() if not d or now - d[-1] > PAIR_PER_RADIO[1]]:
+                    del self.pair_seen[k]
+        return True
+
+    def family_exposed(self) -> bool:
+        """family_key_exposed(), re-read at most every 5 s (members file + last key-change result)."""
+        now = self.clock()
+        t, v = self._exposed
+        if 0 <= now - t < 5:
+            return v
+        v = family_key_exposed(self.members, self.rotation if self.rotation is not None else ROTATE_RES)
+        self._exposed = (now, v)
+        if v and now - self._exposed_said > 3600:
+            self._exposed_said = now
+            print("meshbridge: a removed member may still have the family channel key — family-channel posts are "
+                  "marked unconfirmed and family-only commands are off until the family channel gets a new key",
+                  file=sys.stderr)
+        return v
 
     # — packets heard —
     def on_text(self, packet, interface=None):
@@ -1980,7 +2352,21 @@ class Bridge:
         if reg and reg.get("removed"):
             print(f"meshbridge: ignored a message from a removed member's radio {sender}", file=sys.stderr)
             return
+        if text[:5].lower() == "!pair":
+            # radio pairing confirmation: only on the family channel, never a DM, never answered on air and
+            # never on a board; anywhere else dropped without a word
+            m = PAIR_RE.match(text)
+            if m and self.family_ch >= 0 and ch == self.family_ch and not direct and self.pair_file is not None:
+                if self.family_exposed():           # a removed member may hold the family key
+                    print("meshbridge: pairing refused until the family channel is re-keyed", file=sys.stderr)
+                elif self._pair_allowed(sender.lower()) and \
+                        record_pair_confirm(self.pair_file, sender, m.group(1), self.clock()):
+                    print(f"meshbridge: pairing confirmation from radio {sender.lower()}", file=sys.stderr)
+            return
         board, trusted = route_text(text, ch, self.family_ch, self.public_ch, reg)
+        exposed = board == "family" and self.family_exposed()
+        if exposed:
+            trusted = False                          # the key may be in a removed member's hands
         if text.startswith("!"):
             self._command(text, sender, ch, trusted, packet, direct)
             return
@@ -2003,7 +2389,9 @@ class Bridge:
         nodes = getattr(interface, "nodes", None) if interface is not None else None
         node = nodes.get(sender, {}) if isinstance(nodes, dict) else {}
         long_name = clean(_dict(_dict(node).get("user")).get("longName"), 32)
-        if board == "family" and reg:
+        if board == "family" and reg and exposed:   # can't tell a member from a removed one holding the key
+            self.board(f"{clean(reg['name'] or long_name or sender, 18)} (unconfirmed)", text, board, sender, None)
+        elif board == "family" and reg:
             self.board(reg["name"] or long_name or sender, text, board, sender, reg["member"])
         else:                                        # community: never a member's name (IDs can be forged)
             self.board(long_name or sender, text, board, sender, None)
@@ -2013,31 +2401,54 @@ class Bridge:
         req_id = req_id if isinstance(req_id, int) and not isinstance(req_id, bool) and 0 < req_id < 2 ** 32 else None
         hops = hops_away(packet)
         word = text.partition(" ")[0].lower()
-        if self.silence.active():
+        if self.silence.active() or word not in COMMAND_WORDS:
             return                                   # radio silence: heard, never answered
-        if direct or self.courtesy is None or not self.courtesy.enabled or word not in COMMAND_WORDS:
-            # a DM to this Badger (only we got it), or courtesy off: answer at once, as always
-            self.commands.handle(text, sender, trusted, reply=lambda t: self._reply(t, sender, ch, req_id, hops, None))
-            return
-        # heard on a shared channel: every Badger in range heard it too — one of us answers
+        cour = self.courtesy if self.courtesy is not None and self.courtesy.enabled else None
         rid = req_id if req_id is not None else hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
         key = f"reply:{sender.lower()}:{rid}"
+        if trusted:
+            if direct or cour is None:
+                # a family radio's DM to this Badger (only we got it), or courtesy off: answer at once
+                self.commands.handle(text, sender, True,
+                                     reply=lambda t: self._reply(t, sender, ch, req_id, hops, None, dm=True))
+                return
 
-        def go():
-            self.commands.handle(text, sender, trusted, reply=lambda t: self._reply(t, sender, ch, req_id, hops, key),
-                                 ignored=lambda: self.courtesy.done(key, ch))
-        able = self.commands.would_answer(text, trusted)
-        self.courtesy.submit(key, "reply", ch, go, hops=hops or 0, req_id=req_id, label=word,
-                             extra=0.0 if able else BACKOFF["reply"][2],
-                             on_final=lambda st, by: self.commands.note_answered(sender) if st == "suppressed" else None)
+            # heard on the family channel: the family's other Badgers heard it too — one of us answers
+            def go():
+                self.commands.handle(text, sender, True,
+                                     reply=lambda t: self._reply(t, sender, ch, req_id, hops, key, dm=True),
+                                     ignored=lambda: cour.done(key, ch))
+            able = self.commands.would_answer(text, True)
+            cour.submit(key, "reply", ch, go, hops=hops or 0, req_id=req_id, label=word,
+                        extra=0.0 if able else BACKOFF["reply"][2],
+                        on_final=lambda st, by: self.commands.note_answered(sender) if st == "suppressed" else None)
+            return
+        # a radio outside the family: only a real answer to a "community" command, on the public channel,
+        # within the stranger budgets — otherwise nothing at all (no refusal, no control packet)
+        if ch != self.public_ch or not self.commands.would_answer(text, False, sender):
+            return
+        if cour is None:
+            self.commands.handle(text, sender, False,
+                                 reply=lambda t: self._reply(t, sender, ch, req_id, hops, None, dm=direct))
+            return
 
-    def _reply(self, t, sender, ch, req_id, hops, key) -> None:
+        def go_public():
+            self.commands.handle(text, sender, False,
+                                 reply=lambda t: self._reply(t, sender, ch, req_id, hops, key, dm=direct))
+        cour.submit(key, "reply", ch, go_public, hops=hops or 0, req_id=req_id, label=word,
+                    extra=cour.rng.uniform(*STRANGER_DM_DELAY) if direct else 0.0,
+                    on_final=lambda st, by: self.commands.note_answered(sender) if st == "suppressed" else None)
+
+    def _reply(self, t, sender, ch, req_id, hops, key, dm: bool = True) -> None:
+        """A family radio gets a direct message; a stranger's question on the public channel is answered in
+        the open as a reply to it (replyId), so every other Badger hears it and stays quiet."""
+        dest = sender if dm else None
         if self.airtime is None:
-            self.send(t, sender, ch)
+            self.send(t, dest, ch)
             return
         hop = None if hops is None else min(7, max(self.hop_local, hops))    # far enough to reach the asker
         on_sent = (lambda: self.courtesy.done(key, ch)) if key and self.courtesy is not None else None
-        self.airtime.put({"kind": "reply", "text": t, "dest": sender, "ch": ch, "hop_limit": hop,
+        self.airtime.put({"kind": "reply", "text": t, "dest": dest, "ch": ch, "hop_limit": hop,
                           "reply_id": req_id, "on_sent": on_sent})
 
     def on_data(self, packet, interface=None):
@@ -2081,7 +2492,7 @@ class Bridge:
                 if self.courtesy is None:
                     go()
                     continue
-                self.courtesy.submit(alert_key(aid), "alert", ch, go, match=match, label=label, at_boot=at_boot,
+                self.courtesy.submit(alert_key(aid), "alert", ch, go, match=match, label=label, at_boot=at_boot, text=text,
                                      on_final=lambda st, by, aid=aid, ch=ch, label=label:
                                      None if st == "sent" else self._alert_final(aid, ch, st, label, by))
 
@@ -2114,27 +2525,74 @@ class Bridge:
         return doc
 
 
+def circle_channel(cfg: dict, family_ch: int, public_ch: int) -> int:
+    """[radio] mesh_circle_channel: a private channel shared with neighbouring Badgers' owners (its own key),
+    used only for courtesy control packets. -1 = none (default); never 0, the public or the family channel."""
+    v = cfg.get("mesh_circle_channel", -1)
+    if isinstance(v, bool) or not isinstance(v, int) or not -1 <= v <= 7:
+        print(f"meshbridge: [radio] mesh_circle_channel = {v!r} is not a channel (1–7, -1 for none): not used",
+              file=sys.stderr)
+        return -1
+    if v in (0, public_ch) or (v >= 0 and v == family_ch):
+        if v >= 0 and v != family_ch:
+            print(f"meshbridge: mesh_circle_channel = {v} is the public channel: control packets never go there",
+                  file=sys.stderr)
+        return -1
+    return v
+
+
+def channel_secret(iface, ch: int) -> tuple[str, bytes | None]:
+    """("ok", psk) for a channel with its own strong key; ("weak", None) for no key or one of Meshtastic's
+    well-known default keys (a 0/1-byte psk); ("unknown", None) if the radio/library doesn't say."""
+    try:
+        chans = list(getattr(iface.localNode, "channels", None) or [])
+        psk = bytes(chans[ch].settings.psk)
+    except Exception:  # noqa: BLE001 — older library / fake radio
+        return "unknown", None
+    if len(psk) < 16:
+        return "weak", None
+    return "ok", psk
+
+
 def build_bridge(link: RadioLink, *, cfg: dict, family_ch: int, public_ch: int, my_id: str | None, commands: Commands,
                  members: Path, telemetry: TelemetryLog | None = None, clock=None, rng=None, my_num: int | None = None,
-                 board=None, peers_file: Path | None = None, load=None, silence: Silence | None = None) -> Bridge:
+                 board=None, peers_file: Path | None = None, load=None, silence: Silence | None = None,
+                 ctrl_chs=None, ctrl_keys: dict | None = None, rotation: Path | None = None,
+                 pair_file: Path | None = None) -> Bridge:
     """The bridge with its mesh courtesy and airtime queue wired to one radio link (main() and the
-    many-Badger simulation in the tests build it the same way)."""
+    many-Badger simulation in the tests build it the same way). Control packets only on the family channel and
+    the circle channel (ctrl_chs; default: both, as configured), sealed with ctrl_keys (default: the fixed
+    fallback key — main() passes keys derived from the radio's channel secrets). Beacons on the same channels
+    unless [radio] mesh_beacons = false."""
     clock = clock or (lambda: time.time())
     cc = courtesy_config(cfg)
     load = load or (lambda: (None, None))
     silence = silence or link.silence
-    # presence beacons: on the family channel only, unless [radio] mesh_beacon_public = true (privacy:
-    # nobody listening on the public channel learns from us that a Badger is here)
-    beacon_chs = [c for c in (family_ch, public_ch if cfg.get("mesh_beacon_public") is True else -1) if c >= 0]
+    if ctrl_chs is None:
+        ctrl_chs = [c for c in (family_ch, circle_channel(cfg, family_ch, public_ch)) if c >= 0]
+    ctrl_chs = [c for c in ctrl_chs if isinstance(c, int) and 0 < c <= 7 and c != public_ch]
+    beacon_chs = list(ctrl_chs) if cc["beacons"] else []
     cour = Courtesy(lambda payload, ch: link.data(payload, ch), clock, rng, my_id=my_id, my_num=my_num, cfg=cc,
-                    beacon_chs=beacon_chs, load=load, silence=silence)
+                    beacon_chs=beacon_chs, load=load, silence=silence, ctrl_chs=ctrl_chs,
+                    ctrl_keys={c: k for c, k in (ctrl_keys or {}).items() if c in ctrl_chs})
     if peers_file is not None:
         saved = read_json(peers_file, {})
         cour.peers.load(saved.get("peers") if isinstance(saved, dict) else None)
     air = Airtime(link.text, clock, cc, peers=cour.peers.active, load=load, silence=silence)
     bridge = Bridge(family_ch, public_ch, lambda t, dest=None, ch=None: link.text(t, dest, ch), commands, members,
-                    telemetry, my_id, clock, courtesy=cour, airtime=air, board=board, load=load, silence=silence)
+                    telemetry, my_id, clock, courtesy=cour, airtime=air, board=board, load=load, silence=silence,
+                    rotation=rotation, pair_file=pair_file)
     return bridge
+
+
+def stranger_budgets(cfg: dict) -> tuple[tuple[int, float], tuple[int, float]]:
+    """[radio] mesh_stranger_replies_per_hour (default 6, 0–60) and mesh_stranger_replies_per_radio_hour
+    (default 2, 0–10): how many answers radios outside the family get, all together / each."""
+    total = int(_cnum(cfg.get("mesh_stranger_replies_per_hour"), STRANGER_BUDGET[0], 0, 60,
+                      "mesh_stranger_replies_per_hour"))
+    each = int(_cnum(cfg.get("mesh_stranger_replies_per_radio_hour"), STRANGER_PER_RADIO[0], 0, 10,
+                     "mesh_stranger_replies_per_radio_hour"))
+    return (total, 3600.0), (each, 3600.0)
 
 
 def main() -> int:
@@ -2154,6 +2612,7 @@ def main() -> int:
     CHANNEL_LINK = Path(portal.get("mesh_channel_link") or CHANNEL_LINK)
     BT_PIN = Path(portal.get("mesh_bt_pin_file") or BT_PIN)
     PEERS = Path(os.environ.get("MESH_PEERS") or portal.get("mesh_peers") or OUTBOX.with_name("mesh-peers.json"))
+    pair_file = Path(portal.get("mesh_pair_file") or PAIR_FILE)
     silent_file = Path(os.environ.get("MESH_SILENT_FILE") or portal.get("mesh_silent_file")
                        or OUTBOX.with_name("mesh-silent"))
     if cfg.get("mesh") == "off":
@@ -2219,8 +2678,9 @@ def main() -> int:
     def access():                                    # re-read on every command: admin changes apply at once
         s = read_json(settings_file, {})
         return command_access(cfg, s.get("mesh_commands") if isinstance(s, dict) else None)
+    budget_all, budget_each = stranger_budgets(cfg)
     commands = Commands(send, ai_enabled=cfg.get("mesh_ai", True) is not False, ai_cooldown=ai_cooldown, io=io,
-                        access=access)
+                        access=access, public_budget=budget_all, per_radio_budget=budget_each)
     try:
         my_id = (iface.getMyNodeInfo() or {}).get("user", {}).get("id")
     except Exception:  # noqa: BLE001 — older library versions
@@ -2239,9 +2699,31 @@ def main() -> int:
         if now - load_cache["at"] >= 60:
             load_cache.update(v=channel_load(iface), at=now)
     refresh_load(clock())
+    # control packets: only on private channels whose own key the radio tells us (sealed with it)
+    ctrl_chs = [c for c in (family_ch, circle_channel(cfg, family_ch, public_ch)) if c > 0 and c != public_ch]
+    ctrl_keys: dict[int, bytes] = {}
+
+    def channel_key(c: int) -> bytes | None:
+        with send_lock:
+            state, secret = channel_secret(iface, c)
+        if state == "weak":
+            print(f"meshbridge: channel {c} has no private key (or a well-known default one) — anyone can read it; "
+                  "no Badger control packets there. Give it its own key in the Meshtastic app", file=sys.stderr)
+            return None
+        if state == "unknown":
+            print(f"meshbridge: can't read channel {c}'s key from the radio: control packets there use a fixed key",
+                  file=sys.stderr)
+        return ctrl_key(secret)
+    for c in list(ctrl_chs):
+        k = channel_key(c)
+        if k is None:
+            ctrl_chs.remove(c)
+        else:
+            ctrl_keys[c] = k
     bridge = build_bridge(link, cfg=cfg, family_ch=family_ch, public_ch=public_ch, my_id=my_id, my_num=my_num,
                           commands=commands, members=MEMBERS, telemetry=TelemetryLog(TELEMETRY, family_ch, clock),
-                          clock=clock, peers_file=PEERS, load=load, silence=silence)
+                          clock=clock, peers_file=PEERS, load=load, silence=silence, ctrl_chs=ctrl_chs,
+                          ctrl_keys=ctrl_keys, rotation=ROTATE_RES, pair_file=pair_file)
     if silence.active():
         print("meshbridge: radio silence is on — receiving only", file=sys.stderr)
     if not bridge.courtesy.enabled:
@@ -2260,7 +2742,7 @@ def main() -> int:
     if cfg.get("mesh_bt_pin", "secure") != "leave":
         secure_bt_pin(iface, BT_PIN)
     with send_lock:                                  # the radio's own position on the public channel
-        pp = apply_position_privacy(iface, public_ch, str(cfg.get("mesh_public_position", "off")),
+        pp = apply_position_privacy(iface, public_ch, cfg.get("mesh_public_position", "off"),
                                     OUTBOX.with_name("mesh-position-applied.json"))
     print(f"meshbridge: public position {pp['mode']}: {pp['note']}", file=sys.stderr)
     # Where we got to, kept next to the outbox: posts written while the bridge
@@ -2289,7 +2771,9 @@ def main() -> int:
 
         def rotation():
             with send_lock:                          # don't interleave with a send on the serial link
-                handle_rotation(iface, family_ch, ROTATE_REQ, ROTATE_RES, CHANNEL_LINK)
+                res = handle_rotation(iface, family_ch, ROTATE_REQ, ROTATE_RES, CHANNEL_LINK)
+            if isinstance(res, dict) and res.get("ok") and family_ch > 0:
+                bridge.courtesy.set_ctrl_key(family_ch, channel_key(family_ch))   # sealed with the new secret
         step("key change", rotation)
 
         step("channel load", lambda now=now: refresh_load(now))
@@ -2312,6 +2796,8 @@ def main() -> int:
         if now - last_link >= 600:
             last_link = now
             step("channel link", lambda: save_channel_link(iface, CHANNEL_LINK))
+            if family_ch in bridge.courtesy.ctrl_chs:     # re-keyed in the Meshtastic app? follow it
+                step("channel key", lambda: bridge.courtesy.set_ctrl_key(family_ch, channel_key(family_ch)))
         # board posts marked "Send over mesh"
         step("outbox", lambda: (outbox.read(), outbox.pump(), outbox.checkpoint()))
         # Badgers nearby + what the courtesy did, for the launcher's status line and the front panel

@@ -12,7 +12,12 @@ lsblk                           # Linux
 
 # 3. Stream the OS onto it and inject this unit's config (nothing is saved locally)
 sudo ./builder/prepper-build flash /dev/disk4 --tier base --langs eng,spa \
-     --hostname prepper --ssid "Smith Family Badger" --passphrase "long passphrase here" --pin 246813
+     --hostname prepper --ssid Home-7Q4K --pin 246813
+
+#    The Wi-Fi gets a random password (printed at the end) unless you give --passphrase.
+#    For no password: --wifi-security owe (each phone still encrypted; phones from ~2019 on;
+#    "owe-transition" also lets older phones join) or --wifi-security open (no encryption at all).
+#    Pick a plain name: one that says "Badger" tells passers-by what is inside.
 
 # 4. Install the drive, plug the Badger into your router by Ethernet, power on, then follow along
 ./builder/prepper-build watch badger.local
@@ -22,7 +27,7 @@ What happens next:
 
 1. **Install.** The Badger installs its software (about 20 minutes, most of it compiling llama.cpp), then reboots.
 2. **First content pull.** After the reboot it starts downloading content, smallest items first. The essentials (medical, survival, water, tools, maps overview) arrive within the first hour. The full English Wikipedia arrives last. The pull is retried until it's done, and a reboot in the middle resumes it. The launcher's Status page shows progress.
-3. **Hotspot.** With the USB adapter, the `HoneyBadger` Wi-Fi doesn't wait for the download. With no USB adapter and the onboard radio as the download link, the hotspot waits until the pull is done, or at most `[network] ap_defer_hours` (default 12).
+3. **Hotspot.** With the USB adapter, your Wi-Fi (the name you chose with `--ssid`) doesn't wait for the download. With no USB adapter and the onboard radio as the download link, the hotspot waits until the pull is done, or at most `[network] ap_defer_hours` (default 12).
 4. **Clean-up.** At the end, the relay/proxy settings and the secrets the builder left on the boot partition are removed.
 
 The PIN must be at least 6 characters.
@@ -48,7 +53,7 @@ Some library items are licensed for **personal, non-commercial use only** (catal
 ```bash
 ./builder/prepper-build plan --tier base --for-sale -v          # what a unit for sale holds, and what waits for its owner
 sudo ./builder/prepper-build flash /dev/disk4 --tier base --for-sale --hostname badger \
-     --ssid HoneyBadger --pin 246813
+     --ssid Home-7Q4K --pin 246813
 ./builder/prepper-build watch badger.local                      # at the end: "✓ For sale: no personal-use content …"
 ```
 
@@ -88,33 +93,36 @@ This follows each item's licence as recorded in the catalog. It is not legal adv
   - Posts heard over the mesh never get the ✓ family mark: on the air, anyone can send with any radio's ID. On the family board they carry the member's name when their radio is registered (the family channel's key vouches for them); on the community board they show the name the radio gives itself.
   - The radio is slow and shared, so the Badger paces what it sends: family posts first, community posts at most 5 at once and then one every 2 minutes (extra ones wait, up to 20). Posts heard from one radio land on a board at most every 20 seconds.
   - Automatic notes from the Badger's own features (supplies running low, forecasts…) carry a grey **Badger** mark, never ✓.
-- **Commands from Meshtastic radios** (one reply per radio every 30 s). You choose who may use each one: Settings → Badger administration → *Radio commands*, with each set to **Community** (anyone in radio range), **Family** (only messages sent on the family's private channel) or **Off**. Changes apply to the next message. The defaults are `!q` and `!help` community, `!ai` and `!status` family. `!help` always answers, and lists only what that radio may use. The same settings can live in prepper.toml as `[radio] mesh_commands = { q = "community", ai = "family", status = "family" }`; what you set in the launcher wins.
+- **Commands from Meshtastic radios** (one reply per radio every 30 s). You choose who may use each one: Settings → Badger administration → *Radio commands*, with each set to **Community** (anyone in radio range), **Family** (only messages sent on the family's private channel), **Off** (family radios are told it's off) or **Ignore** (no reply to anyone). Changes apply to the next message. The defaults are `!q` community and `!help`, `!ai` and `!status` family. Radios outside the family get **no reply at all** to anything they may not use (no help text, no "turned off"), and at most a few answers an hour ([MESH.md](MESH.md)). `!help` can never be opened to strangers: setting it to Off stores Family. The same settings can live in prepper.toml as `[radio] mesh_commands = { help = "family", q = "community", ai = "family", status = "family" }`; what you set in the launcher wins.
   - `!q <words>`: the best-matching library article, title plus a line.
   - `!ai <question>`: a two-sentence answer from the AI solver, grounded in the library, with its source. It takes about a minute; one question at a time, one per radio every 2 minutes (`[radio] mesh_ai_cooldown_s`). With `mesh_ai = false` it answers like `!q`.
   - `!status`: battery, power source, mode, active alerts and how many people are on the Wi-Fi.
   - `!help`: the list.
-- **NOAA alerts over the mesh:** each new warning the SDR decodes is broadcast once to every radio on the channel (`[radio] mesh_alerts`). Tests aren't relayed. With other Badgers nearby, only one of them relays each alert on each channel (see below).
-- **Many Badgers on one mesh** ([MESH.md](MESH.md)): Badgers nearby take turns instead of all transmitting the same thing. Each NOAA alert is relayed once per channel for the whole mesh, a `!q` on a shared channel gets one answer, Badgers on the same NOAA transmitter post one forecast between them, and after a town-wide power cut alerts wait a random 30–120 s. Messages go out by priority (alerts, sensor danger, family posts, replies, community posts, automatic notes), with hourly budgets that shrink as more Badgers are heard, and automatic notes wait when the radio reports a busy channel. An alert is only ever skipped when this Badger *heard* another Badger relay it. The launcher's status shows "Badgers nearby: N · channel busy x %". Settings: `[radio] mesh_courtesy` (on), `mesh_max_util`, `mesh_budget` and others in MESH.md.
-- **Privacy and radio silence** ([MESH.md → Privacy on the mesh](MESH.md#privacy-on-the-mesh)): Badger-to-Badger packets carry nothing identifying, presence beacons stay on the family channel, and the radio's own position is not shared on the public channel (`[radio] mesh_public_position = "off"`, or `"coarse"` / `"precise"`). **Radio silence** (receive only): `[radio] mesh_silent = true`, or create `/var/lib/prepper/portal/mesh-silent` (no restart; optional JSON `{"until": <epoch>}`) — the Badger then sends nothing on its own except, if `mesh_silent_allow_family = true`, family posts a member chose to send. Give the radio an unremarkable name, not "Honey Badger".
+- **NOAA alerts over the mesh:** each new warning the SDR decodes is broadcast once to every radio on the channel (`[radio] mesh_alerts`). Tests aren't relayed. With other Badgers nearby they take turns, so usually one copy goes out per channel (see below and [MESH.md](MESH.md)).
+- **Many Badgers on one mesh** ([MESH.md](MESH.md)): Badgers nearby take turns instead of all transmitting the same thing. Each NOAA alert is relayed once per channel for the whole mesh, a `!q` on a shared channel gets one answer, Badgers on the same NOAA transmitter post one forecast between them, and after a town-wide power cut alerts wait a random 30–120 s. Messages go out by priority (alerts, sensor danger, family posts, replies, community posts, automatic notes), with hourly budgets that shrink as more Badgers are heard, and automatic notes wait when the radio reports a busy channel. An alert is skipped only when this Badger *heard* exactly the text it would have sent; anything else (a claim, a bare tag, different words) never cancels it, because two copies are safe and silence is not. The launcher's status shows "Badgers nearby: N · channel busy x %". Settings: `[radio] mesh_courtesy` (on), `mesh_max_util`, `mesh_budget` and others in MESH.md.
+- **Privacy and radio silence** ([MESH.md → Privacy on the mesh](MESH.md#privacy-on-the-mesh)): Badger-to-Badger control packets (beacons, claims, "done") go only on the family channel (and an optional private circle channel), never on the public one; they are sealed with that channel's own secret and padded to random lengths, and beacons come at random times. Nothing the Badger sends says "Badger". Anyone holding the family channel key can still recognise them, and strangers on the public channel can see that an automatic relay exists (set `mesh_alerts_public = false` to avoid that). See [MESH.md → Privacy](MESH.md#privacy-on-the-mesh).  and the radio's own position is not shared on the public channel (`[radio] mesh_public_position = "off"`, or `"coarse"` / `"precise"`). **Radio silence** (receive only): `[radio] mesh_silent = true`, or create `/var/lib/prepper/portal/mesh-silent` (no restart; optional JSON `{"until": <epoch>}`) — the Badger then sends nothing on its own except, if `mesh_silent_allow_family = true`, family posts a member chose to send. Give the radio an unremarkable name, not "Honey Badger".
 - **Radios on the map:** radios that share their position (Meshtastic app → Settings › Position) appear on the offline map: open *Maps* and tap *📡 Mesh radios*, or *Radios on the map* on the check-in board. Green means heard within the hour, amber within a day, grey older. Turn it off with `[radio] mesh_map = false`.
 - **Two mesh channels.** In the Meshtastic app, keep the public channel (LongFast) as channel 0 and add a private family channel with its own key as channel 1. Share the family channel only with family radios, by QR code. Then set `[radio] mesh_public_channel = 0` and `mesh_family_channel = 1`; use `-1` for `mesh_public_channel` to keep the community board off the air. Family features stay off until `mesh_family_channel` is set; it can't be `0` (the radio's primary, public channel) or the same as the public one. An older config with only `mesh_channel` bridges that channel as the public one. Messages hop through any nearby Meshtastic radio with the same radio settings. On the family channel the content stays encrypted while it does. Turn off position sharing on the public channel so only family can see where your radios are.
 
 ### Family members
 
 - **Invite:** Settings → Badger administration → *Family members* → *Invite a member*. The Badger shows a 10-character code (e.g. `K7QX-M2PD-9Z`) and a link. The code works **once**, on one device, for 24 hours. On their phone they join the Wi-Fi and open the link, or go to Check-in board → Family and type it.
-- **Invite from the Badger itself:** knob → *Invite member (QR)* → *Yes*. The screen shows a QR code they scan on the Badger's Wi-Fi, with the code beside it. No phone or PIN needed: whoever holds the Badger can invite. The screen has its own small allowance (5 open invites, 5 per 10 minutes), so it can never use up yours.
+- **Invite from the Badger itself:** knob → *Invite member (QR)* → *Yes*. The screen shows a QR code they scan on the Badger's Wi-Fi, with the code beside it. No phone or PIN needed: whoever holds the Badger can invite — unless you set a **panel code** (below). The screen has its own small allowance (5 open invites, 5 per 10 minutes), so it can never use up yours.
+- **Panel code (strongly suggested):** the admin page shows *Front panel lock is off* until you set one. Tap *Set up panel code*, then within 10 minutes at the Badger: knob → *System* → *Panel lock* → *Set a code* (4–8 digits: turn to pick a digit, press to add it, then *OK*; then the same again). **Write down the 12-digit recovery code it shows** and keep it with your recovery card. From then on the knob asks for the code before *Invite*, *Approve device*, *Family radio*, *Services*, *Wi-Fi → Turn off*, *Import from USB*, *Restart* and *Shut down*. *Join Wi-Fi* and *Open app* stay open. Forgot the code? On the code screen choose *Forgot?* and enter the recovery code; or at the console run `sudo python3 /opt/prepper/software/panel/panel.py --reset-lock`.
 - **Open invites** are listed under the members; *Cancel* (or *Cancel all open invites*) makes unused codes stop working.
 - **Names:** the name you type when inviting is the one they get. Two members can't have names that look the same ("Ana", "ANA", "Аna" with a Cyrillic А…); add an initial.
 - **What membership gives:** the family board and family radios on the offline map. The library, maps, tools and the community board are open to everyone anyway. `!ai` / `!status` are for radios on the family channel (whoever has its key).
-- **More devices:** *Add a device* next to their name makes an invite for that person. Each device has its own key, kept by the browser in a cookie no web page can read, and the Badger stores just a hash of it.
-- **Radios:** type their radio's ID (`!a1b2c3d4`, from the Meshtastic app) and tap *Add radio*. Its messages on the family channel then carry their name. An ID proves nothing by itself (any radio can claim it), so it never unlocks family commands or the ✓ mark.
+- **More devices:** *Add a device* next to their name makes an invite for that person. The new device **waits for their approval**: the next time they open the Badger app on one of their own devices, it asks "A new device wants to join as you" — *Yes, it's mine* or *No, remove it*. Lost every device? Approve the new one at the Badger: knob → *Approve device*. When it is approved, the family board says "A new device was added to <name>". (So the admin PIN alone can't make someone a second "Mom".) Each device has its own key, kept by the browser in a cookie no web page can read, and the Badger stores just a hash of it.
+- **Radios:** type their radio's ID (`!a1b2c3d4`, from the Meshtastic app) and tap *Add radio* — or they do it themselves: Settings → Family → *Link my radio*. The Badger shows a 6-character code; from that radio, **on the family channel**, send `!pair CODE` within an hour. When the Badger hears it, the radio is linked, its messages on the family channel carry their name, and the family board says so. An ID proves nothing by itself (any radio can claim it), so it never unlocks family commands or the ✓ mark.
+- **The family radio link** (the channel key, for setting up a radio): family members find it on their own phone under Settings → Family → *Family radio link* (over `https://`), and it is always on the Badger's screen (knob → *Family radio*). The admin page doesn't show it.
 - **If the member list is damaged** (a bad SD card, a restore gone wrong) the Badger refuses to change it instead of starting from empty, and the admin page offers *Restore the last good copy* (`members.json.bak`).
-- **Remove someone:** *Remove* cuts off all their devices and radios immediately. Their old family posts stay, marked *removed member*, and messages from their radios are ignored. They can still use the library like any visitor.
+- **Remove someone:** *Remove* cuts off all their devices and radios immediately. Their old family posts stay, marked *removed member*, and messages from their radios are ignored. They can still use the library like any visitor. The family board notes the removal.
+- **Removing also changes the family radio key** (you're asked; *OK* is the recommended answer): their radio still has the old key. **Every family radio then needs the new link** — family members open it on their phones (Settings → Family → *Family radio link*) or scan it on the Badger's screen, then share the channel QR in the Meshtastic app with the other family radios.
 - **If a removed member knew the shared secrets,** change them under *Shared secrets*:
   - **New Wi-Fi password.** The Badger makes one and switches about 10 seconds later. Everyone, you included, rejoins with it. Over plain `http://` the admin page doesn't show it (anyone who knew the old password could read it off the air): read it on the Badger's own screen (knob → *Join Wi-Fi*, which shows the whole password and a QR code), or use `https://`. **Failsafe:** once the hotspot has switched, reopen the admin page and tap *Keep new password* within 10 minutes. If nobody does (the password was lost, or no device can get on), the Badger switches back to the old password by itself — even if it was restarted meanwhile (then a minute after it is back up). If that automatic switch-back can't be set up, the password isn't changed at all. Ethernet and SSH are never affected.
-  - **New family radio key.** The Badger's radio gets a fresh random key on the family channel. The channel link (it contains the key) is shown on the admin page over `https://`, and always on the Badger's screen: knob → *Family radio* → *Channel link (QR)*. Scan it with the Meshtastic app to update your radio, then share the channel QR from the app with the other family radios. Radios that don't get it stop hearing family messages, and so does the removed member. A request the radio bridge didn't pick up within 2 minutes is dropped, never carried out later. **Failsafe:** the current link can be shown again any time, and the Meshtastic app can connect to the Badger's own radio over Bluetooth and show its channel QR, even if the Badger's software is down.
+  - **New family radio key.** The Badger's radio gets a fresh random key on the family channel (removing a member does this too). The channel link (it contains the key) is shown to family members on their own phones over `https://` (Settings → Family → *Family radio link*), and always on the Badger's screen: knob → *Family radio* → *Channel link (QR)*. Scan it with the Meshtastic app to update your radio, then share the channel QR from the app with the other family radios. Radios that don't get it stop hearing family messages, and so does the removed member. A request the radio bridge didn't pick up within 2 minutes is dropped, never carried out later. **Failsafe:** the current link can be shown again any time, and the Meshtastic app can connect to the Badger's own radio over Bluetooth and show its channel QR, even if the Badger's software is down.
   - **The radio's Bluetooth PIN.** Many radios come with Bluetooth on and the PIN `123456` (or none): anyone nearby could pair with yours and read the family key. The bridge gives such a radio a random PIN (the radio restarts once), shown on the Badger's screen: knob → *Family radio* → *Bluetooth PIN*. Turn this off with `[radio] mesh_bt_pin = "leave"`; then change the PIN yourself in the Meshtastic app (Settings → Bluetooth → Fixed PIN).
-  - **The admin PIN.** A removed member who knows it is still an admin. Change it at the Badger (`sudo prepperctl set-pin`), then tap *Log out all admin sessions*.
+  - **The admin PIN.** A removed member who knows it is still an admin. Change it at the Badger (`sudo prepperctl set-pin`), then tap *Log out all admin sessions*. Even so, the PIN alone can't read the family radio key, add a device to someone else's name without their yes, or link a radio without a message from it.
   - Until you change them, a removed member who knew them could still join the Wi-Fi as a visitor and read family-channel radio traffic.
 - **Guessing codes doesn't work:** codes are about 49 bits of randomness, and 5 wrong tries from one device lock it out for 10 minutes.
 - **Weather alerts** from NOAA Weather Radio appear as a red banner on every screen and on the front panel. The decoder (`alertd`) starts by itself when an SDR is plugged in. Set `[radio] weather_freq_mhz` to your nearest transmitter and `same_fips` to your county codes.
@@ -226,6 +234,19 @@ Both can be connected at once.
 - Add the key with `sudo prepperctl trust-maintainer "ssh-ed25519 AAAA… name"`. Until you do, software updates are not installed.
 - This file is separate from `/etc/prepper/allowed_signers`, which only trusts bundles and peers.
 
+## Wi-Fi security
+
+`[network] security` (the builder's `--wifi-security`):
+
+| Value | What it is |
+|---|---|
+| `auto` / `wpa2` | A password (random by default; WPA2, plus WPA3 on the USB adapter). |
+| `owe` | No password, but each phone's traffic is encrypted (Enhanced Open). **OWE only: phones older than about 2019 (before iOS 13 / Android 10) cannot join.** The onboard radio can't do OWE and runs open. |
+| `owe-transition` | **Experimental, USB adapter only, not yet tested on hardware.** Two networks on the one adapter: an open one under your Wi-Fi name (older phones join it, unencrypted) and a hidden OWE twin that newer phones use automatically. `prepperctl net-up` bridges them (`br-prepper`), so both share the Badger's address, DHCP and the launcher popup, and phones can't reach each other. If it misbehaves, set `owe`. The launcher's Status counts only phones on the open twin. |
+| `open` | No password, no encryption: anyone in range reads everything. |
+
+With no password the vault and other family secrets only work over `https://`.
+
 ## Phones, iPads, laptops
 
 Nothing is installed on them, and nothing is stored on them unless the user chooses. See the launcher's *Phones, iPads & laptops* page.
@@ -264,7 +285,7 @@ Nothing is installed on them, and nothing is stored on them unless the user choo
   cat /var/log/prepper-firstboot.log
   ```
 
-- **Admin PIN:** `sudo prepperctl set-pin`. At least 6 characters. Repeated wrong PINs are rate-limited. Afterwards, *Log out all admin sessions* (Settings → Badger administration) ends sessions opened with the old one.
+- **Admin PIN or passphrase:** `sudo prepperctl set-pin`, then type it twice at the prompt (or `sudo prepperctl set-pin < file`; never as an argument — that would show in `ps`). A passphrase of 10+ characters (a few words) is best; a PIN of 6+ digits still works but you're warned: someone who copies the disk can guess digits quickly. It is stored as an scrypt hash; an older PIN hash is upgraded by itself at your next login. Repeated wrong PINs are rate-limited. Afterwards, *Log out all admin sessions* (Settings → Badger administration) ends sessions opened with the old one.
 - **Security notes** (what is protected how, and what isn't): [SECURITY.md](SECURITY.md).
 - **Wi-Fi name or password:** edit `/etc/prepper/prepper.toml`, then run `sudo prepperctl apply-config`. The USB adapter's hotspot uses WPA2/WPA3; the built-in radio's (wlan0) is WPA2 only, because some phones fail to join it otherwise.
 
@@ -280,6 +301,9 @@ Nothing is installed on them, and nothing is stored on them unless the user choo
 | `/var/lib/prepper/portal/features/<name>` | prepper | each feature's own data (the vault's is encrypted; supplies and the aid-station log are not) |
 | `/etc/prepper/panel.key` | root, 0600 | the front panel's key (proves to the launcher that a request comes from the Badger's own screen) |
 | `/etc/prepper/panel.key.sha256` | root:prepper, 0640 | its hash, which the launcher checks against |
+| `/etc/prepper/panel-lock.json` | root, 0600 | the optional front-panel code (salted hashes + wrong-try counter); absent = no code |
+| `/var/lib/prepper/portal/panel-lock-arm.json` | prepper | written by *Set up panel code*: a code may be set at the knob for 10 minutes |
+| `/var/lib/prepper/portal/mesh-pair.json` | prepper (written by the mesh bridge) | `!pair CODE` messages heard on the family channel, for linking radios |
 | `/var/lib/kolibri` | kolibri | Courses data |
 | `/srv/prepper` | — | the content |
 
@@ -294,7 +318,7 @@ Launcher settings (`[portal]`): `settings_file`, `board_file` and `mesh_outbox` 
 | Verb | What it does |
 |---|---|
 | `apply-config` | apply edits to `prepper.toml` |
-| `set-pin` | set the admin PIN |
+| `set-pin` | set the admin PIN or passphrase (typed at the prompt, or on stdin) |
 | `power-mode endurance\|balanced\|full` | change the power mode |
 | `update-check`, `update-apply` | check for or download updates now |
 | `trust "<key>"` | trust another Badger's bundles and peer data |
@@ -307,7 +331,7 @@ The system uses these itself: `power-restore` (reapplies the power mode at boot)
 
 | Symptom | Check |
 |---|---|
-| No `HoneyBadger` Wi-Fi | Panel → *Wi-Fi → Turn on*. If you have no USB adapter and the first download is still running on a Wi-Fi uplink, the access point is deferred on purpose, for at most `ap_defer_hours` (default 12) |
+| No Wi-Fi network (the name you chose) | Panel → *Wi-Fi → Turn on*. If you have no USB adapter and the first download is still running on a Wi-Fi uplink, the access point is deferred on purpose, for at most `ap_defer_hours` (default 12) |
 | Launcher loads but Wikipedia says "not downloaded" | Status → Building; the largest items arrive last |
 | "Open with" shows only *Download* | `kiwix-serve` is down: Settings → Services → kiwix — start |
 | Ask the Library says the model isn't running | Settings → Services → llama — start, or check that the model item is installed |

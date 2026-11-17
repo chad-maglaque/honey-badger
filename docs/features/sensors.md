@@ -13,7 +13,7 @@ When something crosses an alert level, the Badger:
 
 1. shows the alert at the top of the Sensors page;
 2. posts it on the **neighbourhood board** (or the family board, if you choose), signed *Badger sensors*;
-3. sends a short message over the **mesh radio** for urgent alerts (flood and radiation, unless you change this). It goes out even if the launcher itself isn't running.
+3. sends a short message over the **mesh radio** for urgent alerts (flood and radiation, unless you change this), on your **family channel** unless you choose the public one. It starts "Sensors:" (over the radio nothing names the Badger) and goes out even if the launcher itself isn't running.
 
 When the reading is back to normal, it posts "back to normal" the same way.
 
@@ -36,7 +36,7 @@ The same alert isn't announced again within its "quiet" time (30 minutes for flo
 
 Unlock admin mode under Settings, then open **Sensors** and scroll down to **Sensor settings**. There you can:
 
-- **Rename sensors.** "Basement floor" means more than "Flood switch". Names are visible to everyone on the Wi-Fi.
+- **Rename sensors.** "Basement floor" means more than "Flood switch". Names appear in alerts, which everyone on the Wi-Fi sees.
 - **Change, add or remove alerts.** Each alert has:
   - which sensor it watches: one sensor, or every sensor here;
   - which reading it watches;
@@ -46,7 +46,7 @@ Unlock admin mode under Settings, then open **Sensors** and scroll down to **Sen
   - **Quiet for**: how long before the same alert can be announced again;
   - which board it is posted on;
   - whether it also goes over the mesh.
-- **Choose the mesh channel** (neighbourhood or family) and an optional **readings summary** every few hours, like "Badger sensors: 4.2°C, 81%RH, water 12cm, 0.11µSv/h". Off by default.
+- **Choose the mesh channel** (family, the default, or neighbourhood) and an optional **readings summary** every few hours, like "Sensors: 4.2°C, 81%RH, water 12cm, 0.11µSv/h". Off by default; it also goes on the family channel unless you choose otherwise.
 - **Pick which mesh radios to show.** Readings from other people's radios appear only if you tick them.
 - **Send a test message** to check that board posts (and the mesh) work.
 
@@ -146,7 +146,7 @@ The rear **GX16** socket is the 8–30 V **power input**. Never use it for senso
 
 ## Privacy
 
-- Readings and active alerts are visible to **everyone on the Badger's Wi-Fi**. Flood, freezing and radiation warnings are safety information for the whole neighbourhood, and urgent ones go over the radio anyway. Sensor names are visible too, so don't name sensors after people or rooms you'd rather keep private. To limit the page to family members, set `public = false` under `[sensors]`.
+- **Active alerts** (flood, freezing, radiation) are shown to **everyone on the Badger's Wi-Fi**: they are safety information for the whole neighbourhood. **Readings and history** (a tank level, a freezer, a year of graphs) are for **family members and the admin** by default — they say a lot about a household. To show them to everyone, set `public = true` under `[sensors]`. Sensor names appear in alerts, so don't name sensors after people or rooms you'd rather keep private.
 - Error details, device paths and the list of radios heard are shown only to the admin.
-- Mesh alerts go out on the **neighbourhood (public) channel** by default, so neighbours with Meshtastic radios get them too. Choose the family channel in the settings if you'd rather not broadcast them.
+- Mesh alerts go out on the **family channel** by default (`[sensors] mesh_board = "family"`, `summary_board = "family"`). "Water in the basement" sent on the public channel tells anyone listening — and anyone taking radio bearings — about your house. Choose the neighbourhood (public) channel in the settings only if you want neighbours with Meshtastic radios to get them; without a family channel set up in `[radio]`, family-channel messages simply aren't sent.
 - Nothing leaves the Badger except those board posts and mesh messages.

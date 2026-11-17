@@ -406,7 +406,8 @@ class Mesh(Base):
         adm = self.req("GET", "/api/missing", admin=self.admin)[1]
         self.assertEqual(adm["mesh_pending"], 1)
         text = adm["posts"][0]["mesh_text"]
-        self.assertEqual(text, "MISSING: Ana Ruiz, 8 years old, red jacket, last seen Elm St 14:00 — see Badger board")
+        self.assertEqual(text, "MISSING: Ana Ruiz, 8 years old, red jacket, last seen Elm St 14:00 — see the community board")
+        # (CHANGED, red team finding 6: the tail used to be "see Badger board" — nothing on air names the device)
         self.assertEqual(self.req("POST", "/api/missing/moderate", {"id": a["id"], "op": "mesh_send"})[0], 401)
         st, j, _ = self.req("POST", "/api/missing/moderate", {"id": a["id"], "op": "mesh_send"}, admin=self.admin)
         self.assertEqual(st, 200, j)
@@ -425,9 +426,9 @@ class Mesh(Base):
         self.req("POST", "/api/missing/moderate", {"id": a["id"], "op": "mesh_send"}, admin=self.admin)
         self.req("POST", "/api/missing/update", {"id": a["id"], "token": a["token"], "status": "safe"})
         p = self.posts(admin=self.admin)[0]
-        self.assertEqual((p["mesh"], p["mesh_text"]), ("requested", "FOUND SAFE: Ana Ruiz — see Badger board"))
+        self.assertEqual((p["mesh"], p["mesh_text"]), ("requested", "FOUND SAFE: Ana Ruiz — see the community board"))
         self.req("POST", "/api/missing/moderate", {"id": a["id"], "op": "mesh_send"}, admin=self.admin)
-        self.assertEqual(self.outbox()[-1]["text"], "FOUND SAFE: Ana Ruiz — see Badger board")
+        self.assertEqual(self.outbox()[-1]["text"], "FOUND SAFE: Ana Ruiz — see the community board")
 
     def test_airtime_rate_limit_and_custom_text(self):
         ids = [self.add(name=f"P{i}", ip=f"10.4.0.{i}")[1]["id"] for i in range(3)]
@@ -470,10 +471,10 @@ class Units(unittest.TestCase):
              "where": "Øster " * 50, "when": "today"}
         t = m.mesh_text(p)
         self.assertLessEqual(len(t.encode()), 200)
-        self.assertTrue(t.startswith("MISSING: Ñ")); self.assertTrue(t.endswith("see Badger board"))
+        self.assertTrue(t.startswith("MISSING: Ñ")); self.assertTrue(t.endswith("see the community board"))
         self.assertIsNone(m.mesh_text({"status": "closed", "name": "x"}))
         self.assertEqual(m.mesh_text({"kind": "item", "status": "found", "name": "Keys", "where": "Park"}),
-                         "FOUND: Keys, found at Park — see Badger board")
+                         "FOUND: Keys, found at Park — see the community board")
 
     def test_clean_jpeg_fuzz_only_raises_field_errors(self):
         m = self.M

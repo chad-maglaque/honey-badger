@@ -155,7 +155,9 @@ class Status(unittest.TestCase):
         self.assertIn("no alerts", s)
 
     def test_no_power_data(self):
-        self.assertTrue(mb.format_status({}).startswith("Badger:"))
+        # CHANGED (red team finding 6): nothing sent over the air names the device
+        self.assertTrue(mb.format_status({}).startswith("Status:"))
+        self.assertNotIn("Badger", mb.format_status({}) + mb.HELP + mb.help_text({}, False))
 
 
 class Routing(unittest.TestCase):

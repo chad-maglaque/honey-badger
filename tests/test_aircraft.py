@@ -284,7 +284,10 @@ requests_per_min = 20
         self.assertEqual(st, 200)
         self.assertEqual([a["hex"] for a in j["aircraft"]], ["000002", "000001", "000003"])
         self.assertFalse(j["stale"])
-        self.assertEqual(j["origin"], {"lat": 39.74, "lon": -104.99, "source": "settings"})
+        # A visitor gets the origin rounded like /api/status (~11 km, software/common/visitor.py)
+        # and distances measured from that snapped point (red-team finding 1: no trilateration of the house).
+        self.assertEqual(j["origin"], {"lat": 39.7, "lon": -105.0, "source": "settings", "coarse": True})
+        self.assertEqual(j["aircraft"][0]["dist_km"], 11.1)
         self.assertFalse(j["radio"]["running"])
 
     def test_stale_garbage_and_huge_files(self):

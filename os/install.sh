@@ -93,7 +93,20 @@ systemd-tmpfiles --create /etc/tmpfiles.d/prepper.conf
 # download below has worked, so a failed download never leaves it half-applied.)
 # 0640 root:prepper: the portal, mesh bridge and alert decoder (user prepper)
 # read it; it holds the PIN hash and Wi-Fi passphrases, so nobody else may.
-[ -f "$CONF" ] || install -m 640 -o root -g prepper "$HERE/os/prepper.toml.example" "$CONF"
+if [ ! -f "$CONF" ]; then
+  install -m 640 -o root -g prepper "$HERE/os/prepper.toml.example" "$CONF"
+  # A hand-run install (no builder): a random Wi-Fi password, never an unprotected hotspot by default.
+  # Shown at the end of this script and on the front panel (Join Wi-Fi).
+  python3 - "$CONF" <<'PY'
+import re, secrets, sys
+p = sys.argv[1]
+t = open(p, encoding="utf-8").read()
+a = "abcdefghjkmnpqrstuvwxyz23456789"
+pw = "-".join("".join(secrets.choice(a) for _ in range(4)) for _ in range(3))
+t = re.sub(r'(?m)^passphrase = ""', 'passphrase = "' + pw + '"', t, count=1)
+open(p, "w", encoding="utf-8").write(t)
+PY
+fi
 chown root:prepper "$CONF"; chmod 640 "$CONF"
 # Configs from older releases: portal files moved to /var/lib/prepper/portal
 # (the portal can no longer write /var/lib/prepper) and llama-server's API
@@ -166,7 +179,14 @@ if ! stamp vendor "$key"; then
   cp -r "$t/a/fonts" "$t/a/sprites" "$V/basemaps/"; rm -rf "$t"
   t=$(mktemp -d); fetch "https://github.com/mozilla/pdf.js/releases/download/v$PDFJS/pdfjs-$PDFJS-dist.zip" "$t/p.zip"
   rm -rf "$DATA/apps/pdfjs"; mkdir -p "$DATA/apps/pdfjs"; unzip -q "$t/p.zip" -d "$DATA/apps/pdfjs"; rm -rf "$t"
-  rm -rf "$DATA/apps/foliate-js"; git clone -q --depth 1 --branch "$FOLIATE_JS_REF" https://github.com/johnfactotum/foliate-js "$DATA/apps/foliate-js"
+  # foliate-js is code served to phones: fetch exactly the pinned commit and verify it (a full 40-hex SHA, never a branch).
+  case "$FOLIATE_JS_REF" in *[!0-9a-f]*|"") echo "FOLIATE_JS_REF must be a full commit hash" >&2; exit 1;; esac
+  [ "${#FOLIATE_JS_REF}" -eq 40 ] || { echo "FOLIATE_JS_REF must be a 40-character commit hash" >&2; exit 1; }
+  rm -rf "$DATA/apps/foliate-js"; mkdir -p "$DATA/apps/foliate-js"
+  git -C "$DATA/apps/foliate-js" init -q
+  git -C "$DATA/apps/foliate-js" fetch -q --depth 1 https://github.com/johnfactotum/foliate-js "$FOLIATE_JS_REF"
+  git -C "$DATA/apps/foliate-js" checkout -q --detach FETCH_HEAD
+  [ "$(git -C "$DATA/apps/foliate-js" rev-parse HEAD)" = "$FOLIATE_JS_REF" ] || { echo "foliate-js: wrong commit checked out" >&2; exit 1; }
   setstamp vendor "$key"
 fi
 
@@ -234,9 +254,10 @@ if command -v rpi-eeprom-config >/dev/null; then
   # boot, which must not happen on every software update.
   t=$(mktemp); rpi-eeprom-config > "$t" || : > "$t"
   have=$(grep -E '^(POWER_OFF_ON_HALT|PSU_MAX_CURRENT|BOOT_ORDER)=' "$t" | sort -t= -k1,1 | tr '\n' ' ' | sed 's/ $//')
-  if [ "$have" != "BOOT_ORDER=0xf416 POWER_OFF_ON_HALT=1 PSU_MAX_CURRENT=5000" ]; then
+  if [ "$have" != "BOOT_ORDER=0xf16 POWER_OFF_ON_HALT=1 PSU_MAX_CURRENT=5000" ]; then
     sed -i '/^POWER_OFF_ON_HALT=/d;/^PSU_MAX_CURRENT=/d;/^BOOT_ORDER=/d' "$t"
-    printf 'POWER_OFF_ON_HALT=1\nPSU_MAX_CURRENT=5000\nBOOT_ORDER=0xf416\n' >> "$t"   # NVMe, then SD, then USB
+    # NVMe, then SD — no USB boot: nobody with the box in hand boots their own OS from a stick
+    printf 'POWER_OFF_ON_HALT=1\nPSU_MAX_CURRENT=5000\nBOOT_ORDER=0xf16\n' >> "$t"
     rpi-eeprom-config --apply "$t" >/dev/null || echo "warning: could not stage the EEPROM settings"
   fi
   rm -f "$t"
@@ -251,7 +272,14 @@ if command -v dphys-swapfile >/dev/null 2>&1; then
 fi
 mkdir -p /etc/systemd/system.conf.d /etc/systemd/journald.conf.d
 printf '[Manager]\nRuntimeWatchdogSec=15\nRebootWatchdogSec=2min\n' > /etc/systemd/system.conf.d/prepper-watchdog.conf
-printf '[Journal]\nSystemMaxUse=64M\n' > /etc/systemd/journald.conf.d/prepper.conf
+# The journal lives in RAM only (gone at power-off): no diary of who came and went for whoever holds the disk.
+printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=48M\n' > /etc/systemd/journald.conf.d/prepper.conf
+rm -rf /var/log/journal                                       # an older persistent journal
+systemctl restart systemd-journald 2>/dev/null || true
+# Same for nginx (render.py turns its access log off) and the DHCP leases (phone names, kept in /run).
+rm -f /var/log/nginx/access.log* /var/lib/misc/dnsmasq.leases
+echo "d /run/prepper-dnsmasq 0750 dnsmasq root -" > /etc/tmpfiles.d/prepper-dnsmasq.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/prepper-dnsmasq.conf 2>/dev/null || true
 # USB sticks mount under /media for file sharing and update bundles.
 cat > /etc/udev/rules.d/99-prepper-usb.rules <<'RULE'
 ACTION=="add", SUBSYSTEMS=="usb", SUBSYSTEM=="block", ENV{ID_FS_USAGE}=="filesystem", RUN{program}+="/usr/bin/systemd-mount --no-block --automount=yes --collect -o noexec,nosuid,nodev $devnode /media/usb-%k"
@@ -322,6 +350,7 @@ systemctl start --no-block kiwix-serve || true      # skips itself until a ZIM e
 if [ -z "${PREPPER_FIRSTBOOT:-}" ] && [ ! -e /var/lib/prepper/first-pull-pending ]; then
   "$OPT/os/bin/prepperctl" build-status "done" 100 "Ready" || true
 fi
-echo; echo "Done. Join Wi-Fi '$(toml network.ssid)' and open http://$(toml network.hostname).lan"
+psk=$(toml network.passphrase)
+echo; echo "Done. Join Wi-Fi '$(toml network.ssid)'${psk:+ (password: $psk)} and open http://$(toml network.hostname).lan"
 [ -z "$(toml portal.admin_pin)" ] && echo "Set an admin PIN:  sudo prepperctl set-pin"
 exit 0

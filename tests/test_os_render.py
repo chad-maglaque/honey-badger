@@ -62,10 +62,13 @@ class RenderCLI(TempDirCase):
         f = self.render(example_config())
         h = kv(f["hostapd"])
         self.assertEqual(h["interface"], ["wlan0"])
-        self.assertEqual(h["ssid"], ["HoneyBadger"])
+        self.assertEqual(h["ssid"], ["Home-Hotspot"])                # a neutral name (red-team finding 2)
         self.assertEqual(h["hw_mode"], ["g"])
         self.assertEqual(h["channel"], ["6"])
-        self.assertNotIn("wpa", h)                       # empty passphrase = open network
+        # empty passphrase = Enhanced Open, which the onboard radio can't do: open, and it says so
+        self.assertNotIn("wpa", h)
+        self.assertIn("# security = owe is not supported by the onboard radio", f["hostapd"])
+        self.assertEqual(h["ap_isolate"], ["1"])
         self.assertIn("proxy_pass http://127.0.0.1:8090;", f["nginx"])
         self.assertIn("location ~ ^/content/kolibri(/|$) { deny all; }", f["nginx"])
         self.assertIn("alias /srv/prepper/;", f["nginx"])
@@ -229,6 +232,61 @@ class RenderCLI(TempDirCase):
         f = self.render(example_config(), iface="wlan0", marker=True)
         self.assertIn("[keyfile]\nunmanaged-devices=interface-name:wlan0", f["nm"])
 
+    # — owe / owe-transition —
+    def test_owe_only_is_a_single_owe_bss(self):
+        h = self.render(example_config(network={"security": "owe", "passphrase": ""}), iface="wlan1")["hostapd"]
+        self.assertNotIn("bss=", h)
+        self.assertIn("wpa_key_mgmt=OWE", h)
+        self.assertNotIn("owe_transition", h)
+
+    def test_owe_transition_usb_two_bridged_bsses(self):
+        f = self.render(example_config(network={"security": "owe-transition", "passphrase": "", "ssid": "Home-7Q4K"}),
+                        iface="wlan1")
+        first, second = f["hostapd"].split("bss=ap-owe\n")
+        a, b = kv(first), kv(second)
+        self.assertEqual(a["interface"], ["wlan1"])
+        self.assertEqual(a["ssid"], ["Home-7Q4K"])                       # the open BSS keeps the real name
+        self.assertNotIn("wpa", a)                                       # ...and is open
+        self.assertEqual(a["owe_transition_ifname"], ["ap-owe"])
+        self.assertEqual(a["bridge"], ["br-prepper"])
+        self.assertEqual(a["ap_isolate"], ["1"])
+        self.assertEqual(b["bridge"], ["br-prepper"])                    # both share one subnet
+        self.assertEqual(b["ap_isolate"], ["1"])
+        self.assertEqual(b["wpa_key_mgmt"], ["OWE"])
+        self.assertEqual(b["ieee80211w"], ["2"])
+        self.assertEqual(b["ignore_broadcast_ssid"], ["1"])              # the OWE twin is hidden
+        self.assertEqual(b["owe_transition_ifname"], ["wlan1"])
+        self.assertEqual(bytes.fromhex(b["ssid2"][0]), b"OWE-Home-7Q4K")
+        self.assertNotIn("channel", b)                                   # radio settings only in the first section
+        self.assertIn("EXPERIMENTAL", self.r.stderr)
+        # DHCP, DNS and the captive portal listen on the bridge, not on the radio
+        self.assertEqual(kv(f["dnsmasq"])["interface"], ["br-prepper"])
+        env = kv(f["env"])
+        self.assertEqual((env["AP_IFACE"], env["AP_LINK_IFACE"], env["AP_BRIDGE"]), (["wlan1"], ["br-prepper"], ["1"]))
+        self.assertIn("interface-name:br-prepper", f["nm"])
+        self.assertIn("interface-name:ap-owe", f["nm"])
+
+    def test_owe_transition_long_ssid_fits(self):
+        f = self.render(example_config(network={"security": "owe-transition", "passphrase": "", "ssid": "x" * 32}),
+                        iface="wlan1")
+        second = f["hostapd"].split("bss=ap-owe\n")[1]
+        self.assertLessEqual(len(bytes.fromhex(kv(second)["ssid2"][0])), 32)
+
+    def test_owe_transition_onboard_radio_falls_back_to_open(self):
+        f = self.render(example_config(network={"security": "owe-transition", "passphrase": ""}), iface="wlan0")
+        self.assertNotIn("bss=", f["hostapd"])
+        self.assertNotIn("OWE", f["hostapd"].replace("owe-transition needs", ""))
+        self.assertIn("owe-transition needs the USB adapter", f["hostapd"])
+        self.assertEqual(kv(f["dnsmasq"])["interface"], ["wlan0"])
+        self.assertEqual(kv(f["env"])["AP_BRIDGE"], ["0"])
+
+    def test_non_transition_modes_are_not_bridged(self):
+        for sec, psk in (("wpa2", "12345678"), ("owe", ""), ("open", "")):
+            f = self.render(example_config(network={"security": sec, "passphrase": psk}), iface="wlan1")
+            self.assertEqual(kv(f["env"])["AP_BRIDGE"], ["0"], sec)
+            self.assertEqual(kv(f["dnsmasq"])["interface"], ["wlan1"], sec)
+            self.assertNotIn("bridge=", f["hostapd"], sec)
+
     # — captive / https / uplink —
     def test_tls_only_with_certificate(self):
         n = self.render(example_config(network={"https": True}))["nginx"]
@@ -251,7 +309,8 @@ class RenderCLI(TempDirCase):
         n = self.render(example_config())["nginx"]
         api = n.split("location /api/ {", 1)[1].split("\n    }", 1)[0]
         self.assertIn("client_max_body_size 26m;", api)
-        server_level = n.split("location", 1)[0]
+        launcher = n.split("listen 80 default_server;", 1)[1]
+        server_level = launcher.split("location", 1)[0]
         self.assertIn("client_max_body_size 1m;", server_level)
         self.assertEqual(n.count("client_max_body_size"), 2)          # 1m everywhere, 26m for /api/ only
 
@@ -268,19 +327,31 @@ class RenderCLI(TempDirCase):
                 self.assertIn(f"connect-src $scheme://$host{prefix} ws://$host{prefix} wss://$host{prefix};", block)
                 self.assertIn(f"frame-src $scheme://$host{prefix};", block)
                 self.assertNotIn("/api/", block)
-        apps = n.split("location /apps/", 1)[1].split("\n", 1)[0]
-        self.assertNotIn("connect-src", apps)                        # the trusted viewers fetch /content/
+        # red-team finding 8: /apps/ (code from upstream or a peer) runs on its own origin (port 8088/8443),
+        # never on the launcher's; there it may fetch only from that origin (the library under /content/).
+        apps_server = n.split("listen 8088;", 1)[1].split("\n}\n", 1)[0]
+        apps = apps_server.split("location /apps/", 1)[1].split("\n", 1)[0]
+        self.assertIn("connect-src 'self' blob: data:; frame-ancestors 'self'", apps)
+        self.assertIn("location /content/", apps_server)
+        self.assertNotIn("/api/", apps_server)
+        launcher = n.split("listen 80 default_server;", 1)[1]
+        self.assertIn("location /apps/   { return 302 $scheme://$host:$prepper_apps_port$request_uri; }", launcher)
+        self.assertNotIn("alias /srv/prepper/apps/", launcher)
 
     def test_untrusted_files_sandboxed(self):
         n = self.render(example_config())["nginx"]
         csp = 'Content-Security-Policy "sandbox allow-scripts allow-popups allow-forms allow-downloads" always'
-        for loc in ("location /files/", "location /sync/", "location /content/", "location /kiwix/content/"):
+        n = n.split("listen 80 default_server;", 1)[1]                # the launcher's server block
+        for loc in ("location /_usb/", "location /sync/", "location /content/", "location /kiwix/content/"):
             block = n.split(loc, 1)[1].split("\n    location /", 1)[0]
             self.assertIn(csp, block, loc)
             self.assertIn("X-Content-Type-Options nosniff", block, loc)
-        self.assertIn("location ~* \\.(html?|xhtml|svg|svgz|xml|xsl)$", n.split("location /files/", 1)[1])
-        apps = n.split("location /apps/", 1)[1].split("\n", 1)[0]
-        self.assertNotIn("sandbox", apps, "the vendored viewers need the launcher's origin")
+        self.assertIn("location ~* \\.(html?|xhtml|svg|svgz|xml|xsl)$", n.split("location /_usb/", 1)[1])
+        # USB drives: no public listing; the portal checks membership, then X-Accel-Redirect to /_usb/
+        self.assertIn("location /files/  { return 302 /#/files; }", n)
+        self.assertIn("location /_usb/   { internal; alias /media/; disable_symlinks on;", n)
+        self.assertNotIn("autoindex on; add_header X-Content-Type-Options nosniff always; location ~*", n)
+        self.assertIn("access_log off;", n)
         self.assertIn("proxy_pass http://127.0.0.1:8081;", n.split("location /kiwix/content/", 1)[1])
 
     def test_force_24ghz(self):
